@@ -55,6 +55,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { consumeCredit, refundCredit, creditErrorToToast, CREDIT_PRICING_UI } from "@/lib/credit-client"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -860,7 +861,7 @@ export function ChatWorkspace({
     const text = inputValueRef.current.trim()
     const imgs = pendingImagesRef.current
     if ((!text && imgs.length === 0) || isSendingRef.current) return
-    
+
     isSendingRef.current = true
     setIsSending(true)
 
@@ -871,6 +872,23 @@ export function ChatWorkspace({
     let timeoutId: number | undefined
     let abortedByTimeout = false
     let requestController: AbortController | null = null
+    let refId: string | null = null
+
+    // 预扣 3 积分(AI 顾问对话)。失败时把余额不足信息写到 assistant 气泡,不让请求飞。
+    try {
+      const r = await consumeCredit("chat_advisor")
+      refId = r.refId
+    } catch (e) {
+      isSendingRef.current = false
+      setIsSending(false)
+      const t = creditErrorToToast(e, "扣分失败")
+      const errMsg = `${t.title}：${t.description}`
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: `⚠️ ${errMsg}` },
+      ])
+      return
+    }
 
     try {
       let imagePayload: { mimeType: string; dataBase64: string }[] | undefined
@@ -943,8 +961,13 @@ export function ChatWorkspace({
         }),
         signal: controller.signal,
       })
-      
+
       if (timeoutId != null) window.clearTimeout(timeoutId)
+
+      // 服务端 5xx 才退,4xx(用户输入/配额)不退
+      if (!response.ok && response.status >= 500 && refId) {
+        void refundCredit(refId)
+      }
 
       if (!response.ok) {
         let detail = `HTTP ${response.status}`
@@ -1000,8 +1023,11 @@ export function ChatWorkspace({
         (err instanceof DOMException && err.name === "AbortError") ||
         (err instanceof Error && err.name === "AbortError")
       if (isAbort && !abortedByTimeout && requestController && abortRef.current !== requestController) {
+        // 用户主动切走/取消 → 不退
         return
       }
+      // 网络错误 / 超时 → 退
+      if (refId) void refundCredit(refId)
       const msg = err instanceof Error ? err.message : "请稍后重试"
       const finalMsg = isAbort && abortedByTimeout ? "请求超时，请稍后重试" : msg
       setMessages((prev) => {
@@ -1686,26 +1712,31 @@ export function ChatWorkspace({
                 </div>
 
                 {/* Right send button */}
-                <button
-                  type="button"
-                  disabled={(!inputValue.trim() && pendingImages.length === 0) || isSending}
-                  onClick={() => void handleSendMessage()}
-                  className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200",
-                    isSending
-                      ? "cursor-wait bg-primary text-primary-foreground opacity-90 shadow-sm"
-                      : inputValue.trim() || pendingImages.length > 0
-                        ? "bg-primary text-primary-foreground shadow-sm shadow-primary/25 hover:bg-primary/90 active:scale-95"
-                        : "cursor-not-allowed bg-muted text-muted-foreground/40"
-                  )}
-                  aria-label="发送"
-                >
-                  {isSending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
-                </button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="text-[11px] tabular-nums text-muted-foreground/70" title="本次发送将扣积分">
+                    {CREDIT_PRICING_UI.chat_advisor} 积分
+                  </span>
+                  <button
+                    type="button"
+                    disabled={(!inputValue.trim() && pendingImages.length === 0) || isSending}
+                    onClick={() => void handleSendMessage()}
+                    className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200",
+                      isSending
+                        ? "cursor-wait bg-primary text-primary-foreground opacity-90 shadow-sm"
+                        : inputValue.trim() || pendingImages.length > 0
+                          ? "bg-primary text-primary-foreground shadow-sm shadow-primary/25 hover:bg-primary/90 active:scale-95"
+                          : "cursor-not-allowed bg-muted text-muted-foreground/40"
+                    )}
+                    aria-label="发送"
+                  >
+                    {isSending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
 

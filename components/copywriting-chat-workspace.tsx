@@ -23,6 +23,7 @@ import {
   Clapperboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { consumeCredit, refundCredit, creditErrorToToast, CREDIT_PRICING_UI } from "@/lib/credit-client"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "@/hooks/use-toast"
@@ -475,6 +476,22 @@ export function CopywritingChatWorkspace({
     setInputValue("")
     setIsSending(true)
 
+    // 预扣 5 积分(脚本生成)。失败时把错误写进 assistant 气泡。
+    let refId: string | null = null
+    try {
+      const r = await consumeCredit("script_generation")
+      refId = r.refId
+    } catch (e) {
+      setIsSending(false)
+      const t = creditErrorToToast(e, "扣分失败")
+      const errMsg = `${t.title}:${t.description}`
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: `⚠️ ${errMsg}`, timestamp: Date.now() },
+      ])
+      return
+    }
+
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -510,6 +527,8 @@ export function CopywritingChatWorkspace({
       })
 
       if (!res.ok) {
+        // 服务端 5xx 才退,4xx(用户输入)不退
+        if (res.status >= 500 && refId) void refundCredit(refId)
         const err = await res.json().catch(() => ({ detail: "请求失败" }))
         throw new Error(typeof err.detail === "string" ? err.detail : "请求失败")
       }
@@ -550,6 +569,8 @@ export function CopywritingChatWorkspace({
       // Trigger memory extraction
       extractMemory(finalMessages)
     } catch (e) {
+      // 网络/解析错误 → 退
+      if (refId) void refundCredit(refId)
       const errorText = e instanceof Error ? e.message : "发送失败"
       setMessages((prev) =>
         prev.map((m) =>
@@ -928,6 +949,9 @@ export function CopywritingChatWorkspace({
                   disabled={isSending}
                 />
               </div>
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70" title="本次发送将扣积分">
+                {CREDIT_PRICING_UI.script_generation} 积分
+              </span>
               <button
                 type="button"
                 onClick={() => handleSend()}
@@ -938,6 +962,7 @@ export function CopywritingChatWorkspace({
                     ? "bg-primary text-primary-foreground shadow-sm hover:opacity-90"
                     : "bg-slate-100 text-slate-400 dark:bg-white/10",
                 )}
+                title={`本次发送将扣 ${CREDIT_PRICING_UI.script_generation} 积分`}
               >
                 {isSending ? (
                   <Loader2 className="h-4.5 w-4.5 animate-spin" />
