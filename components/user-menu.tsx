@@ -14,40 +14,23 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { toast } from "sonner"
-
-type Me = { user: { id: number; email_masked: string }; balance: number } | null
+import { useAuth } from "@/lib/auth-context"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function UserMenu() {
+  const auth = useAuth()
   const router = useRouter()
-  const [me, setMe] = useState<Me | undefined>(undefined)
   const [openLogin, setOpenLogin] = useState(false)
   const [openMenu, setOpenMenu] = useState(false)
+  const [step, setStep] = useState<"email" | "code">("email")
   const [email, setEmail] = useState("")
+  const [code, setCode] = useState("")
   const [sending, setSending] = useState(false)
-  const [sent, setSent] = useState(false)
+  const [verifying, setVerifying] = useState(false)
   const [cooldown, setCooldown] = useState(0)
-
-  const refresh = async () => {
-    try {
-      const r = await fetch("/api/auth/me", { credentials: "include" })
-      if (r.status === 401) {
-        setMe(null)
-      } else if (r.ok) {
-        setMe((await r.json()) as Me)
-      } else {
-        setMe(null)
-      }
-    } catch {
-      setMe(null)
-    }
-  }
-
-  useEffect(() => {
-    void refresh()
-  }, [])
 
   useEffect(() => {
     if (cooldown <= 0) return
@@ -65,25 +48,38 @@ export function UserMenu() {
     return () => document.removeEventListener("click", close)
   }, [openMenu])
 
-  const sendLink = async () => {
+  // 登录成功后 auth 变 authenticated,关闭 dialog
+  useEffect(() => {
+    if (auth.status === "authenticated" && openLogin) setOpenLogin(false)
+  }, [auth.status, openLogin])
+
+  const reset = () => {
+    setStep("email")
+    setEmail("")
+    setCode("")
+    setCooldown(0)
+  }
+
+  const sendCode = async () => {
     if (!EMAIL_RE.test(email)) {
       toast.error("请输入有效邮箱地址")
       return
     }
     setSending(true)
     try {
-      const r = await fetch("/api/auth/send-link", {
+      const r = await fetch("/api/auth/send-code", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email }),
         credentials: "include",
       })
-      if (r.ok) {
-        setSent(true)
+      const data = await r.json()
+      if (data.success) {
+        setStep("code")
+        setCode("")
         setCooldown(60)
-        toast.success("登录链接已发送到你的邮箱")
       } else {
-        toast.error("发送失败，请稍后再试")
+        toast.error(data.message || "发送失败，请稍后再试")
       }
     } catch {
       toast.error("网络错误")
@@ -92,19 +88,47 @@ export function UserMenu() {
     }
   }
 
-  const onLogout = async () => {
+  const verifyCode = async () => {
+    if (code.length !== 6) return
+    setVerifying(true)
     try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "include" })
+      const r = await fetch("/api/auth/verify-code", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, code }),
+        credentials: "include",
+      })
+      const data = await r.json().catch(() => ({}))
+      if (r.ok) {
+        await auth.refresh()
+        // useEffect 关 dialog
+      } else {
+        const detail = (data && (data.detail || data.message)) as
+          | { message?: string; code?: string }
+          | string
+          | undefined
+        let msg = "验证码错误或已过期"
+        if (typeof detail === "string") msg = detail
+        else if (detail && typeof detail === "object" && detail.message) msg = detail.message
+        toast.error(msg)
+        setCode("")
+      }
     } catch {
-      // ignore
+      toast.error("网络错误")
+    } finally {
+      setVerifying(false)
     }
-    setMe(null)
+  }
+
+  const onLogout = async () => {
     setOpenMenu(false)
+    await auth.logout()
     toast.success("已退出登录")
     router.refresh()
   }
 
-  if (me === undefined) {
+  // ── loading ──
+  if (auth.status === "loading") {
     return (
       <div className="m-3 rounded-xl border border-sidebar-border bg-card p-3 soft-shadow">
         <div className="flex h-9 items-center gap-3 text-xs text-muted-foreground">
@@ -115,7 +139,8 @@ export function UserMenu() {
     )
   }
 
-  if (me === null) {
+  // ── unauthenticated ──
+  if (auth.status === "unauthenticated") {
     return (
       <>
         <div className="m-3" data-user-menu>
@@ -133,11 +158,7 @@ export function UserMenu() {
           open={openLogin}
           onOpenChange={(o) => {
             setOpenLogin(o)
-            if (!o) {
-              setSent(false)
-              setEmail("")
-              setCooldown(0)
-            }
+            if (!o) reset()
           }}
         >
           <DialogContent className="sm:max-w-md">
@@ -145,18 +166,8 @@ export function UserMenu() {
               <DialogTitle>邮箱登录</DialogTitle>
               <DialogDescription>未注册账号登录后自动创建，并赠送 100 积分。</DialogDescription>
             </DialogHeader>
-            {sent ? (
-              <div className="space-y-3 py-4 text-center">
-                <Mail className="mx-auto h-10 w-10 text-primary" />
-                <p className="text-sm">
-                  登录链接已发送到 <span className="font-mono">{email}</span>
-                </p>
-                <p className="text-xs text-muted-foreground">15 分钟内有效。点击邮件中的链接即可登录。</p>
-                <Button variant="outline" size="sm" disabled={cooldown > 0} onClick={sendLink}>
-                  {cooldown > 0 ? `${cooldown}s 后重发` : "重新发送"}
-                </Button>
-              </div>
-            ) : (
+
+            {step === "email" ? (
               <>
                 <div className="space-y-4 py-2">
                   <div className="space-y-2">
@@ -167,15 +178,72 @@ export function UserMenu() {
                       placeholder="you@example.com"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !sending) sendCode()
+                      }}
+                      autoFocus
                     />
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button onClick={sendLink} disabled={sending}>
-                    {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : "发送登录链接"}
+                  <Button onClick={sendCode} disabled={sending || !email}>
+                    {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : "发送验证码"}
                   </Button>
                 </DialogFooter>
               </>
+            ) : (
+              <div className="space-y-4 py-2">
+                <div className="rounded-md border border-border bg-accent/30 p-2.5 text-center text-xs">
+                  验证码已发送至{" "}
+                  <span className="font-mono font-medium">{email}</span>
+                  <button
+                    type="button"
+                    className="ml-1.5 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    onClick={() => {
+                      setStep("email")
+                      setCode("")
+                    }}
+                  >
+                    换邮箱
+                  </button>
+                </div>
+                <div className="flex justify-center py-1">
+                  <InputOTP
+                    maxLength={6}
+                    value={code}
+                    onChange={(v) => {
+                      if (v && !/^\d*$/.test(v)) return
+                      setCode(v)
+                    }}
+                    inputMode="numeric"
+                    autoFocus
+                  >
+                    <InputOTPGroup>
+                      <InputOTPSlot index={0} />
+                      <InputOTPSlot index={1} />
+                      <InputOTPSlot index={2} />
+                      <InputOTPSlot index={3} />
+                      <InputOTPSlot index={4} />
+                      <InputOTPSlot index={5} />
+                    </InputOTPGroup>
+                  </InputOTP>
+                </div>
+                <p className="text-center text-xs text-muted-foreground">5 分钟内有效</p>
+                <DialogFooter className="flex-col gap-2 sm:flex-col">
+                  <Button onClick={verifyCode} disabled={verifying || code.length !== 6} className="w-full">
+                    {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : "登录"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={cooldown > 0}
+                    onClick={sendCode}
+                    className="w-full"
+                  >
+                    {cooldown > 0 ? `${cooldown}s 后重新发送` : "重新发送验证码"}
+                  </Button>
+                </DialogFooter>
+              </div>
             )}
           </DialogContent>
         </Dialog>
@@ -183,8 +251,8 @@ export function UserMenu() {
     )
   }
 
-  // 已登录：邮箱 @ 前 1 + 末 1 做头像
-  const local = me.user.email_masked.split("@")[0]
+  // ── authenticated ──
+  const local = auth.user.email_masked.split("@")[0]
   const avatar = (local[0] || "?") + (local.slice(-1) || "")
   return (
     <div className="m-3" data-user-menu>
@@ -197,10 +265,10 @@ export function UserMenu() {
           {avatar.toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">{me.user.email_masked}</p>
+          <p className="truncate text-sm font-medium text-foreground">{auth.user.email_masked}</p>
           <p className="flex items-center gap-1 truncate text-[11px] text-muted-foreground">
             <Coins className="h-3 w-3 text-amber-500" />
-            <span className="tabular-nums">{me.balance}</span>
+            <span className="tabular-nums">{auth.balance}</span>
             <span>积分</span>
           </p>
         </div>

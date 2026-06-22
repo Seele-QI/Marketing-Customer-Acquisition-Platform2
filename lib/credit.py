@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """积分核心：余额查询、扣费、退款、对账。"""
 import logging
 import time
@@ -13,6 +15,21 @@ TYPE_CONSUME = "consume"
 TYPE_REFUND = "refund"
 TYPE_ADMIN_ADJUST = "admin_adjust"
 
+# 功能定价表(每次扣分)
+# - chat_advisor: AI 顾问对话(查理·芒格等 8 位)
+# - video_creation: 视频创作(默认 25 分钟 500 积分,后续可按 actual_minutes * 20)
+# - distribute: 一键分发(生成分享链接)
+# - script_generation: 脚本生成(实体店获客/私域裂变/口播/洗稿)
+CREDIT_PRICING = {
+    "chat_advisor": 3,
+    "video_creation": 500,
+    "distribute": 10,
+    "script_generation": 5,
+}
+
+# refund 允许的窗口(秒)—— 超过这个时间的 consume 视为已结算,不再退
+REFUND_WINDOW_S = 300
+
 
 class CreditError(HTTPException):
     def __init__(self, code: str, message: str, status: int = 400, **extra):
@@ -26,6 +43,18 @@ class Account:
     total_recharged: int
     total_bonus: int
     total_consumed: int
+
+
+def cost_for(feature: str, quantity: int = 1) -> int:
+    """按 feature 查定价,乘 quantity。未知 feature / 非正 quantity 抛 CreditError。"""
+    unit = CREDIT_PRICING.get(feature)
+    if unit is None:
+        raise CreditError(
+            "UNKNOWN_FEATURE", f"未知功能: {feature}", status=400, feature=feature
+        )
+    if quantity <= 0:
+        raise CreditError("INVALID_QUANTITY", "quantity 必须正数", status=400)
+    return unit * quantity
 
 
 def get_account(user_id: int) -> Account:

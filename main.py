@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import base64
@@ -5,6 +7,7 @@ import tempfile
 import logging
 import asyncio
 import time
+import secrets
 
 import httpx
 from dotenv import load_dotenv
@@ -18,13 +21,13 @@ from lib.runninghub_client import RunningHubClient, RunningHubError, build_motio
 from lib.video_postprocess import run_ffmpeg_post_process, run_ffmpeg_post_process_from_base64
 
 from lib.auth import (
-    SESSION_COOKIE, consume_email_token, create_session, destroy_session,
+    SESSION_COOKIE, consume_email_code, create_session, destroy_session,
     get_current_user, get_or_create_user_by_hash, hash_email, mask_email,
-    save_email_token, generate_token,
+    save_email_code, generate_code,
 )
-from lib.credit import get_account, list_ledger
-from lib.rate_limit import check_ip, check_email
-from lib.email import send_login_link
+from lib.credit import get_account, list_ledger, consume, refund, cost_for, CreditError, REFUND_WINDOW_S
+from lib.rate_limit import check_ip, check_email, check_consume
+from lib.email import send_login_code
 
 load_dotenv()
 
@@ -276,10 +279,10 @@ async def agent_chat(req: AgentRequest):
 # ════════════════════════════════════════════════════════════════════════
 
 # 内存存储任务状态（生产环境应替换为数据库）
-_task_store: dict[str, dict] = {}
-_poll_tasks: dict[str, object] = {}
-_edit_task_store: dict[str, dict] = {}
-_edit_tasks: dict[str, object] = {}
+_task_store: dict[int, dict[str, dict]] = {}        # user_id → task_id → task
+_poll_tasks: dict[int, dict[str, object]] = {}       # user_id → task_id → asyncio.Task
+_edit_task_store: dict[int, dict[str, dict]] = {}    # user_id → job_id → job
+_edit_tasks: dict[int, dict[str, object]] = {}       # user_id → job_id → asyncio.Task
 
 
 def _get_rh_client() -> "RunningHubClient":
@@ -330,12 +333,16 @@ def _preset_to_bgm_dir(req_bgm_dir: str, preset: str) -> str | None:
 
 
 @app.post("/api/video/generate", response_model=TaskStatusResponse)
-async def video_generate(req: VideoGenerateRequest):
+async def video_generate(req: VideoGenerateRequest, request: Request):
     """
     提交视频创作任务
 
     流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 视频生成 → 轮询返回结果
     """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
+
     if not req.image_base64 or not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: image_base64, audio_base64, script")
 
@@ -371,7 +378,7 @@ async def video_generate(req: VideoGenerateRequest):
         video_task_id = await rh.submit_video(image_url, audio_clone_url, motion_prompt)
 
         # 6. 存储任务状态供后续轮询
-        _task_store[video_task_id] = {
+        _task_store.setdefault(user.id, {})[video_task_id] = {
             "task_id": video_task_id,
             "status": "queued",
             "progress": 0,
@@ -390,9 +397,9 @@ async def video_generate(req: VideoGenerateRequest):
         }
 
         # 7. 启动后台轮询
-        import asyncio
-        poll_task = asyncio.create_task(_poll_video_task(video_task_id))
-        _poll_tasks[video_task_id] = poll_task
+        import asyncio as _asyncio
+        poll_task = _asyncio.create_task(_poll_video_task(user.id, video_task_id))
+        _poll_tasks.setdefault(user.id, {})[video_task_id] = poll_task
 
         return TaskStatusResponse(
             task_id=video_task_id,
@@ -412,8 +419,8 @@ async def video_generate(req: VideoGenerateRequest):
         _cleanup_temp(*[p for p in [image_path, audio_path] if p])
 
 
-async def _run_post_process(task_id: str, video_url: str):
-    stored = _task_store.get(task_id, {})
+async def _run_post_process(user_id: int, task_id: str, video_url: str):
+    stored = _task_store.get(user_id, {}).get(task_id, {})
     base_dir = os.path.join(tempfile.gettempdir(), "video-postprocess", task_id)
     os.makedirs(base_dir, exist_ok=True)
     input_path = os.path.join(base_dir, "input.mp4")
@@ -424,7 +431,7 @@ async def _run_post_process(task_id: str, video_url: str):
             resp.raise_for_status()
             with open(input_path, "wb") as f:
                 f.write(resp.content)
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "post_processing",
@@ -446,7 +453,7 @@ async def _run_post_process(task_id: str, video_url: str):
         )
         if result.ok and result.output_path:
             post_video_url = result.output_path
-            _task_store[task_id] = {
+            _task_store[user_id][task_id] = {
                 **stored,
                 "task_id": task_id,
                 "status": "published",
@@ -460,7 +467,7 @@ async def _run_post_process(task_id: str, video_url: str):
                 "estimated_minutes": 0,
             }
         else:
-            _task_store[task_id] = {
+            _task_store[user_id][task_id] = {
                 **stored,
                 "task_id": task_id,
                 "status": "post_failed",
@@ -474,7 +481,7 @@ async def _run_post_process(task_id: str, video_url: str):
                 "estimated_minutes": 0,
             }
     except Exception as e:
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "post_failed",
@@ -489,21 +496,21 @@ async def _run_post_process(task_id: str, video_url: str):
         }
     finally:
         if post_video_url:
-            _task_store[task_id]["post_video_url"] = post_video_url
+            _task_store[user_id][task_id]["post_video_url"] = post_video_url
 
 
-async def _poll_video_task(task_id: str):
+async def _poll_video_task(user_id: int, task_id: str):
     """后台轮询视频生成任务，完成后自动触发后处理与封面图生成"""
     import asyncio
     rh = _get_rh_client()
-    stored = _task_store.get(task_id, {})
+    stored = _task_store.get(user_id, {}).get(task_id, {})
     try:
         result = await rh.wait_for_completion(task_id, max_wait=3000)
         video_url = ""
         results = result.get("results", [])
         if results:
             video_url = results[0].get("url", "")
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "success",
@@ -513,14 +520,14 @@ async def _poll_video_task(task_id: str):
             "estimated_minutes": 0,
         }
         if video_url:
-            _task_store[task_id] = {
-                **_task_store.get(task_id, {}),
+            _task_store[user_id][task_id] = {
+                **_task_store.get(user_id, {}).get(task_id, {}),
                 "status": "post_processing",
                 "post_stage": "running",
                 "post_progress": 5,
                 "post_error": "",
             }
-            asyncio.create_task(_run_post_process(task_id, video_url))
+            asyncio.create_task(_run_post_process(user_id, task_id, video_url))
 
         image_url = stored.get("image_url", "")
         gender = stored.get("gender", "female")
@@ -539,12 +546,12 @@ async def _poll_video_task(task_id: str):
                         cover_url = r["url"]
                         break
                 if cover_url:
-                    _task_store[task_id]["cover_url"] = cover_url
+                    _task_store[user_id][task_id]["cover_url"] = cover_url
                     print(f"[cover] Cover generated: {cover_url[:80]}")
             except Exception as e:
                 print(f"[cover] Cover generation failed (non-blocking): {e}")
     except asyncio.CancelledError:
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "failed",
@@ -555,7 +562,7 @@ async def _poll_video_task(task_id: str):
         }
         return
     except RunningHubError as e:
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "failed",
@@ -565,7 +572,7 @@ async def _poll_video_task(task_id: str):
             "estimated_minutes": 0,
         }
     except Exception as e:
-        _task_store[task_id] = {
+        _task_store[user_id][task_id] = {
             **stored,
             "task_id": task_id,
             "status": "failed",
@@ -575,24 +582,26 @@ async def _poll_video_task(task_id: str):
             "estimated_minutes": 0,
         }
     finally:
-        _poll_tasks.pop(task_id, None)
-
+        _poll_tasks.get(user_id, {}).pop(task_id, None)
 
 @app.post("/api/video/cancel")
-async def video_cancel(req: CancelVideoTaskRequest):
+async def video_cancel(req: CancelVideoTaskRequest, request: Request):
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     task_id = (req.task_id or "").strip()
     if not task_id:
         raise HTTPException(status_code=400, detail="缺少 task_id 参数")
 
-    task = _poll_tasks.pop(task_id, None)
+    task = _poll_tasks.get(user.id, {}).pop(task_id, None)
     if task is not None:
         try:
             task.cancel()
         except Exception:
             pass
 
-    stored = _task_store.get(task_id, {})
-    _task_store[task_id] = {
+    stored = _task_store.get(user.id, {}).get(task_id, {})
+    _task_store.setdefault(user.id, {})[task_id] = {
         **stored,
         "task_id": task_id,
         "status": "failed",
@@ -608,12 +617,15 @@ async def video_cancel(req: CancelVideoTaskRequest):
 
 
 @app.get("/api/video/status", response_model=TaskStatusResponse)
-async def video_status(taskId: str):
+async def video_status(taskId: str, request: Request):
     """查询视频任务状态"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     if not taskId:
         raise HTTPException(status_code=400, detail="缺少 taskId 参数")
 
-    stored = _task_store.get(taskId)
+    stored = _task_store.get(user.id, {}).get(taskId)
     if stored:
         return TaskStatusResponse(**stored)
 
@@ -646,13 +658,13 @@ async def video_status(taskId: str):
 # ── POST /api/video/cover ────────────────────────────────────
 
 
-async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
-    stored = _edit_task_store.get(edit_job_id, {})
+async def _run_edit_job(user_id: int, edit_job_id: str, req: EditVideoRequest):
+    stored = _edit_task_store.get(user_id, {}).get(edit_job_id, {})
     task_id = req.task_id or edit_job_id
     output_dir = os.path.join(POST_PROCESS_ROOT, task_id, edit_job_id)
     os.makedirs(output_dir, exist_ok=True)
     try:
-        _edit_task_store[edit_job_id] = {
+        _edit_task_store.setdefault(user_id, {})[edit_job_id] = {
             **stored,
             "edit_job_id": edit_job_id,
             "task_id": task_id,
@@ -683,7 +695,7 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
                 resp.raise_for_status()
                 with open(input_path, "wb") as f:
                     f.write(resp.content)
-            _edit_task_store[edit_job_id]["progress"] = 35
+            _edit_task_store[user_id][edit_job_id]["progress"] = 35
             result = await asyncio.to_thread(
                 run_ffmpeg_post_process,
                 task_id,
@@ -698,24 +710,24 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
         if result.ok and result.output_path:
             rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
             public_url = f"/static/video-postprocess/{rel_path}"
-            _edit_task_store[edit_job_id] = {
-                **_edit_task_store.get(edit_job_id, {}),
+            _edit_task_store[user_id][edit_job_id] = {
+                **_edit_task_store.get(user_id, {}).get(edit_job_id, {}),
                 "status": "success",
                 "progress": 100,
                 "output_video_url": public_url,
                 "error": "",
             }
             return
-        _edit_task_store[edit_job_id] = {
-            **_edit_task_store.get(edit_job_id, {}),
+        _edit_task_store[user_id][edit_job_id] = {
+            **_edit_task_store.get(user_id, {}).get(edit_job_id, {}),
             "status": "failed",
             "progress": 0,
             "output_video_url": "",
             "error": result.error or "剪辑失败",
         }
     except Exception as e:
-        _edit_task_store[edit_job_id] = {
-            **_edit_task_store.get(edit_job_id, {}),
+        _edit_task_store[user_id][edit_job_id] = {
+            **_edit_task_store.get(user_id, {}).get(edit_job_id, {}),
             "status": "failed",
             "progress": 0,
             "output_video_url": "",
@@ -724,7 +736,10 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
 
 
 @app.post("/api/video/edit", response_model=EditTaskStatusResponse)
-async def video_edit(req: EditVideoRequest):
+async def video_edit(req: EditVideoRequest, request: Request):
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     if not req.subtitle_text.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: subtitle_text")
     if not req.video_url.strip() and not req.video_base64.strip():
@@ -732,7 +747,7 @@ async def video_edit(req: EditVideoRequest):
 
     edit_job_id = _new_edit_job_id()
     task_id = req.task_id or edit_job_id
-    _edit_task_store[edit_job_id] = {
+    _edit_task_store.setdefault(user.id, {})[edit_job_id] = {
         "edit_job_id": edit_job_id,
         "task_id": task_id,
         "status": "queued",
@@ -742,23 +757,26 @@ async def video_edit(req: EditVideoRequest):
         "output_video_url": "",
         "error": "",
     }
-    edit_task = asyncio.create_task(_run_edit_job(edit_job_id, req))
-    _edit_tasks[edit_job_id] = edit_task
-    return EditTaskStatusResponse(**_edit_task_store[edit_job_id])
+    edit_task = asyncio.create_task(_run_edit_job(user.id, edit_job_id, req))
+    _edit_tasks.setdefault(user.id, {})[edit_job_id] = edit_task
+    return EditTaskStatusResponse(**_edit_task_store[user.id][edit_job_id])
 
 
 @app.get("/api/video/edit/status", response_model=EditTaskStatusResponse)
-async def video_edit_status(editJobId: str):
+async def video_edit_status(editJobId: str, request: Request):
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     if not editJobId:
         raise HTTPException(status_code=400, detail="缺少 editJobId 参数")
-    stored = _edit_task_store.get(editJobId)
+    stored = _edit_task_store.get(user.id, {}).get(editJobId)
     if not stored:
         raise HTTPException(status_code=404, detail="剪辑任务不存在")
     return EditTaskStatusResponse(**stored)
 
 
 @app.post("/api/video/manual-edit")
-async def video_manual_edit(req: ManualEditRequest):
+async def video_manual_edit(req: ManualEditRequest, request: Request):
     return await video_edit(EditVideoRequest(
         task_id="",
         video_url="",
@@ -768,17 +786,20 @@ async def video_manual_edit(req: ManualEditRequest):
         business_card_text=req.business_card_text,
         bgm_dir=req.bgm_dir,
         source="manual",
-    ))
+    ), request)
 
 
 @app.post("/api/video/cover")
-async def video_cover(req: CoverGenerateRequest):
+async def video_cover(req: CoverGenerateRequest, request: Request):
     """独立提交封面图生成任务"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     rh = _get_rh_client()
     try:
         image_urls = [req.image_url] if req.image_url else []
         if not image_urls:
-            stored = _task_store.get(req.task_id, {})
+            stored = _task_store.get(user.id, {}).get(req.task_id, {})
             img = stored.get("image_url", "")
             if img:
                 image_urls = [img]
@@ -795,8 +816,8 @@ async def video_cover(req: CoverGenerateRequest):
                 cover_url = r["url"]
                 break
 
-        if req.task_id and req.task_id in _task_store:
-            _task_store[req.task_id]["cover_url"] = cover_url
+        if req.task_id and user.id in _task_store and req.task_id in _task_store[user.id]:
+            _task_store[user.id][req.task_id]["cover_url"] = cover_url
 
         return {"cover_url": cover_url, "task_id": cover_task_id, "status": "success"}
     except RunningHubError as e:
@@ -807,8 +828,11 @@ async def video_cover(req: CoverGenerateRequest):
 
 
 @app.post("/api/video/clone-voice")
-async def video_clone_voice(req: VoiceCloneRequest):
+async def video_clone_voice(req: VoiceCloneRequest, request: Request):
     """仅音色克隆（不生成视频）"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     if not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
 
@@ -851,7 +875,8 @@ import json as _json, secrets, time as _time
 import hmac
 import html
 
-_share_store: dict[str, dict] = {}  # token → { videoUrl, title, description, tags, created_at }
+_share_store: dict[int, dict[str, dict]] = {}  # user_id → token → data
+_share_index: dict[str, int] = {}               # token → user_id (O(1) lookup for public GET)
 
 SHARE_TTL = 24 * 3600  # 24 hours
 SHARE_STORE_MAX = 500
@@ -874,16 +899,18 @@ def _make_share_token() -> str:
 def _cleanup_expired_share_tokens(now: float | None = None) -> int:
     t = now if now is not None else _time.time()
     expired = []
-    for token, data in list(_share_store.items()):
-        created_at = 0.0
-        try:
-            created_at = float((data or {}).get("created_at", 0) or 0)
-        except Exception:
+    for user_id, user_tokens in list(_share_store.items()):
+        for token, data in list(user_tokens.items()):
             created_at = 0.0
-        if t - created_at > SHARE_TTL:
-            expired.append(token)
-    for token in expired:
-        _share_store.pop(token, None)
+            try:
+                created_at = float((data or {}).get("created_at", 0) or 0)
+            except Exception:
+                created_at = 0.0
+            if t - created_at > SHARE_TTL:
+                expired.append((user_id, token))
+    for user_id, token in expired:
+        _share_store.get(user_id, {}).pop(token, None)
+        _share_index.pop(token, None)
     return len(expired)
 
 
@@ -891,12 +918,26 @@ def _enforce_share_store_capacity(max_size: int = SHARE_STORE_MAX) -> int:
     removed = 0
     if max_size <= 0:
         _share_store.clear()
+        _share_index.clear()
         return 0
-    while len(_share_store) > max_size:
-        oldest = next(iter(_share_store), None)
-        if oldest is None:
+    total = sum(len(tokens) for tokens in _share_store.values())
+    while total > max_size:
+        # Remove oldest token across all users
+        oldest_token = None
+        oldest_user = None
+        oldest_time = float("inf")
+        for uid, user_tokens in _share_store.items():
+            for token, data in user_tokens.items():
+                ct = float((data or {}).get("created_at", 0) or 0)
+                if ct < oldest_time:
+                    oldest_time = ct
+                    oldest_token = token
+                    oldest_user = uid
+        if oldest_token is None:
             break
-        _share_store.pop(oldest, None)
+        _share_store[oldest_user].pop(oldest_token, None)
+        _share_index.pop(oldest_token, None)
+        total -= 1
         removed += 1
     return removed
 
@@ -921,6 +962,9 @@ def _clean_share_tags(tags: list[str] | None) -> list[str]:
 @app.post("/api/share/generate")
 async def share_generate(req: ShareGenerateRequest, request: Request):
     """生成分享令牌和链接"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     video_url = (req.videoUrl or "").strip()
     title = (req.title or "").strip()
     description = str(req.description or "")
@@ -962,15 +1006,16 @@ async def share_generate(req: ShareGenerateRequest, request: Request):
     _enforce_share_store_capacity(SHARE_STORE_MAX)
 
     token = _make_share_token()
-    while token in _share_store:
+    while token in _share_index:
         token = _make_share_token()
-    _share_store[token] = {
+    _share_store.setdefault(user.id, {})[token] = {
         "videoUrl": video_url,
         "title": title,
         "description": description,
         "tags": _clean_share_tags(req.tags),
         "created_at": now,
     }
+    _share_index[token] = user.id
     _enforce_share_store_capacity(SHARE_STORE_MAX)
     base = base_from_env or SHARE_BASE_URL or str(request.base_url).rstrip("/")
     share_url = f"{base}/api/share/{token}"
@@ -979,14 +1024,18 @@ async def share_generate(req: ShareGenerateRequest, request: Request):
 
 @app.get("/api/share/{token}")
 async def share_redirect(token: str):
-    """分享落地页"""
+    """分享落地页（公开访问，无需登录）"""
     if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
         raise HTTPException(status_code=404, detail="Not Found")
-    data = _share_store.get(token)
+    user_id = _share_index.get(token)
+    if user_id is None:
+        raise HTTPException(status_code=410, detail="分享链接已过期或不存在")
+    data = _share_store.get(user_id, {}).get(token)
     if not data:
         raise HTTPException(status_code=410, detail="分享链接已过期或不存在")
     if _time.time() - data["created_at"] > SHARE_TTL:
-        del _share_store[token]
+        _share_store.get(user_id, {}).pop(token, None)
+        _share_index.pop(token, None)
         raise HTTPException(status_code=410, detail="分享链接已过期")
 
     title = html.escape(str(data.get("title", "") or ""))
@@ -1090,58 +1139,134 @@ import re as _re
 _EMAIL_RE = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
-def _public_base(request: Request) -> str:
-    """获取公网访问地址，用于邮件中链接拼接。"""
-    env_base = (os.getenv("APP_PUBLIC_BASE") or "").strip().rstrip("/")
-    if env_base:
-        return env_base
-    # fallback: 用 host header 推断
-    host = request.headers.get("host", "")
-    if host:
-        scheme = request.url.scheme
-        return f"{scheme}://{host}"
-    return ""
+def _ensure_core_schema():
+    """确保核心表（users / sessions / email_tokens / credit）存在。
+    幂等 — 与 scripts/init_credit_db.py 的 migrate() 逻辑一致。
+    """
+    import sqlite3 as _sqlite3
+    from lib.db import DB_PATH as _DB_PATH
+    os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+    conn = _sqlite3.connect(_DB_PATH)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_hash TEXT UNIQUE NOT NULL,
+                email_masked TEXT NOT NULL,
+                nickname TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                last_active_at INTEGER NOT NULL,
+                user_agent TEXT,
+                ip_first TEXT
+            );
+            CREATE TABLE IF NOT EXISTS credit_accounts (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id),
+                balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
+                total_recharged INTEGER NOT NULL DEFAULT 0,
+                total_bonus INTEGER NOT NULL DEFAULT 0,
+                total_consumed INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS credit_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                type TEXT NOT NULL,
+                delta INTEGER NOT NULL,
+                balance_after INTEGER NOT NULL,
+                ref_id TEXT,
+                note TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS email_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_hash TEXT NOT NULL,
+                email_masked TEXT NOT NULL DEFAULT '',
+                token_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                used_at INTEGER
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ledger_user_time ON credit_ledger(user_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email_hash, created_at)")
+        conn.commit()
+    finally:
+        conn.close()
 
 
-class SendLinkRequest(BaseModel):
+class SendCodeRequest(BaseModel):
     email: str
 
 
-@app.post("/api/auth/send-link")
-async def auth_send_link(req: SendLinkRequest, request: Request):
-    """发送登录链接。永远返回 ok=True，不告诉前端是限频了还是 email 错了。"""
-    email = (req.email or "").strip()
+@app.post("/api/auth/send-code")
+async def auth_send_code(req: SendCodeRequest, request: Request):
+    """发送登录验证码。返回统一 JSON 格式，永不抛 500。"""
+    email = (req.email or "").strip().lower()
+    # 格式校验不通过 → 静默返回（不泄露用户枚举信息）
     if not email or not _EMAIL_RE.match(email) or len(email) > 254:
-        return {"ok": True}
+        return {"success": True, "message": "code sent"}
+    try:
+        _ensure_core_schema()
+    except Exception:
+        return {"success": False, "message": "服务暂时不可用，请稍后再试"}
     email_h = hash_email(email)
     ok, _ = check_email(email_h)
     if not ok:
-        return {"ok": True}
+        return {"success": True, "message": "code sent"}
     ip = request.client.host if request.client else ""
     ok, _ = check_ip(ip)
     if not ok:
-        return {"ok": True}
-    token = generate_token()
-    save_email_token(email, token)
-    base = _public_base(request)
-    link = f"{base}/auth/verify?token={token}"
-    send_login_link(email, link)
-    return {"ok": True}
+        return {"success": True, "message": "code sent"}
+    code = generate_code()
+    try:
+        save_email_code(email, code)
+    except Exception:
+        return {"success": False, "message": "服务暂时不可用，请稍后再试"}
+    try:
+        send_login_code(email, code)
+    except Exception:
+        return {"success": False, "message": "服务暂时不可用，请稍后再试"}
+    return {"success": True, "message": "code sent"}
 
 
-class VerifyTokenRequest(BaseModel):
-    token: str
+class VerifyCodeRequest(BaseModel):
+    email: str
+    code: str
 
 
-@app.post("/api/auth/verify-token")
-async def auth_verify_token(req: VerifyTokenRequest, request: Request, response: Response):
-    """验证 token 并登录。"""
-    token = (req.token or "").strip()
-    if not token:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "token 不能为空"})
-    info = consume_email_token(token)
+@app.post("/api/auth/verify-code")
+async def auth_verify_code(req: VerifyCodeRequest, request: Request, response: Response):
+    """验证 6 位验证码并登录。"""
+    email = (req.email or "").strip().lower()
+    code = (req.code or "").strip()
+    if (
+        not email
+        or not code
+        or not _EMAIL_RE.match(email)
+        or len(email) > 254
+        or not re.fullmatch(r"\d{6}", code)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": "邮箱或验证码格式不正确"},
+        )
+    email_h = hash_email(email)
+    info = consume_email_code(code, email_h)
     if not info:
-        raise HTTPException(status_code=401, detail={"code": "INVALID_TOKEN", "message": "链接无效或已过期"})
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "INVALID_CODE", "message": "验证码错误或已过期"},
+        )
     user_id = get_or_create_user_by_hash(info["email_hash"], info["email_masked"])
     ua = request.headers.get("user-agent", "")
     ip = request.client.host if request.client else ""
@@ -1212,6 +1337,102 @@ async def credit_ledger(request: Request, limit: int = 20):
 
 
 # ════════════════════════════════════════════════════════════════════════
+#  积分扣费 / 退款 API
+# ════════════════════════════════════════════════════════════════════════
+
+class ConsumeRequest(BaseModel):
+    feature: str
+    quantity: int = 1
+
+
+@app.post("/api/credit/consume")
+async def credit_consume(req: ConsumeRequest, request: Request):
+    """原子扣费。返回 ref_id 用于退款对账。"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
+    # 限频(防前端循环点击刷爆)
+    ok, msg = check_consume(user.id)
+    if not ok:
+        raise HTTPException(status_code=429, detail={"code": "RATE_LIMITED", "message": msg})
+    # 计算费用
+    try:
+        cost = cost_for(req.feature, req.quantity)
+    except CreditError:
+        raise
+    # 扣分
+    ref_id = secrets.token_urlsafe(16)
+    try:
+        new_balance = consume(user.id, cost, ref_id=ref_id, note=f"feature={req.feature}")
+    except CreditError:
+        raise
+    return {
+        "ref_id": ref_id,
+        "cost": cost,
+        "feature": req.feature,
+        "quantity": req.quantity,
+        "new_balance": new_balance,
+    }
+
+
+class RefundRequest(BaseModel):
+    ref_id: str
+
+
+def _find_refundable_consume(user_id: int, ref_id: str):
+    """查 ledger 找匹配 ref_id 的可退 consume 记录。
+
+    返回 (amount, original_id) 或 None:
+    - amount: 该 consume 的 delta 绝对值
+    - original_id: ledger row id
+    """
+    from lib.db import connect as _connect
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - REFUND_WINDOW_S * 1000
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """SELECT id, delta FROM credit_ledger
+               WHERE user_id = ? AND ref_id = ? AND type = 'consume'
+                 AND created_at >= ?
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (user_id, ref_id, cutoff),
+        ).fetchone()
+        if not row:
+            return None
+        # 检查是否已退过(同 ref_id 已存在 type='refund')
+        already = conn.execute(
+            """SELECT 1 FROM credit_ledger
+               WHERE user_id = ? AND ref_id = ? AND type = 'refund' LIMIT 1""",
+            (user_id, ref_id),
+        ).fetchone()
+        if already:
+            return None
+        return abs(int(row["delta"])), int(row["id"])
+    finally:
+        conn.close()
+
+
+@app.post("/api/credit/refund")
+async def credit_refund(req: RefundRequest, request: Request):
+    """根据 ref_id 退款。仅退 5 分钟内、未退过的 consume 记录。"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
+    if not req.ref_id or len(req.ref_id) < 8:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "ref_id 无效"})
+    found = _find_refundable_consume(user.id, req.ref_id)
+    if not found:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "REFUND_NOT_FOUND", "message": "未找到可退款的扣分记录(可能已退过或超过 5 分钟)"},
+        )
+    amount, _orig_id = found
+    new_balance = refund(user.id, amount, ref_id=req.ref_id, note="业务失败退款")
+    return {"refunded": amount, "new_balance": new_balance}
+
+
+# ════════════════════════════════════════════════════════════════════════
 #  账号绑定 API
 # ════════════════════════════════════════════════════════════════════════
 
@@ -1234,9 +1455,17 @@ def _init_accounts_db():
             cookie_iv TEXT NOT NULL,
             login_status TEXT DEFAULT 'unknown',
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            user_id INTEGER
         )
     """)
+    # 迁移：已有 accounts 表但没有 user_id 列时自动添加
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()]
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE accounts ADD COLUMN user_id INTEGER")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -1247,8 +1476,11 @@ class AccountBindRequest(BaseModel):
 
 
 @app.post("/api/accounts/bind")
-async def account_bind(req: AccountBindRequest):
+async def account_bind(req: AccountBindRequest, request: Request):
     """绑定平台账号 Cookie"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     _init_accounts_db()
     platform = req.platform.strip()
     if platform not in ("douyin", "shipinhao", "xiaohongshu"):
@@ -1261,11 +1493,11 @@ async def account_bind(req: AccountBindRequest):
     account_id = str(_uuid.uuid4())[:8]
 
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    # Replace existing binding for this platform
-    conn.execute("DELETE FROM accounts WHERE platform = ?", (platform,))
+    # Replace existing binding for this platform + user
+    conn.execute("DELETE FROM accounts WHERE platform = ? AND user_id = ?", (platform, user.id))
     conn.execute(
-        "INSERT INTO accounts (id, platform, nickname, cookie_encrypted, cookie_iv, login_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (account_id, platform, "", encrypted, iv, "valid", now, now),
+        "INSERT INTO accounts (id, platform, nickname, cookie_encrypted, cookie_iv, login_status, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (account_id, platform, "", encrypted, iv, "valid", now, now, user.id),
     )
     conn.commit()
     conn.close()
@@ -1273,11 +1505,17 @@ async def account_bind(req: AccountBindRequest):
 
 
 @app.get("/api/accounts/list")
-async def accounts_list():
+async def accounts_list(request: Request):
     """列出已绑定的账号"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     _init_accounts_db()
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    rows = conn.execute("SELECT id, platform, nickname, login_status, created_at FROM accounts ORDER BY created_at DESC").fetchall()
+    rows = conn.execute(
+        "SELECT id, platform, nickname, login_status, created_at FROM accounts WHERE user_id = ? ORDER BY created_at DESC",
+        (user.id,),
+    ).fetchall()
     conn.close()
     return [
         {"id": r[0], "platform": r[1], "nickname": r[2], "login_status": r[3], "created_at": r[4]}
@@ -1286,11 +1524,14 @@ async def accounts_list():
 
 
 @app.delete("/api/accounts/bind")
-async def account_unbind(id: str = ""):
+async def account_unbind(request: Request, id: str = ""):
     """解绑平台账号"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     _init_accounts_db()
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    conn.execute("DELETE FROM accounts WHERE id = ?", (id,))
+    conn.execute("DELETE FROM accounts WHERE id = ? AND user_id = ?", (id, user.id))
     conn.commit()
     conn.close()
     return {"message": "已解绑"}

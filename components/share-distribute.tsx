@@ -6,7 +6,8 @@ import { Share2, Upload, Copy, Download, Check, Loader2, Link, QrCode, FileText,
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
 import { loadShareVideos, type ShareVideo } from "@/components/video-history"
-import { getFastapiBase } from "@/lib/fastapi-base"
+import { fetchFromFastapi } from "@/lib/fastapi-base"
+import { consumeCredit, refundCredit, creditErrorToToast, CREDIT_PRICING_UI } from "@/lib/credit-client"
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -72,17 +73,11 @@ export function ShareDistribute() {
 
   const handleAiFill = async () => {
     if (!selectedVideo || isAiFilling) return
-    const base = getFastapiBase()
-    if (!base) {
-      toast({ title: "缺少后端配置", description: "请配置 NEXT_PUBLIC_FASTAPI_URL", variant: "destructive" })
-      return
-    }
     setIsAiFilling(true)
     try {
       const prompt = `请根据以下视频信息，生成抖音视频的标题、文案描述和标签。视频文件名/主题：${selectedVideo.title}。请严格按以下JSON格式回复（不要其他内容）：\n{"title":"优化的标题(30字内)","description":"吸引人的视频文案","tags":["标签1","标签2","标签3"]}`
-      const res = await fetch(`${base}/api/agent/chat`, {
+      const res = await fetchFromFastapi("/api/agent/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       })
       const data = await readJsonSafely(res)
@@ -123,16 +118,22 @@ export function ShareDistribute() {
 
   const handleGenerate = async () => {
     if (!selectedVideo || !title.trim()) return
-    const base = getFastapiBase()
-    if (!base) {
-      toast({ title: "缺少后端配置", description: "请配置 NEXT_PUBLIC_FASTAPI_URL", variant: "destructive" })
+
+    // 预扣 10 积分(一键分发)。余额不足直接 toast,不发请求。
+    let refId: string | null = null
+    try {
+      const r = await consumeCredit("distribute")
+      refId = r.refId
+    } catch (e) {
+      const t = creditErrorToToast(e, "扣分失败")
+      toast({ title: t.title, description: t.description, variant: "destructive" })
       return
     }
+
     setIsGenerating(true)
     try {
-      const res = await fetch(`${base}/api/share/generate`, {
+      const res = await fetchFromFastapi("/api/share/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           videoUrl: selectedVideo.url,
           title: title.trim(),
@@ -142,6 +143,8 @@ export function ShareDistribute() {
       })
       const data = await readJsonSafely(res)
       if (!res.ok) {
+        // 5xx 服务端故障 → 退;4xx(用户输入)不退
+        if (res.status >= 500 && refId) void refundCredit(refId)
         const detail = typeof (data as { detail?: unknown } | null)?.detail === "string" ? (data as { detail: string }).detail : "生成失败"
         throw new Error(detail)
       }
@@ -158,6 +161,8 @@ export function ShareDistribute() {
       setQrDataUrl(qr)
       setShareUrl(shareUrlValue)
     } catch (e) {
+      // 网络/解析错误 → 退(5xx 已在内部处理)
+      if (refId) void refundCredit(refId)
       toast({ title: "生成失败", description: e instanceof Error ? e.message : "请重试", variant: "destructive" })
     } finally {
       setIsGenerating(false)
@@ -318,7 +323,13 @@ export function ShareDistribute() {
                   {isGenerating ? (
                     <><Loader2 className="h-5 w-5 animate-spin" />生成中…</>
                   ) : (
-                    <><QrCode className="h-5 w-5" />生成二维码</>
+                    <>
+                      <QrCode className="h-5 w-5" />
+                      生成二维码
+                      <span className="ml-1 text-[12px] font-normal opacity-75">
+                        · {CREDIT_PRICING_UI.distribute} 积分
+                      </span>
+                    </>
                   )}
                 </button>
               </div>

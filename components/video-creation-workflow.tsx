@@ -20,6 +20,7 @@ import {
   ChevronLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { consumeCredit, refundCredit, creditErrorToToast, CREDIT_PRICING_UI } from "@/lib/credit-client"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog,
@@ -790,6 +791,18 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       toast({ title: "缺少后端配置", description: "请配置 NEXT_PUBLIC_FASTAPI_URL", variant: "destructive" })
       return
     }
+
+    // 预扣 500 积分(视频创作)。余额不足弹 toast 后直接返回,不进入生成流程。
+    let refId: string | null = null
+    try {
+      const r = await consumeCredit("video_creation")
+      refId = r.refId
+    } catch (e) {
+      const t = creditErrorToToast(e, "扣分失败")
+      toast({ title: t.title, description: t.description, variant: "destructive" })
+      return
+    }
+
     const submittedAt = Date.now()
     updateTask({
       status: "scanning",
@@ -823,7 +836,11 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       })
 
       const data = await res.json()
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "提交任务失败")
+      if (!res.ok) {
+        // 5xx 服务端故障 → 退;4xx(用户输入)不退
+        if (res.status >= 500 && refId) void refundCredit(refId)
+        throw new Error(typeof data.detail === "string" ? data.detail : "提交任务失败")
+      }
 
       const tid = data.task_id || data.taskId
       if (!tid) throw new Error("未返回 taskId")
@@ -841,6 +858,8 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       // Start background poll using refs — survives re-render when navigating away
       startBackgroundPoll(tid)
     } catch (e) {
+      // 提交阶段(还没进入轮询)任何失败都退,用户没拿到任务 id 就该退
+      if (refId) void refundCredit(refId)
       failTask(e instanceof Error ? e.message : "生成过程出错，请重新点击生成")
     }
   }, [audioBase64, canGenerate, failTask, gender, imageBase64, isProcessing, script, startBackgroundPoll, updateTask])
@@ -1257,7 +1276,9 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
                   <>
                     <Play className="h-5 w-5" />
                     一键生成口播视频
-                    <span className="ml-1 text-[12px] font-normal opacity-75">· 约 20-50 分钟</span>
+                    <span className="ml-1 text-[12px] font-normal opacity-75">
+                      · {CREDIT_PRICING_UI.video_creation} 积分 · 约 20-50 分钟
+                    </span>
                   </>
                 )}
               </Button>
