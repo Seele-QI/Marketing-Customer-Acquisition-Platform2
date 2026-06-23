@@ -1,0 +1,37 @@
+# v0 sandbox internal files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
+next.user-config.*
+
+# Environment variables
+.env
+.env*.local
+
+# Common ignores
+node_modules
+.next/
+.tmp/
+.pytest_cache/
+.turbo/
+.cache/
+.pnpm-store/
+.DS_Store
+__pycache__/
+tests/__pycache__/
+*.pyc
+*.log
+tsconfig.tsbuildinfo
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+
+# Local backup files
+.git.backup-*
+node_modules/.cache
+public/agent-*

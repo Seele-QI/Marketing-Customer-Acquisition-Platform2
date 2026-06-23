@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+httpx
+pydantic
+python-dotenv
+cryptography
+qrcode
+pillow
+resend>=2.0.0
+yt-dlp

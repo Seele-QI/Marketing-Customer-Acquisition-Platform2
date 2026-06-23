@@ -1,0 +1,60 @@
+# ────────────────────────────────────────────────────────────────
+#  docker compose up -d  一键启动全栈服务
+#  - web（Next.js）: localhost:3000
+#  - api（FastAPI）: localhost:8000
+#  生产环境建议前面加 nginx/Caddy 反代 + HTTPS
+# ────────────────────────────────────────────────────────────────
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_FASTAPI_URL=http://api:8000
+      - NODE_ENV=production
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - zhongtai_data:/data
+    environment:
+      # ── 固定配置 ──
+      - VIDEO_BGM_DIR=/app/assets/bgm
+      - DATA_DIR=/data
+      - CREDIT_DB_OVERRIDE=/data/accounts.db
+      - PYTHONUNBUFFERED=1
+      - CORS_ALLOW_ORIGINS=*
+      # ── 以下从 .env 文件读取 ──
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - RUNNINGHUB_API_KEY=${RUNNINGHUB_API_KEY}
+      - ALIYUN_ACCESS_KEY_ID=${ALIYUN_ACCESS_KEY_ID:-}
+      - ALIYUN_ACCESS_KEY_SECRET=${ALIYUN_ACCESS_KEY_SECRET:-}
+      - ALIYUN_ASR_APP_KEY=${ALIYUN_ASR_APP_KEY:-}
+      - EMAIL_HASH_SALT=${EMAIL_HASH_SALT}
+      - CREDIT_REGISTER_BONUS=${CREDIT_REGISTER_BONUS:-100}
+      - CREDIT_SESSION_TTL_DAYS=${CREDIT_SESSION_TTL_DAYS:-30}
+      - CREDIT_EMAIL_TOKEN_TTL_SECONDS=${CREDIT_EMAIL_TOKEN_TTL_SECONDS:-900}
+      - CREDIT_ADMIN_ACCESS_KEY=${CREDIT_ADMIN_ACCESS_KEY}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - RESEND_FROM=${RESEND_FROM:-AgentHub <onboarding@resend.dev>}
+      - APP_PUBLIC_BASE=${APP_PUBLIC_BASE:-http://localhost:3000}
+      - DEV_EMAIL_MODE=${DEV_EMAIL_MODE:-1}
+      - TIANAPI_KEY=${TIANAPI_KEY:-}
+      - ARK_API_KEY=${ARK_API_KEY:-}
+      - ARK_BASE_URL=${ARK_BASE_URL:-}
+      - ARK_ENDPOINT_ID=${ARK_ENDPOINT_ID:-}
+      - ARK_IMAGE_ENDPOINT_ID=${ARK_IMAGE_ENDPOINT_ID:-}
+    restart: unless-stopped
+
+volumes:
+  zhongtai_data:
+    driver: local

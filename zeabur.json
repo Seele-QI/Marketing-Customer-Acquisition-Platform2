@@ -1,0 +1,34 @@
+{
+  "services": [
+    {
+      "name": "web",
+      "build": {
+        "dockerfile": "Dockerfile.web",
+        "context": "."
+      },
+      "port": 3000,
+      "env": {
+        "NEXT_PUBLIC_FASTAPI_URL": "http://api:8000",
+        "NODE_ENV": "production",
+        "NEXT_PUBLIC_OPEN_SOURCE_REPO_URL": "https://github.com/your-org/your-repo"
+      }
+    },
+    {
+      "name": "api",
+      "build": {
+        "dockerfile": "Dockerfile.api",
+        "context": "."
+      },
+      "port": 8000,
+      "volumes": [
+        { "name": "data", "path": "/data" }
+      ],
+      "env": {
+        "VIDEO_BGM_DIR": "/app/assets/bgm",
+        "DATA_DIR": "/data",
+        "CREDIT_DB_OVERRIDE": "/data/accounts.db",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  ]
+}
