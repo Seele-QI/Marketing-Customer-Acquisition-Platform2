@@ -35,3 +35,10 @@ tsconfig.tsbuildinfo
 .git.backup-*
 node_modules/.cache
 public/agent-*
+
+# Video generation runtime cache (volumes, ffmpeg output, intermediate files)
+public/video-cache/
+
+# Local ffmpeg binaries (large files, deploy separately)
+tools/ffmpeg/bin/
+tools/ffmpeg/ffmpeg.zip
