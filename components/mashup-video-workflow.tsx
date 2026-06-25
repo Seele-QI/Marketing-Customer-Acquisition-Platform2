@@ -446,7 +446,7 @@ function StepVideoResult({ result, error }: { result: MashupVideoResponse | null
           您的浏览器不支持视频播放
         </video>
       </div>
-      <a href={result.video_url} download target="_blank" rel="noopener noreferrer">
+      <a href={result.video_url} download={`video-${result.task_id || "mashup"}.mp4`} target="_blank" rel="noopener noreferrer">
         <Button variant="outline" size="lg" className="rounded-full">
           <Download className="mr-2 h-4 w-4" />
           下载视频

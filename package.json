@@ -2,6 +2,7 @@
   "name": "my-project",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/dist-electron/main.js",
   "scripts": {
     "postinstall": "node scripts/patch-next-themes.mjs",
     "dev": "next dev",
@@ -11,7 +12,15 @@
     "clean:cache": "node scripts/clean-cache.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "electron:dev": "node scripts/dev-electron.mjs",
+    "electron:build": "tsc -p electron/tsconfig.json",
+    "electron:watch": "tsc -p electron/tsconfig.json --watch",
+    "resources:build": "node scripts/build-python-bundle.mjs && node scripts/build-next-standalone.mjs && node scripts/extract-ffmpeg.mjs",
+    "resources:clean": "node scripts/clean-resources.mjs",
+    "preflight": "node scripts/preflight.mjs",
+    "dist": "pnpm electron:build && electron-builder",
+    "dist:win": "pnpm electron:build && electron-builder --win"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -52,6 +61,7 @@
     "clsx": "^2.1.1",
     "cmdk": "1.1.1",
     "date-fns": "4.1.0",
+    "electron-updater": "^6.8.9",
     "embla-carousel-react": "8.6.0",
     "input-otp": "1.4.2",
     "lucide-react": "^0.564.0",
@@ -79,6 +89,10 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^9.2.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "electron-log": "^5.4.4",
+    "node-machine-id": "^1.1.12",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
     "tw-animate-css": "1.3.3",

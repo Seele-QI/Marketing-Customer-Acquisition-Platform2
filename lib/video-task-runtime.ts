@@ -15,6 +15,7 @@ export type TaskHealth = {
   legacyProcessingTooLong: boolean
   waitingTaskIdTooLong: boolean
   hardTimeout: boolean
+  editHardTimeout: boolean
   tooManyPollErrors: boolean
   shouldFail: boolean
 }
@@ -25,6 +26,7 @@ export const TASK_TIMEOUT_MS = 60 * 60_000
 export const RESUME_POLL_GRACE_MS = 30_000   // 30s（切屏回来给足够时间恢复轮询）
 export const WAIT_TASK_ID_MS = 12 * 60_000
 export const LEGACY_PROCESSING_GRACE_MS = 30_000
+export const EDIT_POLL_TIMEOUT_MS = 30 * 60_000  // 30 min（剪辑最大超时）
 
 const DEFAULT_STEP_STATUSES: Record<WorkflowStepId, WorkflowStepStatus> = {
   1: "active",
@@ -97,13 +99,22 @@ export function getTaskHealth(state: VideoTaskState, now = Date.now()): TaskHeal
     !isInResumeGrace &&
     state.pollErrorCount >= POLL_ERROR_LIMIT
 
+  const editHardTimeout =
+    state.currentStage === "editing" &&
+    state.isEditing &&
+    !!state.editJobId &&
+    state.editPollStartedAt > 0 &&
+    !isInResumeGrace &&
+    now - state.editPollStartedAt > EDIT_POLL_TIMEOUT_MS
+
   return {
     noStatusTooLong,
     legacyProcessingTooLong,
     waitingTaskIdTooLong,
     hardTimeout,
+    editHardTimeout,
     tooManyPollErrors,
-    shouldFail: noStatusTooLong || legacyProcessingTooLong || waitingTaskIdTooLong || hardTimeout || tooManyPollErrors,
+    shouldFail: noStatusTooLong || legacyProcessingTooLong || waitingTaskIdTooLong || hardTimeout || editHardTimeout || tooManyPollErrors,
   }
 }
 
@@ -112,6 +123,10 @@ export function getTaskHealthMessage(state: VideoTaskState, now = Date.now()): s
 
   if (health.hardTimeout) {
     return "任务处理超时，请稍后重试或重新提交。"
+  }
+
+  if (health.editHardTimeout) {
+    return "剪辑任务处理超时（超过 30 分钟），请重试。"
   }
 
   if (health.noStatusTooLong) {
@@ -154,10 +169,11 @@ export function deriveWorkflowUi(state: VideoTaskState, now = Date.now()): Workf
   }
 
   if (state.currentStage === "editing") {
+    const isEditingActive = state.isEditing && !!state.editJobId
     return {
       activeStep: 4,
       stepStatuses: { 1: "done", 2: "done", 3: "done", 4: "active" },
-      shouldResumePolling: false,
+      shouldResumePolling: isEditingActive && !health.shouldFail,
     }
   }
 

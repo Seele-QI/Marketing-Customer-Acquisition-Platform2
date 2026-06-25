@@ -38,8 +38,15 @@ from lib.video_postprocess import (
 # ── ffmpeg / ffprobe 路径 ──────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOCAL_FFMPEG_BIN = _PROJECT_ROOT / "tools" / "ffmpeg" / "bin"
-_FFMPEG_EXE = str(_LOCAL_FFMPEG_BIN / "ffmpeg.exe") if (_LOCAL_FFMPEG_BIN / "ffmpeg.exe").exists() else "ffmpeg"
-_FFPROBE_EXE = str(_LOCAL_FFMPEG_BIN / "ffprobe.exe") if (_LOCAL_FFMPEG_BIN / "ffprobe.exe").exists() else "ffprobe"
+# 环境变量优先：桌面打包场景下，Electron 主进程通过 env 注入绝对路径，
+# 这样不需要在每个运行机器上把 ffmpeg 复制到 tools/ffmpeg/bin/。
+# 见 docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md
+_FFMPEG_EXE = os.environ.get("FFMPEG_EXE") or (
+    str(_LOCAL_FFMPEG_BIN / "ffmpeg.exe") if (_LOCAL_FFMPEG_BIN / "ffmpeg.exe").exists() else "ffmpeg"
+)
+_FFPROBE_EXE = os.environ.get("FFPROBE_EXE") or (
+    str(_LOCAL_FFMPEG_BIN / "ffprobe.exe") if (_LOCAL_FFMPEG_BIN / "ffprobe.exe").exists() else "ffprobe"
+)
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 _XFADE_TRANSITIONS = ["slideleft", "slideright", "fade"]

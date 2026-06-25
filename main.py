@@ -10,7 +10,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ from lib.video_postprocess import render_video_with_template
 from lib.image_video_postprocess import image_video_render
 from lib.mashup_video_postprocess import mashup_video_render
 
+load_dotenv()
 from lib.auth import (
     SESSION_COOKIE, consume_email_token, create_password_user, create_session, destroy_session,
     get_current_user, get_or_create_user_by_hash, get_user_identity, hash_email, mask_email,
@@ -66,7 +67,7 @@ MANUAL_UPLOAD_ROOT = os.path.join(_DATA_DIR, "video-cache", "manual-uploads")
 os.makedirs(POST_PROCESS_ROOT, exist_ok=True)
 os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
 os.makedirs(MANUAL_UPLOAD_ROOT, exist_ok=True)
-app.mount("/static/video-postprocess", StaticFiles(directory=POST_PROCESS_ROOT), name="video-postprocess")
+app.mount("/static/video-postprocess", StaticFiles(directory=POST_PROCESS_ROOT, html=False), name="video-postprocess")
 
 
 def _require_admin_key(request: Request) -> None:
@@ -165,6 +166,58 @@ class TaskStatusResponse(BaseModel):
     post_error: str = ""
     error: str = ""
     estimated_minutes: int = 30
+    stage: str = ""
+    stage_label: str = ""
+    stage_history: list[str] = []
+    stage_updated_at: float = 0
+
+
+# —— 视频生成管线 stage 常量 ——
+STAGE_UPLOADING_IMAGE = "uploading_image"
+STAGE_UPLOADING_AUDIO = "uploading_audio"
+STAGE_SUBMITTING_CLONE = "submitting_audio_clone"
+STAGE_WAITING_CLONE = "waiting_audio_clone"
+STAGE_SUBMITTING_VIDEO = "submitting_video"
+STAGE_QUEUED = "queued"
+STAGE_POLLING_VIDEO = "polling_video"
+STAGE_POST_PROCESSING = "post_processing"
+STAGE_COVER_GENERATING = "cover_generating"
+STAGE_COMPLETED = "completed"
+STAGE_FAILED = "failed"
+STAGE_CANCELLED = "cancelled"
+
+STAGE_LABELS = {
+    STAGE_UPLOADING_IMAGE: "上传数字人形象图",
+    STAGE_UPLOADING_AUDIO: "上传音色样本",
+    STAGE_SUBMITTING_CLONE: "提交音频克隆任务",
+    STAGE_WAITING_CLONE: "等待音频克隆完成",
+    STAGE_SUBMITTING_VIDEO: "提交视频生成任务",
+    STAGE_QUEUED: "任务已入队",
+    STAGE_POLLING_VIDEO: "等待视频生成完成",
+    STAGE_POST_PROCESSING: "后期剪辑处理中",
+    STAGE_COVER_GENERATING: "生成封面图中",
+    STAGE_COMPLETED: "全部完成",
+    STAGE_FAILED: "失败",
+    STAGE_CANCELLED: "已停止",
+}
+
+
+def _set_stage(task_id: str, stage: str, **extras) -> None:
+    """原子更新任务 sub-step。"""
+    if not task_id:
+        return
+    stored = _task_store.get(task_id) or {}
+    history = list(stored.get("stage_history") or [])
+    if not history or history[-1] != stage:
+        history.append(stage)
+    _task_store[task_id] = {
+        **stored,
+        "stage": stage,
+        "stage_label": STAGE_LABELS.get(stage, stage),
+        "stage_history": history,
+        "stage_updated_at": time.time(),
+        **extras,
+    }
 
 
 class CoverGenerateRequest(BaseModel):
@@ -183,6 +236,7 @@ class ManualEditRequest(BaseModel):
     business_card_text: str = ""
     bgm_dir: str = ""
     bgm_volume: float = 0.32
+    slide_images_base64: list[str] = []
 
 
 class EditVideoRequest(BaseModel):
@@ -197,6 +251,7 @@ class EditVideoRequest(BaseModel):
     bgm_dir: str = ""
     bgm_volume: float = 0.32
     source: str = "generated"
+    slide_images_base64: list[str] = []  # 图片素材 base64 列表，用于视频下方轮播
 
 
 class EditTaskStatusResponse(BaseModel):
@@ -635,32 +690,29 @@ async def _run_cover_generation(task_id: str, *, image_url: str, gender: str) ->
         raise HTTPException(status_code=400, detail="缺少 image_url，无法生成封面")
 
     rh = _get_rh_client()
-    cover_prompt = build_cover_prompt(gender)
+    cover_script = (stored.get("script") or "").strip()
+    cover_prompt = build_cover_prompt(gender, cover_script)
+    _set_stage(task_id, STAGE_COVER_GENERATING, cover_status="running", cover_error="")
+
     cover_task_id = await rh.submit_cover_image(
         prompt=cover_prompt,
         image_urls=[image_url],
         aspect_ratio="3:4",
         resolution="1k",
     )
-    _task_store[task_id] = {
-        **_task_store.get(task_id, {}),
-        "cover_status": "running",
-        "cover_error": "",
-        "cover_task_id": cover_task_id,
-    }
+    _set_stage(task_id, STAGE_COVER_GENERATING, cover_status="running", cover_error="", cover_task_id=cover_task_id)
 
-    cover_result = await rh.wait_for_completion(cover_task_id, max_wait=300)
+    print(f"[cover/{task_id}] Polling cover task {cover_task_id} (max 10 min)...")
+    cover_result = await rh.wait_for_completion(cover_task_id, max_wait=600)
     cover_url = _pick_first_result_url(cover_result)
     if not cover_url:
         raise RunningHubError("封面图生成完成但未返回结果 URL")
 
-    _task_store[task_id] = {
-        **_task_store.get(task_id, {}),
-        "cover_url": cover_url,
-        "cover_status": "success",
-        "cover_error": "",
-        "cover_task_id": cover_task_id,
-    }
+    print(f"[cover/{task_id}] Cover done: {cover_url[:80]}")
+    _set_stage(
+        task_id, STAGE_COMPLETED,
+        cover_url=cover_url, cover_status="success", cover_error="", cover_task_id=cover_task_id,
+    )
     return cover_url
 
 
@@ -1040,6 +1092,7 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
     os.makedirs(output_dir, exist_ok=True)
     cache_input_path = ""
     should_cleanup_cache = False
+    slide_temp_paths: list[str] = []
     try:
         _edit_task_store[edit_job_id] = {
             **stored,
@@ -1121,6 +1174,25 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
         # ── 端到端单次 render ──
         business_card_text = req.business_card_text if req.business_card_text.strip() else ""
         bgm_volume = max(0.0, min(float(req.bgm_volume), 1.0))
+
+        # ── 图片幻灯片预处理：base64 → 临时 PNG 文件 ──
+        if req.slide_images_base64:
+            for idx, img_b64 in enumerate(req.slide_images_base64):
+                if not img_b64.strip():
+                    continue
+                try:
+                    slide_temp_paths.append(
+                        await _base64_to_temp_file(img_b64, f"_slide{idx}.png")
+                    )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logging.warning(f"[edit:{edit_job_id}] 第 {idx+1} 张幻灯片图片解码失败: {e}")
+            if slide_temp_paths:
+                _edit_task_store[edit_job_id]["progress"] = min(
+                    _edit_task_store[edit_job_id].get("progress", 85) + 3, 95
+                )
+
         result = await asyncio.to_thread(
             render_video_with_template,
             task_id=task_id,
@@ -1131,11 +1203,13 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
             bgm_volume=bgm_volume,
             input_video_path=input_path,
             subtitle_file_path=asr_subtitle_path or req.subtitle_file_path,
+            slide_image_paths=slide_temp_paths or None,
         )
 
         if result.ok and result.output_path:
             rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            public_url = f"/static/video-postprocess/{rel_path}"
+            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
+            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
             _edit_task_store[edit_job_id] = {
                 **_edit_task_store.get(edit_job_id, {}),
                 "status": "success",
@@ -1161,10 +1235,11 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
         }
     finally:
         _cleanup_generated_video_cache(cache_input_path, should_cleanup_cache)
+        _cleanup_temp(*slide_temp_paths)
 
 
 @app.post("/api/video/edit", response_model=EditTaskStatusResponse)
-async def video_edit(req: EditVideoRequest):
+async def video_edit(req: EditVideoRequest, request: Request):
     # subtitle_text 可选：为空时后端会自动执行 ASR 语音识别生成字幕
     # 但至少需要提供一个视频来源
     if not req.video_url.strip() and not req.video_base64.strip() and not req.upload_id.strip():
@@ -1210,6 +1285,7 @@ async def video_manual_edit(req: ManualEditRequest):
         bgm_dir=req.bgm_dir,
         bgm_volume=req.bgm_volume,
         source="manual",
+        slide_images_base64=req.slide_images_base64,
     ))
 
 
@@ -1351,9 +1427,28 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
         )
 
         if result.ok and result.output_path:
+            # 产物文件存在性 + 大小校验（防止 ffmpeg 上报成功但产物异常导致返回 .htm）
+            if not os.path.isfile(result.output_path):
+                err_msg = f"ffmpeg 上报成功但产物文件不存在: {result.output_path}"
+                print(f"[image-to-video/{task_id}] {err_msg}", flush=True)
+                return ImageToVideoResponse(
+                    task_id=task_id,
+                    status="failed",
+                    error=err_msg,
+                )
+            file_size = os.path.getsize(result.output_path)
+            if file_size < 1024:
+                err_msg = f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏: {result.output_path}"
+                print(f"[image-to-video/{task_id}] {err_msg}", flush=True)
+                return ImageToVideoResponse(
+                    task_id=task_id,
+                    status="failed",
+                    error=err_msg,
+                )
             rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            public_url = f"/static/video-postprocess/{rel_path}"
-            print(f"[image-to-video/{task_id}] Done → {public_url}")
+            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
+            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
+            print(f"[image-to-video/{task_id}] Done → {public_url} ({file_size} bytes)")
             return ImageToVideoResponse(
                 task_id=task_id,
                 status="success",
@@ -1451,9 +1546,28 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
         )
 
         if result.ok and result.output_path:
+            # 产物文件存在性 + 大小校验（防止 ffmpeg 上报成功但产物异常导致返回 .htm）
+            if not os.path.isfile(result.output_path):
+                err_msg = f"ffmpeg 上报成功但产物文件不存在: {result.output_path}"
+                print(f"[mashup/{task_id}] {err_msg}", flush=True)
+                return MashupVideoResponse(
+                    task_id=task_id,
+                    status="failed",
+                    error=err_msg,
+                )
+            file_size = os.path.getsize(result.output_path)
+            if file_size < 1024:
+                err_msg = f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏: {result.output_path}"
+                print(f"[mashup/{task_id}] {err_msg}", flush=True)
+                return MashupVideoResponse(
+                    task_id=task_id,
+                    status="failed",
+                    error=err_msg,
+                )
             rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            public_url = f"/static/video-postprocess/{rel_path}"
-            print(f"[mashup/{task_id}] Done → {public_url}")
+            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
+            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
+            print(f"[mashup/{task_id}] Done → {public_url} ({file_size} bytes)")
             return MashupVideoResponse(
                 task_id=task_id,
                 status="success",
@@ -2283,3 +2397,308 @@ except ImportError:
     _DOUYIN_ENABLED = False
 
 from lib.crypto_utils import encrypt_cookie
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  中央激活服务（Electron 桌面打包）
+#  详见 docs/superpowers/specs/2026-06-24-central-activation-design.md
+# ════════════════════════════════════════════════════════════════════════
+
+import json as _json
+import secrets
+import string as _string
+import sqlite3 as _sqlite3
+
+_CODE_ALPHABET = _string.ascii_uppercase + _string.digits
+
+
+def _gen_activation_code() -> str:
+    """生成 ZT-XXXX-XXXX-XXXX 格式激活码"""
+    raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(12))
+    return f"ZT-{raw[0:4]}-{raw[4:8]}-{raw[8:12]}"
+
+
+def _init_central_db():
+    """初始化中央激活服务 DB 表（幂等）"""
+    os.makedirs(os.path.dirname(_ACCOUNTS_DB), exist_ok=True)
+    conn = _sqlite3.connect(_ACCOUNTS_DB)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS central_activation_codes (
+            code       TEXT PRIMARY KEY,
+            plan       TEXT NOT NULL DEFAULT 'standard',
+            machine_limit INTEGER NOT NULL DEFAULT 1,
+            expires_at REAL NOT NULL,
+            status     TEXT NOT NULL DEFAULT 'active',
+            note       TEXT DEFAULT '',
+            created_at REAL NOT NULL,
+            created_by TEXT DEFAULT 'admin'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS central_activations (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            code           TEXT NOT NULL,
+            machine_id     TEXT NOT NULL,
+            client_version TEXT,
+            first_seen_at  REAL NOT NULL,
+            last_seen_at   REAL NOT NULL,
+            UNIQUE(code, machine_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_central_activations_machine "
+        "ON central_activations(machine_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_central_activations_code "
+        "ON central_activations(code)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _load_key_pool() -> dict:
+    """从环境变量 CENTRAL_KEY_POOL_JSON 读取密钥池"""
+    raw = (os.getenv("CENTRAL_KEY_POOL_JSON") or "").strip()
+    if not raw:
+        return {}
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError:
+        return {}
+
+
+# 模块加载时初始化 DB
+try:
+    _init_central_db()
+except Exception:
+    pass
+
+
+# ── 请求/响应模型 ──────────────────────────────────────────────────────
+
+
+class ActivateRequest(BaseModel):
+    machine_id: str
+    code: str
+    client_version: str = "0.1.0"
+
+
+class ActivateResponse(BaseModel):
+    ok: bool = True
+    plan: str = "standard"
+    expires_at: float = 0.0
+    keys: dict = {}
+    server_time: float = 0.0
+
+
+class HeartbeatRequest(BaseModel):
+    machine_id: str
+    code: str
+    client_version: str = "0.1.0"
+    ts: float = 0.0
+
+
+class HeartbeatResponse(BaseModel):
+    ok: bool = True
+    server_time: float = 0.0
+    revoked: bool = False
+
+
+class ManifestResponse(BaseModel):
+    latest_version: str = "0.1.0"
+    min_supported_version: str = "0.0.1"
+    update_url: str = ""
+    force_update: bool = False
+    release_notes: str = ""
+
+
+class CreateCodesRequest(BaseModel):
+    plan: str = "standard"
+    machine_limit: int = 1
+    expires_in_days: int = 365
+    count: int = 1
+    note: str = ""
+
+
+# ── 路由 ────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/central/activate")
+def central_activate(req: ActivateRequest):
+    """激活码校验 + 密钥下发"""
+    now = time.time()
+    conn = _sqlite3.connect(_ACCOUNTS_DB)
+    try:
+        row = conn.execute(
+            "SELECT plan, machine_limit, expires_at, status "
+            "FROM central_activation_codes WHERE code=?",
+            (req.code,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(400, {"code": "CODE_NOT_FOUND", "message": "激活码无效"})
+
+        plan, machine_limit, expires_at, status = row
+
+        if status == "disabled":
+            raise HTTPException(403, {"code": "CODE_DISABLED", "message": "激活码已停用"})
+        if time.time() > expires_at:
+            raise HTTPException(400, {"code": "CODE_EXPIRED", "message": "激活码已过期"})
+
+        # 检查机器数
+        used = conn.execute(
+            "SELECT COUNT(DISTINCT machine_id) FROM central_activations WHERE code=?",
+            (req.code,),
+        ).fetchone()[0]
+        already = conn.execute(
+            "SELECT 1 FROM central_activations WHERE code=? AND machine_id=?",
+            (req.code, req.machine_id),
+        ).fetchone()
+
+        if used >= machine_limit and not already:
+            raise HTTPException(403, {"code": "MACHINE_LIMIT_REACHED", "message": "已达激活机器数上限"})
+
+        # upsert 激活记录
+        if already:
+            conn.execute(
+                "UPDATE central_activations SET last_seen_at=?, client_version=? WHERE code=? AND machine_id=?",
+                (now, req.client_version, req.code, req.machine_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO central_activations (code, machine_id, client_version, first_seen_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (req.code, req.machine_id, req.client_version, now, now),
+            )
+        conn.commit()
+
+        # 密钥下发
+        pool = _load_key_pool()
+        keys = pool.get(plan, pool.get("standard", {}))
+
+        return ActivateResponse(
+            plan=plan,
+            expires_at=expires_at,
+            keys=keys,
+            server_time=now,
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/central/manifest")
+def central_manifest(client_version: str = "0.0.0"):
+    """版本检查"""
+    latest = (os.getenv("CENTRAL_LATEST_VERSION") or "0.1.0").strip()
+    min_ver = (os.getenv("CENTRAL_FORCE_UPDATE_BELOW") or "0.0.1").strip()
+    update_url = (os.getenv("CENTRAL_UPDATE_URL") or "").strip()
+
+    def _ver_tuple(v: str) -> tuple:
+        try:
+            return tuple(int(x) for x in v.split("."))
+        except Exception:
+            return (0,)
+
+    force = _ver_tuple(client_version) < _ver_tuple(min_ver)
+
+    return ManifestResponse(
+        latest_version=latest,
+        min_supported_version=min_ver,
+        update_url=update_url,
+        force_update=force,
+    )
+
+
+@app.post("/api/central/heartbeat")
+def central_heartbeat(req: HeartbeatRequest):
+    """心跳 + 注销检测"""
+    now = time.time()
+    conn = _sqlite3.connect(_ACCOUNTS_DB)
+    try:
+        # 检查该激活码是否被禁用
+        status_row = conn.execute(
+            "SELECT status FROM central_activation_codes WHERE code=?", (req.code,)
+        ).fetchone()
+        revoked = not status_row or status_row[0] == "disabled"
+
+        # 更新 last_seen_at
+        if not revoked:
+            conn.execute(
+                "UPDATE central_activations SET last_seen_at=?, client_version=? WHERE code=? AND machine_id=?",
+                (now, req.client_version, req.code, req.machine_id),
+            )
+            conn.commit()
+
+        return HeartbeatResponse(server_time=now, revoked=revoked)
+    finally:
+        conn.close()
+
+
+@app.get("/api/central/admin/codes")
+def central_admin_list_codes(request: Request):
+    """管理后台 - 列激活码"""
+    _require_admin_key(request)
+    conn = _sqlite3.connect(_ACCOUNTS_DB)
+    try:
+        rows = conn.execute("""
+            SELECT c.code, c.plan, c.machine_limit, c.expires_at, c.status,
+                   COUNT(a.id) AS used_count, c.created_at, c.note
+            FROM central_activation_codes c
+            LEFT JOIN central_activations a ON a.code = c.code
+            GROUP BY c.code
+            ORDER BY c.created_at DESC
+        """).fetchall()
+        return [
+            {
+                "code": r[0],
+                "plan": r[1],
+                "machine_limit": r[2],
+                "expires_at": r[3],
+                "status": r[4],
+                "used_count": r[5],
+                "created_at": r[6],
+                "note": r[7] or "",
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+@app.post("/api/central/admin/codes")
+def central_admin_create_codes(req: CreateCodesRequest, request: Request):
+    """管理后台 - 创建激活码"""
+    _require_admin_key(request)
+    now = time.time()
+    expires = now + req.expires_in_days * 86400
+
+    conn = _sqlite3.connect(_ACCOUNTS_DB)
+    try:
+        created = []
+        for _ in range(req.count):
+            code = _gen_activation_code()
+            conn.execute(
+                "INSERT INTO central_activation_codes (code, plan, machine_limit, expires_at, status, note, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'active', ?, ?, 'admin')",
+                (code, req.plan, req.machine_limit, expires, req.note, now),
+            )
+            created.append(code)
+        conn.commit()
+        return {"created": created}
+    finally:
+        conn.close()
+
+
+# ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    path = str(request.url.path)
+    # /api/* 路径返回 JSON；/static/* 由 StaticFiles 自己处理
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=404, content={"detail": "not_found", "path": path})
+    # 其他路径：抛出原始 404（由 FastAPI 默认处理）
+    from fastapi import HTTPException as _HTTPException
+    raise _HTTPException(status_code=404, detail="Not Found")

@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { useState } from "react"
 import { cn } from "@/lib/utils"
@@ -13,6 +13,7 @@ import { VideoCreationWorkflow } from "@/components/video-creation-workflow"
 import { ImageVideoWorkflow } from "@/components/image-video-workflow"
 import { MashupVideoWorkflow } from "@/components/mashup-video-workflow"
 import { VideoHistory } from "@/components/video-history"
+import PromoVideoWorkflow from "@/components/promo-video-workflow"
 import { ShareDistribute } from "@/components/share-distribute"
 import { BatchEdit } from "@/components/batch-edit"
 import { AccountBinding } from "@/components/account-binding"
@@ -100,6 +101,7 @@ const videoSubMenus = [
   "图文视频",
   "视频混剪",
   "批量混剪",
+  "宣传视频",
   "历史记录",
 ] as const
 
@@ -189,6 +191,11 @@ function ContentArea({
   // 批量混剪
   if (activeView === "批量混剪") {
     return <BatchEdit />
+  }
+
+  // 宣传视频
+  if (activeView === "宣传视频") {
+    return <PromoVideoWorkflow />
   }
 
   // 一键分发

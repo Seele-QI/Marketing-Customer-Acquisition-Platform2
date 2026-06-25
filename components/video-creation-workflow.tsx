@@ -16,6 +16,8 @@ import {
   Square,
   ChevronLeft,
   Wand2,
+  X,
+  ImagePlus,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -39,6 +41,7 @@ import {
   calcOverallProgress,
   estimateVoiceCloneProgress,
   getTaskStoreErrorMessage,
+  isMaterialsLost,
   type VideoTaskState,
 } from "@/lib/video-task-store"
 import {
@@ -72,6 +75,12 @@ type UploadedAudio = {
   file: File
   name: string
   duration: string
+  base64: string
+}
+
+type SlideImage = {
+  file: File
+  previewUrl: string
   base64: string
 }
 
@@ -276,6 +285,14 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     return initial
   })
 
+  // 检测用户刷新页面但素材已丢失：localStorage 只剩 audioName/脚本，但没有 taskId、没在生成中
+  // 这种情况要给一个明确的"请重新上传素材"提示
+  const [materialsLost, setMaterialsLost] = React.useState(() => {
+    if (typeof window === "undefined") return false
+    const saved = loadTask()
+    return isMaterialsLost(saved)
+  })
+
   const [storageWarningMessage, setStorageWarningMessage] = React.useState("")
   // 临时未持久化的状态
   const [image, setImage] = React.useState<UploadedImage | null>(null)
@@ -286,9 +303,13 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   const [coverRetryBusy, setCoverRetryBusy] = React.useState(false)
   const [manualUploadId, setManualUploadId] = React.useState("")
   const [businessCardText, setBusinessCardText] = React.useState(taskState.businessCardText || "")
+  const [slideImages, setSlideImages] = React.useState<SlideImage[]>([])
   const pollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollSessionRef = React.useRef(0)
   const pollInFlightRef = React.useRef(false)
+  const editPollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editPollSessionRef = React.useRef(0)
+  const editPollInFlightRef = React.useRef(false)
   const skipNextHealthCheckRef = React.useRef(false)
   const storageWarningKeyRef = React.useRef("")
   const taskIdRef = React.useRef(taskState.taskId)
@@ -375,20 +396,84 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   React.useEffect(() => {
     return () => {
       if (manualVideoPreview) URL.revokeObjectURL(manualVideoPreview)
+      slideImages.forEach((img) => URL.revokeObjectURL(img.previewUrl))
     }
-  }, [manualVideoPreview])
+  }, [manualVideoPreview, slideImages])
 
   // ── 自动字幕生成 ──────────────────────────────────────────────
   const [autoSubtitleBusy, setAutoSubtitleBusy] = React.useState(false)
   const [autoSubtitlePath, setAutoSubtitlePath] = React.useState("")
   const [autoSubtitleText, setAutoSubtitleText] = React.useState("")
-  const autoSubtitlePollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoSubtitlePollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoSubtitleSessionRef = React.useRef(0)
+  const autoSubtitleInFlightRef = React.useRef(false)
 
-  React.useEffect(() => {
-    return () => {
-      if (autoSubtitlePollRef.current) clearInterval(autoSubtitlePollRef.current)
+  const stopAutoSubtitlePoll = React.useCallback(() => {
+    autoSubtitleSessionRef.current += 1
+    autoSubtitleInFlightRef.current = false
+    if (autoSubtitlePollRef.current) {
+      clearTimeout(autoSubtitlePollRef.current)
+      autoSubtitlePollRef.current = null
     }
   }, [])
+
+  React.useEffect(() => {
+    return () => { stopAutoSubtitlePoll() }
+  }, [stopAutoSubtitlePoll])
+
+  const startAutoSubtitlePoll = React.useCallback((subtitleTaskId: string) => {
+    stopAutoSubtitlePoll()
+    const sessionId = autoSubtitleSessionRef.current
+
+    const pollOnce = async () => {
+      if (autoSubtitleInFlightRef.current || autoSubtitleSessionRef.current !== sessionId) return
+
+      autoSubtitleInFlightRef.current = true
+      let scheduleNext = true
+
+      try {
+        const status = await queryAutoSubtitleStatus(subtitleTaskId)
+        if (autoSubtitleSessionRef.current !== sessionId) return
+
+        if (status.status === "completed") {
+          scheduleNext = false
+          stopAutoSubtitlePoll()
+          setAutoSubtitleBusy(false)
+          setAutoSubtitlePath(status.subtitle_path || "")
+          setAutoSubtitleText(status.subtitle_text || "")
+          setScript(status.subtitle_text || scriptRef.current)
+          updateTask({
+            autoSubtitleRunning: false,
+            autoSubtitleTaskId: "",
+          })
+          toast({
+            title: "字幕识别完成",
+            description: `已生成 ${status.sentence_count ?? 0} 个词的精确时间轴字幕`,
+          })
+        } else if (status.status === "failed") {
+          scheduleNext = false
+          stopAutoSubtitlePoll()
+          setAutoSubtitleBusy(false)
+          updateTask({
+            autoSubtitleRunning: false,
+            autoSubtitleTaskId: "",
+          })
+          toast({ title: "字幕识别失败", description: status.error || "未知错误", variant: "destructive" })
+        }
+        // else: still processing, continue polling
+      } catch {
+        if (autoSubtitleSessionRef.current !== sessionId) return
+        // Network errors are transient — keep polling
+      } finally {
+        autoSubtitleInFlightRef.current = false
+        if (scheduleNext && autoSubtitleSessionRef.current === sessionId) {
+          autoSubtitlePollRef.current = setTimeout(() => { void pollOnce() }, 2000)
+        }
+      }
+    }
+
+    void pollOnce()
+  }, [stopAutoSubtitlePoll, updateTask, setScript])
 
   const handleAutoSubtitle = React.useCallback(async () => {
     // 确定当前视频来源
@@ -414,38 +499,25 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         subtitle_format: "ass",
       })
 
-      // 轮询等待完成
-      autoSubtitlePollRef.current = setInterval(async () => {
-        try {
-          const status = await queryAutoSubtitleStatus(submitRes.task_id)
-          if (status.status === "completed") {
-            clearInterval(autoSubtitlePollRef.current!)
-            autoSubtitlePollRef.current = null
-            setAutoSubtitleBusy(false)
-            setAutoSubtitlePath(status.subtitle_path || "")
-            setAutoSubtitleText(status.subtitle_text || "")
-            setScript(status.subtitle_text || script)
-            toast({
-              title: "字幕识别完成",
-              description: `已生成 ${status.sentence_count ?? 0} 个词的精确时间轴字幕`,
-            })
-          } else if (status.status === "failed") {
-            clearInterval(autoSubtitlePollRef.current!)
-            autoSubtitlePollRef.current = null
-            setAutoSubtitleBusy(false)
-            toast({ title: "字幕识别失败", description: status.error || "未知错误", variant: "destructive" })
-          }
-        } catch { /* keep polling */ }
-      }, 2000)
+      // 持久化任务 ID 并启动后台轮询（跨界面切换后可恢复）
+      updateTask({
+        autoSubtitleTaskId: submitRes.task_id,
+        autoSubtitleRunning: true,
+      })
+      startAutoSubtitlePoll(submitRes.task_id)
     } catch (e) {
       setAutoSubtitleBusy(false)
+      updateTask({
+        autoSubtitleRunning: false,
+        autoSubtitleTaskId: "",
+      })
       toast({
         title: "字幕生成失败",
         description: e instanceof Error ? e.message : "提交任务失败",
         variant: "destructive",
       })
     }
-  }, [videoUrl, manualUploadId, manualVideoPreview, script, setScript])
+  }, [videoUrl, manualUploadId, manualVideoPreview, script, setScript, startAutoSubtitlePoll, updateTask])
 
   const handleManualVideoUpload = React.useCallback(async (file: File) => {
     if (!file.type.startsWith("video/")) {
@@ -537,6 +609,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         imageBase64: base64,
         imagePreview: `data:${file.type || "image/png"};base64,${base64}`,
       })
+      setMaterialsLost(false)
     } catch {
       toast({ title: "读取失败", description: "无法读取图片文件", variant: "destructive" })
     }
@@ -557,9 +630,37 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         audioName: file.name,
         audioDuration: duration,
       })
+      setMaterialsLost(false)
     } catch {
       toast({ title: "读取失败", description: "无法读取音频文件", variant: "destructive" })
     }
+  }, [updateTask])
+
+  const handleSlideImageFile = React.useCallback(async (file: File) => {
+    if (file.size > MAX_FILE_SIZE) {
+      toast({ title: "图片过大", description: `最大支持 ${formatSize(MAX_FILE_SIZE)}`, variant: "destructive" })
+      return
+    }
+    try {
+      const previewUrl = URL.createObjectURL(file)
+      const base64 = await fileToBase64(file)
+      setSlideImages((prev) => {
+        const next = [...prev, { file, previewUrl, base64 }]
+        updateTask({ slideImageCount: next.length })
+        return next
+      })
+    } catch {
+      toast({ title: "读取失败", description: "无法读取图片文件", variant: "destructive" })
+    }
+  }, [updateTask])
+
+  const removeSlideImage = React.useCallback((index: number) => {
+    setSlideImages((prev) => {
+      URL.revokeObjectURL(prev[index].previewUrl)
+      const next = prev.filter((_, i) => i !== index)
+      updateTask({ slideImageCount: next.length })
+      return next
+    })
   }, [updateTask])
 
   const stopBackgroundPoll = React.useCallback(() => {
@@ -571,8 +672,19 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
   }, [])
 
+  const stopEditPoll = React.useCallback(() => {
+    editPollSessionRef.current += 1
+    editPollInFlightRef.current = false
+    if (editPollRef.current) {
+      clearTimeout(editPollRef.current)
+      editPollRef.current = null
+    }
+  }, [])
+
   const failTask = React.useCallback((message: string, options?: { taskId?: string; recordHistory?: boolean }) => {
     stopBackgroundPoll()
+    stopEditPoll()
+    stopAutoSubtitlePoll()
     const failedTaskId = options?.taskId ?? taskIdRef.current
     updateTask({
       status: "failed",
@@ -623,12 +735,17 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   }, [failTask])
 
   const handleReturnFromLocalPreview = React.useCallback(() => {
+    stopEditPoll()
+    stopAutoSubtitlePoll()
     setManualUploadId("")
     setManualVideoFile(null)
     setManualVideoPreview((prev) => {
       if (prev) URL.revokeObjectURL(prev)
       return ""
     })
+    setAutoSubtitleBusy(false)
+    setAutoSubtitlePath("")
+    setAutoSubtitleText("")
     updateTask({
       status: "pending",
       currentStage: "idle",
@@ -649,6 +766,10 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       lastHeartbeat: 0,
       lastStatusAt: 0,
       videoStageStartedAt: 0,
+      editJobId: "",
+      editPollStartedAt: 0,
+      autoSubtitleTaskId: "",
+      autoSubtitleRunning: false,
       stageProgress: { voiceClone: 0, videoGen: 0, editing: 0 },
     })
     toast({ title: "已返回素材准备", description: "已保留图片、音频和文案，可直接重新生成。" })
@@ -1032,6 +1153,25 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     startBackgroundPoll(taskId)
   }, [startBackgroundPoll, stopBackgroundPoll, taskId, taskState.resumeGraceUntil, updateTask, workflowUi.shouldResumePolling])
 
+  // 重新挂载时恢复自动字幕轮询
+  React.useEffect(() => {
+    const shouldResumeSubtitle =
+      taskState.autoSubtitleRunning &&
+      !!taskState.autoSubtitleTaskId &&
+      !autoSubtitlePollRef.current
+
+    if (!shouldResumeSubtitle) {
+      if (!taskState.autoSubtitleRunning || !taskState.autoSubtitleTaskId) {
+        stopAutoSubtitlePoll()
+      }
+      return
+    }
+
+    // 恢复 UI 状态并重启轮询
+    setAutoSubtitleBusy(true)
+    startAutoSubtitlePoll(taskState.autoSubtitleTaskId)
+  }, [taskState.autoSubtitleRunning, taskState.autoSubtitleTaskId, startAutoSubtitlePoll, stopAutoSubtitlePoll])
+
   React.useEffect(() => {
     if (!taskState.isProcessing) return
     const checkHealth = () => {
@@ -1093,6 +1233,94 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     return () => window.clearInterval(id)
   }, [currentStage])
 
+  const startEditPoll = React.useCallback((jobId: string) => {
+    stopEditPoll()
+    const sessionId = editPollSessionRef.current
+
+    const pollOnce = async () => {
+      if (editPollInFlightRef.current || editPollSessionRef.current !== sessionId) return
+
+      editPollInFlightRef.current = true
+      let scheduleNext = true
+      const base = getFastapiBase()
+
+      if (!base) {
+        scheduleNext = false
+        updateTask({
+          editingErrorMessage: "缺少后端配置，无法继续同步剪辑状态。",
+          isEditing: false,
+          editJobId: "",
+          editPollStartedAt: 0,
+        })
+      } else {
+        try {
+          const statusResp = await fetch(`${base}/api/video/edit/status?editJobId=${encodeURIComponent(jobId)}`)
+          const statusData = (await statusResp.json()) as EditTaskResponse & { detail?: string }
+
+          if (editPollSessionRef.current !== sessionId) return
+
+          if (!statusResp.ok) {
+            updateTask({
+              editingErrorMessage: typeof statusData.detail === "string" ? statusData.detail : "查询剪辑状态失败",
+            })
+            // keep polling — transient errors resolve themselves
+          } else if (statusData.status === "success" && statusData.output_video_url) {
+            scheduleNext = false
+            stopEditPoll()
+            const completedStageProgress = { ...taskStateRef.current.stageProgress, editing: 100 }
+            const finalUrl = statusData.output_video_url.startsWith("http")
+              ? statusData.output_video_url
+              : `${base.replace(/\/$/, "")}${statusData.output_video_url}`
+            setVideoUrl(finalUrl)
+            updateTask({
+              currentStage: "done",
+              status: "published",
+              errorMessage: "",
+              editingErrorMessage: "",
+              isEditing: false,
+              editJobId: "",
+              editPollStartedAt: 0,
+              progress: 100,
+              videoUrl: finalUrl,
+              postProcessingStage: "published",
+              postProcessingProgress: 100,
+              stageProgress: completedStageProgress,
+            })
+            toast({ title: "剪辑完成", description: "视频已应用所选效果，可切换预设再次剪辑" })
+            return
+          } else if (statusData.status === "failed") {
+            scheduleNext = false
+            stopEditPoll()
+            updateTask({
+              editingErrorMessage: statusData.error || "剪辑失败，请重试",
+              isEditing: false,
+              editJobId: "",
+              editPollStartedAt: 0,
+            })
+            toast({ title: "剪辑失败", description: statusData.error || "剪辑失败，请重试", variant: "destructive" })
+            return
+          } else {
+            // Still processing — update progress
+            updateTask({
+              postProcessingStage: statusData.status,
+              postProcessingProgress: typeof statusData.progress === "number" ? statusData.progress : 30,
+            })
+          }
+        } catch {
+          if (editPollSessionRef.current !== sessionId) return
+          // Network errors are transient — keep polling
+        } finally {
+          editPollInFlightRef.current = false
+          if (scheduleNext && editPollSessionRef.current === sessionId) {
+            editPollRef.current = setTimeout(() => { void pollOnce() }, 1500)
+          }
+        }
+      }
+    }
+
+    void pollOnce()
+  }, [stopEditPoll, updateTask, setVideoUrl])
+
   const handleApplyEditing = React.useCallback(async () => {
     if (isEditing) return
 
@@ -1103,17 +1331,24 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       status: "success",
       errorMessage: "",
       editingErrorMessage: "",
+      isEditing: true,
+      editJobId: "",
+      editPollStartedAt: 0,
       lastHeartbeat: Date.now(),
       stageProgress: resetEditingProgress,
       progress: calcOverallProgress(resetEditingProgress),
     })
 
-    const handleEditingFailure = (message: string, title = "剪辑失败") => {
+    const handleEditingSubmitFailure = (message: string, title = "剪辑失败") => {
+      setIsEditing(false)
       updateTask({
         currentStage: "done",
         status: "success",
         errorMessage: "",
         editingErrorMessage: message,
+        isEditing: false,
+        editJobId: "",
+        editPollStartedAt: 0,
         stageProgress: resetEditingProgress,
         progress: calcOverallProgress(resetEditingProgress),
       })
@@ -1123,7 +1358,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     try {
       const base = getFastapiBase()
       if (!base) {
-        handleEditingFailure("请配置 NEXT_PUBLIC_FASTAPI_URL", "缺少后端配置")
+        handleEditingSubmitFailure("请配置 NEXT_PUBLIC_FASTAPI_URL", "缺少后端配置")
         return
       }
       const res = await fetch(`${base}/api/video/edit`, {
@@ -1137,62 +1372,68 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           subtitle_text: script.trim(),
           subtitle_file_path: autoSubtitlePath,
           business_card_text: businessCardText.trim(),
-          bgm_volume: 0.52,
+          bgm_volume: 0.35,
           source: manualUploadId ? "manual" : manualVideoPreview ? "manual" : isLocalPreviewMode ? "manual" : "generated",
+          slide_images_base64: slideImages.map((img) => img.base64),
         }),
       })
       const data = (await res.json()) as EditTaskResponse & { detail?: string }
       if (!res.ok) {
-        handleEditingFailure(typeof data.detail === "string" ? data.detail : "剪辑失败，请重试")
+        handleEditingSubmitFailure(typeof data.detail === "string" ? data.detail : "剪辑失败，请重试")
         return
       }
-      const editJobId = data.edit_job_id
-      while (true) {
-        const statusResp = await fetch(`${base}/api/video/edit/status?editJobId=${encodeURIComponent(editJobId)}`)
-        const statusData = (await statusResp.json()) as EditTaskResponse & { detail?: string }
-        if (!statusResp.ok) {
-          handleEditingFailure(typeof statusData.detail === "string" ? statusData.detail : "查询剪辑状态失败")
-          return
-        }
-        if (statusData.status === "success" && statusData.output_video_url) {
-          const completedStageProgress = { ...taskStateRef.current.stageProgress, editing: 100 }
-          const finalUrl = statusData.output_video_url.startsWith("http")
-            ? statusData.output_video_url
-            : `${base.replace(/\/$/, "")}${statusData.output_video_url}`
-          setVideoUrl(finalUrl)
-          updateTask({
-            currentStage: "done",
-            status: "published",
-            errorMessage: "",
-            editingErrorMessage: "",
-            progress: 100,
-            videoUrl: finalUrl,
-            postProcessingStage: "published",
-            postProcessingProgress: 100,
-            stageProgress: completedStageProgress,
-          })
-          toast({ title: "剪辑完成", description: "视频已应用所选效果，可切换预设再次剪辑" })
-          return
-        }
-        if (statusData.status === "failed") {
-          handleEditingFailure(statusData.error || "剪辑失败，请重试")
-          return
-        }
-        updateTask({
-          postProcessingStage: statusData.status,
-          postProcessingProgress: typeof statusData.progress === "number" ? statusData.progress : 30,
-        })
-        await new Promise((resolve) => window.setTimeout(resolve, 1500))
+      const jobId = data.edit_job_id
+      if (!jobId) {
+        handleEditingSubmitFailure("未返回剪辑任务 ID")
+        return
       }
+
+      // 持久化 editJobId 并启动后台轮询（跨界面切换后可恢复）
+      updateTask({
+        editJobId: jobId,
+        editPollStartedAt: Date.now(),
+      })
+      startEditPoll(jobId)
     } catch {
-      handleEditingFailure("剪辑请求失败，请检查服务是否启动", "网络错误")
-    } finally {
-      setIsEditing(false)
+      handleEditingSubmitFailure("剪辑请求失败，请检查服务是否启动", "网络错误")
     }
-  }, [businessCardText, isEditing, isLocalPreviewMode, manualUploadId, manualVideoPreview, script, selectedPreset, setIsEditing, setVideoUrl, updateTask, videoUrl])
+  }, [businessCardText, isEditing, isLocalPreviewMode, manualUploadId, manualVideoPreview, script, selectedPreset, setIsEditing, setVideoUrl, slideImages, startEditPoll, updateTask, videoUrl, autoSubtitlePath])
+
+  // 重新挂载时恢复剪辑轮询（切页回来时 editJobId 还在 localStorage 但 editPollRef 已失）
+  React.useEffect(() => {
+    const shouldResumeEdit =
+      taskState.currentStage === "editing" &&
+      taskState.isEditing &&
+      !!taskState.editJobId &&
+      !editPollRef.current
+
+    if (!shouldResumeEdit) {
+      if (!taskState.isEditing || !taskState.editJobId) {
+        stopEditPoll()
+      }
+      return
+    }
+
+    const now = Date.now()
+    if (taskState.resumeGraceUntil < now) {
+      updateTask({ resumeGraceUntil: now + RESUME_POLL_GRACE_MS })
+    }
+
+    startEditPoll(taskState.editJobId)
+  }, [taskState.currentStage, taskState.isEditing, taskState.editJobId, taskState.resumeGraceUntil, startEditPoll, stopEditPoll, updateTask])
+
+  // 组件卸载时清理编辑轮询
+  React.useEffect(() => {
+    return () => { stopEditPoll() }
+  }, [stopEditPoll])
 
   const handleRetry = React.useCallback(() => {
     stopBackgroundPoll()
+    stopEditPoll()
+    stopAutoSubtitlePoll()
+    setAutoSubtitleBusy(false)
+    setAutoSubtitlePath("")
+    setAutoSubtitleText("")
     updateTask({
       taskId: "",
       status: "pending",
@@ -1213,8 +1454,12 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       resumeGraceUntil: 0,
       pollErrorCount: 0,
       lastPollError: "",
+      editJobId: "",
+      editPollStartedAt: 0,
+      autoSubtitleTaskId: "",
+      autoSubtitleRunning: false,
     })
-  }, [stopBackgroundPoll, updateTask])
+  }, [stopBackgroundPoll, stopEditPoll, stopAutoSubtitlePoll, updateTask])
 
   const handleRetryCover = React.useCallback(async () => {
     if (!taskId || coverRetryBusy) return
@@ -1279,7 +1524,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           <div className="mb-4 h-1 w-12 rounded-full bg-rose-500/60" />
           <h1 className="text-[28px] font-bold leading-tight tracking-tight text-slate-900 sm:text-[34px] dark:text-slate-50">
             AI
-            <span className="text-rose-500 dark:text-rose-400"> 视频创作</span>
+            <span className="text-rose-500 dark:text-rose-400"> 数字人口播</span>
           </h1>
           <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
             上传形象照片与参考音色，输入口播文案，AI 自动完成音色克隆、数字人口播生成与智能剪辑
@@ -1297,6 +1542,22 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
             </span>
           )}
         </div>
+
+        {materialsLost && !storageWarningMessage && (
+          <div className="mb-6 rounded-2xl border border-blue-200/60 bg-blue-50/70 p-4 dark:border-blue-500/20 dark:bg-blue-500/5">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+              <div>
+                <p className="text-[14px] font-medium text-blue-800 dark:text-blue-300">
+                  浏览器刷新后素材需要重新上传
+                </p>
+                <p className="mt-1 text-[12px] leading-relaxed text-blue-700 dark:text-blue-400">
+                  为避免 localStorage 配额超限（仅 ~5 MB），图片与音频不会自动保存到本地。重新上传素材后即可继续创作。
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {storageWarningMessage && (
           <div className="mb-6 rounded-2xl border border-amber-200/60 bg-amber-50/70 p-4 dark:border-amber-500/20 dark:bg-amber-500/5">
@@ -1897,6 +2158,58 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
                     </Button>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* 图片素材插入（可选） */}
+            {(videoUrl || isLocalPreviewMode) && (
+              <div className="rounded-2xl border border-slate-200/60 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+                <div className="flex items-center gap-2 mb-3">
+                  <ImagePlus className="h-4 w-4 text-slate-500" />
+                  <p className="text-[14px] font-semibold text-slate-800 dark:text-slate-200">
+                    添加滚动图文（可选）
+                  </p>
+                  {slideImages.length > 0 && (
+                    <span className="text-[12px] text-slate-400">
+                      已上传 {slideImages.length} 张
+                    </span>
+                  )}
+                </div>
+                <p className="mb-3 text-[12px] text-slate-500 dark:text-slate-400">
+                  图片将依次显示在视频下方，每张展示 1.5 秒，间隔 3 秒轮播。支持 jpg / png / webp。
+                </p>
+                {/* 缩略图预览 */}
+                {slideImages.length > 0 && (
+                  <div className="flex gap-2 mb-3 overflow-x-auto pb-2">
+                    {slideImages.map((img, idx) => (
+                      <div key={idx} className="relative shrink-0 group">
+                        <img
+                          src={img.previewUrl}
+                          alt={`素材 ${idx + 1}`}
+                          className="h-20 w-20 rounded-lg object-cover border border-slate-200 dark:border-white/10"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeSlideImage(idx)}
+                          className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="删除"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                        <span className="absolute bottom-0 left-0 right-0 rounded-b-lg bg-black/50 text-center text-[10px] text-white py-0.5">
+                          {idx + 1}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <UploadZone
+                  accept=".jpg,.jpeg,.png,.webp"
+                  label="上传轮播图片"
+                  icon={ImagePlus}
+                  hint="拖放或点击上传，可多次添加"
+                  onFile={(f) => { void handleSlideImageFile(f) }}
+                />
               </div>
             )}
 

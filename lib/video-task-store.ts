@@ -77,6 +77,13 @@ export type VideoTaskState = {
   qrDataUrl: string
   shareUrl: string
   copied: boolean
+  slideImageCount: number
+
+  // 轮询恢复标识（跨界面切换后恢复用）
+  editJobId: string
+  editPollStartedAt: number
+  autoSubtitleTaskId: string
+  autoSubtitleRunning: boolean
 
   // 时间
   createdAt: number
@@ -133,7 +140,7 @@ const DEFAULT_STATE: Omit<VideoTaskState, "taskId" | "createdAt" | "updatedAt"> 
   audioName: "",
   audioDuration: "",
   businessCardText: "",
-  bgmVolume: 0.52,
+  bgmVolume: 0.35,
   isEditing: false,
   editingErrorMessage: "",
   postProcessingStage: "",
@@ -142,6 +149,11 @@ const DEFAULT_STATE: Omit<VideoTaskState, "taskId" | "createdAt" | "updatedAt"> 
   qrDataUrl: "",
   shareUrl: "",
   copied: false,
+  slideImageCount: 0,
+  editJobId: "",
+  editPollStartedAt: 0,
+  autoSubtitleTaskId: "",
+  autoSubtitleRunning: false,
   submittedAt: 0,
   lastStatusAt: 0,
   videoStageStartedAt: 0,
@@ -172,6 +184,12 @@ export function loadTask(): VideoTaskState | null {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<VideoTaskState>
+    // 兼容老版本：localStorage 里可能残留 base64 字段（之前的 bug），
+    // 这里显式丢弃，避免它们继续撑大存储
+    delete parsed.imageBase64
+    delete parsed.imagePreview
+    delete parsed.audioBase64
+    delete parsed.qrDataUrl
     const now = Date.now()
 
     // 脏数据：标记"处理中"但没有任何 taskId，也没有心跳 → 整段作废
@@ -274,6 +292,42 @@ function isQuotaExceededError(error: unknown): boolean {
   )
 }
 
+/**
+ * 不写入 localStorage 的字段（只留在内存里）。
+ *
+ * 设计原因：localStorage 单 origin 配额仅 ~5 MB，5MB 图片 base64 后达 6.7MB，
+ * 一旦图片 + 音频 + data URL 三件套同时塞进去必然爆配额。
+ *
+ * 语义：
+ * - `imageBase64` / `imagePreview` / `audioBase64`：原始素材，仅在前端会话内有效；
+ *   提交后服务端已有副本，刷新页面用户重新上传即可。
+ * - `qrDataUrl`：二维码 PNG data URL，提交后再生成；任务中无需持久化。
+ */
+const NON_PERSISTENT_FIELDS: ReadonlyArray<keyof VideoTaskState> = [
+  "imageBase64",
+  "imagePreview",
+  "audioBase64",
+  "qrDataUrl",
+] as const
+
+function toPersistent(state: VideoTaskState): Partial<VideoTaskState> {
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(state) as Array<keyof VideoTaskState>) {
+    if (NON_PERSISTENT_FIELDS.includes(key)) continue
+    out[key as string] = state[key]
+  }
+  return out as Partial<VideoTaskState>
+}
+
+/**
+ * 检查从 localStorage 读出的 state 是否还包含「不可恢复的文件数据」。
+ * 命中 → 提醒用户刷新后需要重新上传素材。
+ */
+export function isMaterialsLost(state: VideoTaskState | null): boolean {
+  if (!state) return false
+  return !!(state.script || state.audioName) && !state.taskId && !state.isProcessing
+}
+
 function getTaskStoreErrorKind(error: unknown): TaskStoreErrorKind {
   if (isQuotaExceededError(error)) {
     return "quota-exceeded"
@@ -305,8 +359,10 @@ export function saveTask(state: Partial<VideoTaskState>): TaskStoreSaveResult {
       errorKind: "storage-unavailable",
     }
   }
+  // 仅持久化白名单字段（imageBase64/audioBase64/imagePreview/qrDataUrl 不入 localStorage）
+  const persistent = toPersistent(merged)
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistent))
     return { ok: true, state: merged }
   } catch (error) {
     return {
@@ -332,6 +388,10 @@ export function createNewTask(): VideoTaskState {
     ...DEFAULT_STATE,
     stageProgress: createDefaultStageProgress(),
     taskId: "",
+    editJobId: "",
+    editPollStartedAt: 0,
+    autoSubtitleTaskId: "",
+    autoSubtitleRunning: false,
     createdAt: now,
     updatedAt: now,
   }

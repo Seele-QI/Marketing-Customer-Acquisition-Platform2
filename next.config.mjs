@@ -12,6 +12,10 @@ const nextConfig = {
   // 配合 Dockerfile 的多阶段构建，把镜像从 ~800MB 缩到 ~300MB。
   // 详见 docs/superpowers/specs/*standalone-deployment.md
   output: "standalone",
+  // Electron BrowserWindow 用 127.0.0.1 而非 localhost 加载，
+  // Next.js 默认阻止跨域 dev 资源请求（HMR、静态资源），需要显式允许。
+  // prod 的 next start 不受影响（不走 dev 的 webpack-hmr 通道）。
+  allowedDevOrigins: ['127.0.0.1'],
   experimental: {
     serverActions: {
       bodySizeLimit: "30mb",

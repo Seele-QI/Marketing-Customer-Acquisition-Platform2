@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createNewTask, loadTask } from "../lib/video-task-store.ts"
+import { createNewTask, isMaterialsLost, loadTask, saveTask } from "../lib/video-task-store.ts"
 import {
   DEFAULT_VIDEO_PROMPT_MODE,
   VIDEO_PROMPT_PRESETS,
@@ -123,4 +123,83 @@ test("旧任务带非法 videoPromptMode 时会回退到自然模式", () => {
     assert.equal(loaded?.videoPrompt, "保留原始提示词")
     assert.equal(loaded?.videoPromptMode, DEFAULT_VIDEO_PROMPT_MODE)
   })
+})
+
+test("saveTask 不会把 base64 / preview / qr 写入 localStorage", () => {
+  const storage = createMemoryStorage()
+  withMockBrowserEnv(storage, () => {
+    const fake5MB = "A".repeat(Math.ceil(5 * 1024 * 1024 * 4 / 3))
+    const result = saveTask({
+      taskId: "demo-task",
+      script: "test",
+      audioName: "voice.mp3",
+      audioDuration: "0:32",
+      imageBase64: fake5MB,
+      imagePreview: "data:image/png;base64," + fake5MB,
+      audioBase64: "B".repeat(400 * 1024),
+      qrDataUrl: "C".repeat(50 * 1024),
+    })
+
+    assert.equal(result.ok, true, "新策略下 5MB base64 不应撑爆 localStorage")
+    const persisted = JSON.parse(storage.getItem("video-creation-task")!)
+    assert.equal(persisted.imageBase64, undefined, "imageBase64 不应被持久化")
+    assert.equal(persisted.imagePreview, undefined, "imagePreview 不应被持久化")
+    assert.equal(persisted.audioBase64, undefined, "audioBase64 不应被持久化")
+    assert.equal(persisted.qrDataUrl, undefined, "qrDataUrl 不应被持久化")
+    assert.equal(persisted.audioName, "voice.mp3", "audioName 元数据应保留")
+    assert.equal(persisted.taskId, "demo-task")
+  })
+})
+
+test("loadTask 会主动清理老版本残留的 base64 字段", () => {
+  const storage = createMemoryStorage({
+    "video-creation-task": JSON.stringify({
+      taskId: "legacy-bloated",
+      script: "老文案",
+      audioName: "voice.mp3",
+      audioDuration: "0:32",
+      isProcessing: false,
+      updatedAt: Date.now(),
+      imageBase64: "X".repeat(7_000_000),
+      imagePreview: "data:image/png;base64,XXX",
+      audioBase64: "Y".repeat(400_000),
+      qrDataUrl: "Z".repeat(50_000),
+    }),
+  })
+
+  withMockBrowserEnv(storage, () => {
+    const loaded = loadTask()
+    assert.ok(loaded)
+    assert.equal(loaded!.imageBase64, "")
+    assert.equal(loaded!.imagePreview, "")
+    assert.equal(loaded!.audioBase64, "")
+    assert.equal(loaded!.qrDataUrl, "")
+    assert.equal(loaded!.audioName, "voice.mp3")
+  })
+})
+
+test("isMaterialsLost: 草稿状态 + 未在生成中 → 提示用户重新上传", () => {
+  const loaded = {
+    ...createNewTask(),
+    script: "用户写的脚本",
+    audioName: "voice.mp3",
+    audioDuration: "0:32",
+    taskId: "",
+    isProcessing: false,
+  }
+  assert.equal(isMaterialsLost(loaded), true)
+})
+
+test("isMaterialsLost: 任务已生成中 → 不提示", () => {
+  const loaded = {
+    ...createNewTask(),
+    taskId: "running-123",
+    isProcessing: true,
+  }
+  assert.equal(isMaterialsLost(loaded), false)
+})
+
+test("isMaterialsLost: 空 state → 不提示", () => {
+  assert.equal(isMaterialsLost(null), false)
+  assert.equal(isMaterialsLost(createNewTask()), false)
 })

@@ -435,7 +435,7 @@ function StepVideoResult({ result, error }: { result: ImageToVideoResponse | nul
       </div>
       <a
         href={result.video_url}
-        download
+        download={`video-${result.task_id || "image-to-video"}.mp4`}
         target="_blank"
         rel="noopener noreferrer"
       >

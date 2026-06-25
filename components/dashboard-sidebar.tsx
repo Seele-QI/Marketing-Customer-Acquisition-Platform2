@@ -37,6 +37,8 @@ type NavItem = {
     label: string
     icon: React.ComponentType<{ className?: string }>
     iconColor?: string
+    /** 导航用的内部 key；不填则用 label */
+    view?: string
   }[]
 }
 
@@ -53,10 +55,11 @@ const mainNav: NavItem[] = [
   },
   { label: "视频创作", icon: Clapperboard, badge: "NEW", iconColor: "text-rose-500", iconBg: "bg-rose-500/10",
     children: [
-      { label: "视频创作", icon: Clapperboard, iconColor: "text-rose-500" },
+      { label: "数字人口播", view: "视频创作", icon: Clapperboard, iconColor: "text-rose-500" },
       { label: "图文视频", icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", icon: Scissors, iconColor: "text-violet-500" },
       { label: "批量混剪", icon: Layers, iconColor: "text-violet-500" },
+      { label: "宣传视频", icon: Video, iconColor: "text-sky-500" },
       { label: "历史记录", icon: Clock, iconColor: "text-amber-500" },
     ],
   },
@@ -81,7 +84,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {}
     mainNav.forEach((item) => {
-      if (item.children?.some((c) => c.label === active)) {
+      if (item.children?.some((c) => (c.view || c.label) === active)) {
         initial[item.label] = true
       }
     })
@@ -91,7 +94,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
   /* Keep the group open when active changes to one of its children */
   React.useEffect(() => {
     mainNav.forEach((item) => {
-      if (item.children?.some((c) => c.label === active)) {
+      if (item.children?.some((c) => (c.view || c.label) === active)) {
         setExpanded((prev) => ({ ...prev, [item.label]: true }))
       }
     })
@@ -125,7 +128,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
           {mainNav.map((item) => {
             const Icon = item.icon
             const hasChildren = item.children && item.children.length > 0
-            const isChildActive = hasChildren && item.children!.some(child => child.label === active)
+            const isChildActive = hasChildren && item.children!.some(child => (child.view || child.label) === active)
             const isActive = item.label === active || isChildActive
             const isExpanded = expanded[item.label]
 
@@ -187,12 +190,12 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
                   <ul className="mt-0.5 flex flex-col gap-0.5 pl-12 pr-3 pb-1">
                     {item.children!.map((child) => {
                       const ChildIcon = child.icon
-                      const isCurrentActive = active === child.label
+                      const isCurrentActive = active === (child.view || child.label)
                       return (
                         <li key={child.label}>
                           <button
                             type="button"
-                            onClick={() => onSelect(child.label as MainView)}
+                            onClick={() => onSelect((child.view || child.label) as MainView)}
                             className={cn(
                               "group flex w-full items-center gap-2.5 rounded-full px-3 py-1.5 text-left text-[13px] transition-colors",
                               isCurrentActive

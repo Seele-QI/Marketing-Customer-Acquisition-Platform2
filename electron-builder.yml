@@ -1,0 +1,53 @@
+﻿appId: com.aimarketing.zhongtai
+productName: AI营销获客中台
+copyright: Copyright © 2026 AI营销获客中台
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - "electron/dist-electron/**/*.js"
+  - "package.json"
+  - "!**/*.map"
+  - "!**/__tests__/**"
+  - "!**/*.test.ts"
+
+asar: true
+asarUnpack:
+  - "node_modules/node-machine-id/**"
+  - "node_modules/electron-log/**"
+
+extraResources:
+  - from: "resources"
+    to: "."
+    filter:
+      - "python/**"
+      - "ffmpeg/**"
+      - "next-standalone/**"
+      - "bgm/**"
+      - "main.py"
+
+extraMetadata:
+  main: electron/dist-electron/main.js
+  version: 0.1.0
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AI营销获客中台
+  uninstallDisplayName: AI营销获客中台 ${version}
+  include: "build/installer.nsh"
+  installerLanguages:
+    - zh_CN

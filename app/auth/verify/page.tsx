@@ -1,12 +1,15 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { Suspense, useEffect, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react"
 
 type VerifyResult = { ok: true; email_masked: string } | { ok: false; message: string }
 
-export default function VerifyPage() {
+// 拆出内部组件以便包 <Suspense> —— Next.js 16 要求 useSearchParams 必须在
+// Suspense 边界内，否则 prerender 阶段会拒绝构建。
+// 详见 https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
+function VerifyPageInner() {
   const router = useRouter()
   const params = useSearchParams()
   const token = params.get("token")
@@ -81,5 +84,24 @@ export default function VerifyPage() {
         )}
       </div>
     </div>
+  )
+}
+
+function VerifyFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <div className="max-w-md rounded-xl border border-border bg-card p-8 text-center shadow-sm">
+        <Loader2 className="mx-auto mb-4 h-12 w-12 animate-spin text-muted-foreground" />
+        <h1 className="mb-2 text-lg font-semibold">正在准备…</h1>
+      </div>
+    </div>
+  )
+}
+
+export default function VerifyPage() {
+  return (
+    <Suspense fallback={<VerifyFallback />}>
+      <VerifyPageInner />
+    </Suspense>
   )
 }

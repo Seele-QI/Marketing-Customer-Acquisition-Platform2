@@ -31,8 +31,15 @@ from lib.video_postprocess import (
 # ── ffmpeg / ffprobe 路径（与 video_postprocess 一致） ──────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOCAL_FFMPEG_BIN = _PROJECT_ROOT / "tools" / "ffmpeg" / "bin"
-_FFMPEG_EXE = str(_LOCAL_FFMPEG_BIN / "ffmpeg.exe") if (_LOCAL_FFMPEG_BIN / "ffmpeg.exe").exists() else "ffmpeg"
-_FFPROBE_EXE = str(_LOCAL_FFMPEG_BIN / "ffprobe.exe") if (_LOCAL_FFMPEG_BIN / "ffprobe.exe").exists() else "ffprobe"
+# 环境变量优先：桌面打包场景下，Electron 主进程通过 env 注入绝对路径，
+# 这样不需要在每个运行机器上把 ffmpeg 复制到 tools/ffmpeg/bin/。
+# 见 docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md
+_FFMPEG_EXE = os.environ.get("FFMPEG_EXE") or (
+    str(_LOCAL_FFMPEG_BIN / "ffmpeg.exe") if (_LOCAL_FFMPEG_BIN / "ffmpeg.exe").exists() else "ffmpeg"
+)
+_FFPROBE_EXE = os.environ.get("FFPROBE_EXE") or (
+    str(_LOCAL_FFMPEG_BIN / "ffprobe.exe") if (_LOCAL_FFMPEG_BIN / "ffprobe.exe").exists() else "ffprobe"
+)
 
 # ── 可用转场效果 ──────────────────────────────────────────────────────────
 _XFADE_TRANSITIONS = ["slideleft", "slideright", "fade"]
@@ -69,7 +76,7 @@ def _probe_image_resolution(image_path: str) -> tuple[int, int]:
         "-of", "csv=s=x:p=0",
         image_path,
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     if res.returncode == 0 and "x" in res.stdout:
         w, h = res.stdout.strip().split("x", 1)
         return int(w), int(h)

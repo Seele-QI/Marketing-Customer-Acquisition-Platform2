@@ -42,3 +42,22 @@ public/video-cache/
 # Local ffmpeg binaries (large files, deploy separately)
 tools/ffmpeg/bin/
 tools/ffmpeg/ffmpeg.zip
+
+# Electron 打包产物（不入 git，由 scripts/ 产出）
+build/
+electron/dist-electron/
+release/
+.electron-cache/
+
+# resources/ 运行时资源（git 忽略，由 scripts/build-* 产出）
+resources/python/
+resources/ffmpeg/
+resources/next-standalone/
+resources/bgm/
+resources/main.py
+
+# pnpm-electron-builder 缓存
+app-builder-cache/
+electron-builder-cache/
+
+# 用户数据（prod 安装后的 userData/，不入 git）

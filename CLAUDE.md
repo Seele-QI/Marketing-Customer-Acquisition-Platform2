@@ -14,16 +14,36 @@
 │   ├── admin/credit/       # 积分管理后台
 │   └── ...                 # 各业务页面
 ├── components/             # React 客户端组件
-│   ├── video-creation-workflow.tsx   # 视频创作主流程
+│   ├── video-creation-workflow.tsx   # 数字人口播主流程（sidebar label: "数字人口播"，内部 view key: "视频创作"）
 │   └── ...
 ├── lib/                    # 工具与共享代码
 │   ├── video/              # 视频模块类型 + 客户端 API 封装
-│   ├── video_postprocess.py    # ffmpeg 通用剪辑模板（端到端）
+│   ├── video_postprocess.py    # ffmpeg 通用剪辑模板（端到端）⚠️ line 66-69 ffmpeg env 优先
 │   ├── video-task-store.ts # localStorage 任务状态持久化
 │   ├── runninghub_client.py    # RunningHub 远程工作流客户端
 │   ├── credit.py           # 积分账本
 │   └── auth.py             # 邮箱 Magic Link 认证
 ├── main.py                 # FastAPI 后端（视频生成、剪辑、积分）
+├── electron/               # 🆕 Electron 主进程（TS 编译到 dist-electron/）
+│   ├── main.ts             # 应用入口
+│   ├── services/           # 子进程管理、激活、托盘、更新、凭证
+│   ├── windows/            # 主/向导/日志窗口
+│   ├── utils/              # paths / process-tree / crypto
+│   └── tsconfig.json
+├── resources/              # 🆕 Electron 运行时资源（git 忽略，scripts/build-* 产出）
+│   ├── python/             # embeddable Python 3.13 + site-packages + lib/
+│   ├── ffmpeg/bin/         # ffmpeg.exe + ffprobe.exe
+│   ├── next-standalone/    # .next/standalone
+│   ├── bgm/                # 从 assets/bgm/ copy
+│   └── main.py             # 从项目根 copy
+├── scripts/                # 构建脚本
+│   ├── build-python-bundle.mjs
+│   ├── build-next-standalone.mjs
+│   ├── extract-ffmpeg.mjs
+│   ├── preflight.mjs
+│   └── dev-electron.mjs
+├── build/                  # electron-builder 中间产物（gitignore）
+├── electron-builder.yml    # 🆕 NSIS 打包配置
 ├── tests/                  # pytest + node:test
 ├── assets/                 # 静态资源
 │   └── bgm/                # 视频剪辑 BGM 素材库（mp3）
@@ -87,6 +107,15 @@
 | **`ALIYUN_ACCESS_KEY_SECRET`** | `lib/video_extract.py` | 文案提取 | 阿里云 RAM AccessKey Secret |
 | **`ALIYUN_ASR_APP_KEY`** | `lib/video_extract.py` | 文案提取 | 阿里云智能语音交互项目 AppKey |
 
+### Electron 桌面打包相关（2026-06-24+）
+
+| 变量名 | 读取位置 | 必需 | 用途 |
+|---|---|---|---|
+| **`CENTRAL_KEY_POOL_JSON`** | `main.py`（中央激活服务） | 桌面客户端启用后 | 密钥池 JSON，按 plan 分组：`{"standard":{"DEEPSEEK_API_KEY":"...","RUNNINGHUB_API_KEY":"..."}}` |
+| `CENTRAL_LATEST_VERSION` | `main.py` | 桌面客户端启用后 | 当前最新版本号，用于版本检查 |
+| `CENTRAL_FORCE_UPDATE_BELOW` | `main.py` | 可选 | 低于此版本强制升级，默认 `0.0.1` |
+| `CENTRAL_UPDATE_URL` | `main.py` | 可选 | GitHub Releases URL |
+
 ### 关键环境变量详解
 
 #### `VIDEO_BGM_DIR`（视频剪辑 BGM 目录）
@@ -105,6 +134,7 @@
 
 - 这两个是项目最关键的两个 AI 服务 Key，缺一不可
 - 各自配错会触发 503 错误并在 `main.py` / `app/api/ai/...` 抛 `HTTPException`
+- ⚠️ `main.py` 使用 `load_dotenv(override=True)` 确保 `.env` 值优先于 Windows 系统环境变量；若发现实际调用的 Key 与 `.env` 不一致，检查 Windows 用户环境变量是否残留旧值
 
 #### `CREDIT_ADMIN_ACCESS_KEY`
 
@@ -141,6 +171,68 @@ docker build -f Dockerfile.web -t zhongtai-web . && docker run -p 3000:3000 -e N
 - [ ] `SHARE_API_TOKEN` 配置（如启用一键分享）
 - [ ] `CORS_ALLOW_ORIGINS` 配置生产前端域名
 - [ ] `RESEND_FROM` 改为已验证的域名地址
+
+---
+
+## 视频生成架构（2026-06-25 重构）
+
+### 异步管线（P1）
+
+`POST /api/video/generate` **30ms 内返回**，不再同步等待音频克隆（10 min）。全流程在后台 asyncio 中执行：
+
+```text
+POST /api/video/generate → 200 { task_id:"vg_xxx", status:"queued" }
+                              ↓
+后台 _run_video_pipeline(task_id):
+  1. decoding_base64 → 2. uploading_image → 3. uploading_audio
+  → 4. submitting_audio_clone → 5. waiting_audio_clone (≤10 min)
+  → 6. submitting_video → 7. 衔接 _poll_video_task
+                              ↓
+后台 _poll_video_task(task_id, rh_task_id):
+  轮询 RunningHub (≤50 min) → 完成 → _run_post_process → _run_cover_generation
+```
+
+关键设计：
+
+- `task_id` 是本地生成的 `vg_{ts}_{rand}`，RunningHub 的 taskId 存为 `rh_task_id`
+- `_pipeline_tasks` 追踪管线 Worker，`_poll_tasks` 追踪轮询 Worker
+- `cancel` 同时取消 pipeline + poll
+- `video_status` 优先读 `_task_store`，内存丢失才尝试 RH 实时查询
+
+### 运行实例 `instanceType`
+
+`lib/runninghub_client.py:253,317` — 所有 RH 任务统一用 `instanceType: "plus"`（48G 显存）。
+
+### Stage 追踪系统（P0）
+
+`main.py` 中定义 12 个 stage 常量（`STAGE_UPLOADING_IMAGE` ~ `STAGE_CANCELLED`），通过 `_set_stage(task_id, stage, **extras)` 原子写入。`TaskStatusResponse` 暴露 `stage` / `stage_label` / `stage_history` / `stage_updated_at` 四个字段，前端可读条展示当前进度。
+
+### RunningHub 结果安全解析
+
+- `main.py:_pick_first_result_url(result: dict) -> str` — 从完整响应中提取第一个有效 URL，防御 `results` 为 None/null/[None]/[]
+- `lib/runninghub_client.py:_pick_first_valid_url(results) -> str|None` — 从 results 列表中安全提取
+- `wait_for_completion` **不再无条件信任 SUCCESS** — 必须 `_pick_first_valid_url` 非空才返回，否则最多重试 10 次（50s CDN 缓冲）
+
+### 封面图
+
+- `_run_cover_generation` 使用 `_set_stage` 写状态，`max_wait=600`（10 min）
+- `build_cover_prompt(gender, script="")` 生成抖音竖屏封面 prompt，结合视频脚本文案前 60 字
+
+### localStorage 持久化策略
+
+`lib/video-task-store.ts` 定义了 `NON_PERSISTENT_FIELDS` = `[imageBase64, imagePreview, audioBase64, qrDataUrl]`。这些字段仅保留在内存中，不入 localStorage。写入体积从 ~14MB 降至 <1KB，解决 QuotaExceededError。
+
+### 进度条假读
+
+`_poll_video_task` 内置独立的 `_tick_progress()` 计时器，每 15 秒按 `已过时间 / 25min × 95%` 更新 `progress` 字段，前端不再卡 0%。
+
+### 注意事项
+
+- ✅ `load_dotenv(override=True)` — **必须保留**，否则 Windows 系统环境变量会覆盖 `.env` 中的 API Key
+- ✅ 所有 RunningHub API 响应解析**必须**用 `d.get("key") or default` 而非 `d.get("key", default)`，因为 key 存在但值为 null 时默认值不生效
+- ⚠️ `_task_store` 是内存 dict，FastAPI 重启后清空（P2 计划用 Redis 替代）
+- ⚠️ 不要往 `_set_stage` 或 `_task_store` 里存 base64 数据（用完即清）
+- ⚠️ 修改 `wait_for_completion`、`_pick_first_result_url`、`_set_stage` 等共享函数时，同时影响 4 个视频 endpoint
 
 ---
 
@@ -192,6 +284,83 @@ TEMPLATE_CONFIG = {
 
 ---
 
+## 桌面打包（Electron 33）
+
+> 详见 [docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md](docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md) 和 [docs/superpowers/specs/2026-06-24-central-activation-design.md](docs/superpowers/specs/2026-06-24-central-activation-design.md)。
+> 实施计划见 [docs/superpowers/plans/2026-06-24-electron-desktop-packaging-implementation.md](docs/superpowers/plans/2026-06-24-electron-desktop-packaging-implementation.md)。
+
+### 形态
+
+- **客户端**：Electron 33 + Node 20 + 内嵌 Next.js standalone + embeddable Python 3.13
+- **平台**：仅 Windows（NSIS 安装包）
+- **激活**：MVP 阶段就做激活码机制
+- **更新**：electron-updater 走 GitHub Releases
+
+### ffmpeg 路径修正
+
+`lib/video_postprocess.py:66-74` 的 `_FFMPEG_EXE` / `_FFPROBE_EXE` 现在**优先读环境变量**：
+
+```python
+_FFMPEG_EXE = os.environ.get("FFMPEG_EXE") or (
+    str(_LOCAL_FFMPEG_BIN / "ffmpeg.exe") if (_LOCAL_FFMPEG_BIN / "ffmpeg.exe").exists() else "ffmpeg"
+)
+```
+
+桌面打包时 Electron 主进程注入绝对路径，避免每台机器都依赖 `tools/ffmpeg/bin/`。**这是为什么 line 66-69 必须用 env 的原因**。
+
+### 端口策略
+
+- Next.js 跑 **3010**
+- uvicorn 跑 **8010**
+- 写入 `userData/.ports`，避免每次随机触发 Windows 防火墙弹窗
+
+### 子进程 env 注入（prod）
+
+主进程 spawn 时注入：
+
+| 变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` / `RUNNINGHUB_API_KEY` / `RESEND_API_KEY` / `ARK_API_KEY` | 中央服务下发后注入 |
+| `FFMPEG_EXE` / `FFPROBE_EXE` | 绝对路径 |
+| `CREDIT_DB_OVERRIDE` | `<userData>/data/accounts.db` |
+| `DATA_DIR` | `<userData>/video-cache` |
+| `VIDEO_BGM_DIR` | `<resources>/bgm` |
+| `VIDEO_POSTPROCESS_DIR` | `<userData>/video-postprocess` |
+
+子进程**不读 `.env` 文件**，避免明文 API Key 落到磁盘。
+
+### 开发流程
+
+```bash
+pnpm install                            # 含 electron + electron-builder + electron-log + node-machine-id
+pnpm electron:dev                       # dev 期：Electron 窗口 + dev 期的 next + uvicorn
+pnpm resources:build                    # 出包前：构建 resources/ 下所有产物
+pnpm preflight                          # 出包前：校验资源齐全
+pnpm dist:win                           # 出 NSIS 安装包到 release/
+```
+
+### Dev 期 vs Prod 期
+
+| 维度 | dev | prod |
+|---|---|---|
+| Next.js 命令 | `pnpm exec next dev` | `node server.js` |
+| Python 命令 | `python -m uvicorn main:app` | `<resources>/python/python.exe -m uvicorn main:app` |
+| Python cwd | 项目根 | `<resources>/` |
+| Next cwd | 项目根 | `<resources>/next-standalone/` |
+| 端口 | 3010 / 8010 | 3010 / 8010 |
+| API Key 注入 | 不注入（用 .env.local） | 从中央服务拉 |
+
+判断分支在 `electron/main.ts:bootstrap()`：用 `app.isPackaged` 区分。
+
+### 已知限制（MVP）
+
+- Windows Defender SmartScreen 弹"未知发布者"，需用户点"更多信息 → 仍要运行"
+- API Key 通过 `wmic process get CommandLine` 可能泄漏（命令行可见），后续阶段用临时 dotenv 优化
+- 单机单用户；不支持账号切换
+- 离线激活模式未实现（仅在线）
+
+---
+
 ## 关键文档与计划
 
 - [docs/superpowers/specs/](docs/superpowers/specs/) — 每次重大改动的设计文档
@@ -229,3 +398,118 @@ npx tsc --noEmit
 - `_FFMPEG_EXE` / `_FFPROBE_EXE` 优先用 `tools/ffmpeg/bin/`，但仓库内未自带二进制（部署时需补）
 - `burn_subtitle_ffmpeg` 的 3 个 dead 分支已删除，但保留 `has_audio_stream` no-op 调用以兼容旧 test mock
 - BGM 截断后的临时文件保留在 `output_dir/`，未做清理（避免与 ffmpeg 调试产物混淆）
+
+---
+
+## 待解决：图文视频 / 视频混剪 修复（2026-06-25）
+
+> **状态**：已诊断，待实施。已与用户确认修复方向。
+
+### 用户报告的现象
+
+视频混剪（mashup）功能生成完成后，前端下载到的是 `mashup_xxx_ac55a4_final.htm` 而非 `.mp4`，文件无法打开（"没有文件"）。图文视频（image-to-video）用户怀疑 ffmpeg 不支持图片在视频轨道播放 N 秒——但实际上 **ffmpeg 完全支持**（`-loop 1 -i image.png`），代码里已经这么写，问题在调用链路上。
+
+### 关键根因（推测，待核实）
+
+1. **`.htm` 文件来源**：`mashup_video_postprocess.py` 渲染函数本身输出 `.mp4`，但 main.py 流程中如果**前置链路**（声音克隆/下载）失败时把错误 HTML 当作音频保存到 `voice_local_path`，后续 ffmpeg 拿到的是 HTML 错误页 → 渲染出空视频或异常；或 response 中 `video_url` 在异常分支被错误指向了某个 `.htm` 路径。
+2. **同步阻塞接口**：当前图文视频 (`main.py:1360-1454`) 和视频混剪 (`main.py:1460-1554`) 都是 `async def` 但内部用 `asyncio.to_thread` 同步阻塞 → 浏览器默认超时（10 分钟）会先于流程完成，**用户可能没等到结果就以为失败了**。
+3. **ffmpeg 错误不可见**：当前失败时返回 `error: str`，但没有返回 `ffmpeg stderr`；调试只能去看 `lib/image_video_postprocess.py` 写出的 `ffmpeg_burn_cmd.txt` / `ffmpeg_burn_stderr.txt` 调试文件。
+
+### 修复方案（已与用户确认）
+
+| 维度 | 决策 |
+|---|---|
+| bug 修复 | **图文视频 + 视频混剪 都修**（两个模块剪辑逻辑几乎一样） |
+| 接口形态 | **改成异步任务队列**（参考数字人口播的 stage 系统，前端轮询） |
+| 架构深度 | **抽取共享工具**（xfade 转场链、字幕时间轴、BGM 选取），不合并为单一 render |
+
+### 关键文件清单
+
+**后端 Python：**
+
+- `main.py:1360-1454` — 图文视频 endpoint（同步，要拆路由 + 改异步）
+- `main.py:1460-1554` — 视频混剪 endpoint（同步，要拆路由 + 改异步）
+- `main.py:176-220` — STAGE 常量 + `_set_stage` 函数（**复用**，不重写）
+- `main.py:504` — `_task_store` 字典（**新建独立字典**：`_image_task_store` / `_mashup_task_store`）
+- `lib/image_video_postprocess.py` — 图文视频 ffmpeg 渲染（**已有完整实现**）
+- `lib/mashup_video_postprocess.py` — 视频混剪 ffmpeg 渲染（**已有完整实现**）
+- `lib/video_postprocess.py` — 通用 ffmpeg 模板（**不直接复用**，因为这两个是不同模式）
+- `lib/subtitle_generator.py` — 字幕生成（**复用**）
+- `lib/runninghub_client.py` — 声音克隆客户端（**复用**）
+- `routes/promo_video_routes.py` — 已存在的路由拆分样例（**可参考结构**）
+
+**前端 TypeScript：**
+
+- `components/image-video-workflow.tsx` — 图文视频前端（要改轮询）
+- `components/mashup-video-workflow.tsx` — 视频混剪前端（要改轮询）
+- `lib/video-task-store.ts` — localStorage 持久化（**模式复用**，新建图文/混剪专用）
+- `lib/video-task-runtime.ts` — 数字人口播运行时（**模式参考**，新建简化的图文/混剪 runtime）
+- `lib/video/api.ts:112-126` — 客户端 API 封装（要加轮询函数）
+
+### 拟定的 stage 设计（参考数字人口播模式）
+
+**图文视频 stages**（9 个）：
+
+```python
+STAGE_IV_DECODING_IMAGES    = "iv_decoding_images"      # 解码图片素材
+STAGE_IV_DECODING_AUDIO     = "iv_decoding_audio"       # 解码音色样本
+STAGE_IV_UPLOADING_AUDIO    = "iv_uploading_audio"      # 上传音色到 RunningHub
+STAGE_IV_SUBMITTING_CLONE   = "iv_submitting_clone"     # 提交音频克隆
+STAGE_IV_WAITING_CLONE      = "iv_waiting_clone"        # 等待克隆（≤10 分钟）
+STAGE_IV_DOWNLOADING_CLONE  = "iv_downloading_clone"    # 下载克隆音频
+STAGE_IV_RENDERING          = "iv_rendering"            # ffmpeg 渲染
+STAGE_IV_COMPLETED          = "iv_completed"
+STAGE_IV_FAILED             = "iv_failed"
+STAGE_IV_CANCELLED          = "iv_cancelled"
+```
+
+**视频混剪 stages**（9 个，前缀 `MV`）：
+
+```python
+STAGE_MV_DECODING_VIDEOS    = "mv_decoding_videos"      # 解码视频素材
+STAGE_MV_DECODING_AUDIO     = "mv_decoding_audio"
+STAGE_MV_UPLOADING_AUDIO    = "mv_uploading_audio"
+STAGE_MV_SUBMITTING_CLONE   = "mv_submitting_clone"
+STAGE_MV_WAITING_CLONE      = "mv_waiting_clone"
+STAGE_MV_DOWNLOADING_CLONE  = "mv_downloading_clone"
+STAGE_MV_RENDERING          = "mv_rendering"
+STAGE_MV_COMPLETED          = "mv_completed"
+STAGE_MV_FAILED             = "mv_failed"
+STAGE_MV_CANCELLED          = "mv_cancelled"
+```
+
+### 实施步骤建议
+
+1. **修 bug**：先在 main.py 现有同步流程里捕获 ffmpeg stderr + 前置链路（克隆/下载）的异常，把 `.htm` 文件来源查清楚——是 `audio_clone_url` 异常、还是 response fallback 写错文件。
+2. **抽路由**：把图文视频 endpoint 拆到 `routes/image_video_routes.py`、视频混剪拆到 `routes/mashup_video_routes.py`（参考 `routes/promo_video_routes.py` 结构）。
+3. **改异步**：每个模块加 `_run_xxx_pipeline` 后台 worker + `_set_stage` 阶段写入 + `_task_store` / `_poll_tasks` 独立字典。
+4. **抽共享**：把 `image_video_postprocess` 和 `mashup_video_postprocess` 里的 xfade 链构建、字幕时间轴分配、BGM 选取逻辑提到 `lib/video_clip_common.py`。
+5. **前端轮询**：图文视频 / 视频混剪前端改为提交后立即 `setInterval` 轮询 status endpoint，进度条按 stage 推进。
+6. **加 cancel**：每个模块加 `/cancel` endpoint（参考 `main.py:980-1003`），在 WAITING_CLONE 阶段可中断。
+
+### 验收方式
+
+- 后端：`POST /api/video/image-to-video` 与 `POST /api/video/mashup` 应在 30ms 内返回 `{task_id, status:"queued"}`
+- 后端：`GET /api/video/image-to-video/status?taskId=xxx` 返回完整 stage 链 + 进度
+- 前端：视频生成完成前不超时（即使 10 分钟也正常），Stage 进度条按顺序推进
+- 端到端：上传 7+ 张图片 + 音色 + 文案 → 3 步流程无错误，最终下载到真实 `.mp4`（非 `.htm`）
+- 取消：在 WAITING_CLONE 阶段点"停止"应能中断，不会扣错积分
+
+### 关联探索记录（2026-06-25）
+
+本次会话已完成 4 个并行的 Explore agent 深度探索，覆盖：
+
+1. 图文视频模块诊断（前端组件 + 后端 endpoint + ffmpeg 渲染）
+2. 视频混剪模块诊断（前端 + 后端 + 渲染函数）
+3. ffmpeg 通用模板与图文视频专用模块对比
+4. 数字人口播异步管线骨架（作为改造参考模板）
+
+关键发现：
+
+- `image_video_postprocess.py` 是 335 行**全量实现**（非 stub），main.py:1418 正确调用
+- `mashup_video_postprocess.py` 是 364 行**全量实现**，main.py 调用流程几乎一致
+- 两个 ffmpeg 渲染器**80% 逻辑重复**（xfade 转场、字幕、BGM 混音）
+- 数字人口播异步模式**完整且稳定**，可直接作为改造模板
+- `routes/promo_video_routes.py` **已存在但未注册到 main.py**，是路由拆分的现成样例
+
+> 接手者请直接看 `main.py:722-1046`（数字人口播异步管线完整实现）作为改造模板，无需重读 RunningHub / 字幕 / ffmpeg 模块。

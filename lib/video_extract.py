@@ -473,7 +473,7 @@ def _download_via_api(url: str, output_dir: str) -> tuple[str, dict]:
         wav_path,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"从视频提取音频失败: {e.stderr}") from e
 
@@ -739,7 +739,7 @@ def extract_audio_from_local_video(video_path: str, output_dir: str) -> str:
         wav_path,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"音频提取失败: {e.stderr}") from e
 

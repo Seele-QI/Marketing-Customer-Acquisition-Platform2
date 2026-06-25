@@ -85,14 +85,29 @@ def build_motion_prompt(gender: str, custom_prompt: str = "") -> str:
     return "\n".join(lines)
 
 
-def build_cover_prompt(gender: str) -> str:
-    """生成封面图 prompt，根据性别使用对应代词。"""
+def build_cover_prompt(gender: str, script: str = "") -> str:
+    """生成封面图 prompt（抖音竖屏发布封面），可选结合视频脚本文案主题。
+
+    Args:
+        gender: "male" | "female" — 用于选择合适的代词
+        script: 视频口播文案全文，截取前 60 字作为封面语境
+    """
     pronoun = "她" if gender == "female" else "他"
-    return (
-        f"{pronoun}面对镜头，专业自信的表情，柔和的工作室灯光，"
-        f"干净的浅灰色背景，电影级画质，竖屏封面图，"
-        f"高质量人像摄影，皮肤质感自然，眼神坚定温和"
+    parts = [
+        f"为抖音短视频创作一张竖屏发布封面图。"
+        f"以{pronoun}的形象照片为参考，保持{pronoun}的面部特征不变，"
+    ]
+    if script.strip():
+        snippet = script.strip().replace("\n", " ").replace("\r", " ")[:60]
+        parts.append(f"结合视频文案主题「{snippet}」进行设计。")
+    parts.append(
+        f"构图要求：{pronoun}位于画面中央偏上，表情自信有感染力，"
+        f"眼神直视镜头，背景简洁高级（渐变或模糊化处理），"
+        f"画面底部或侧边留出标题文字空间。"
+        f"色彩鲜艳明快但不刺眼，符合抖音年轻用户审美，"
+        f"高品质视觉设计，电影级光影，字体级排版感。"
     )
+    return "".join(parts)
 
 
 class RunningHubError(Exception):
@@ -102,6 +117,22 @@ class RunningHubError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+
+def _pick_first_valid_url(results) -> str | None:
+    """从 RunningHub 返回的 results 列表中安全提取第一个有效 URL。
+
+    返回 None 表示 results 为 None / 空列表 / 所有元素缺 url 字段 / url 为空字符串。
+    """
+    if not results or not isinstance(results, list):
+        return None
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = (item.get("url") or "").strip()
+        if url:
+            return url
+    return None
 
 
 class RunningHubClient:
@@ -179,7 +210,9 @@ class RunningHubClient:
             raise self._build_http_error("文件上传", resp)
 
         data = resp.json()
-        download_url = data.get("data", {}).get("download_url", "")
+        # RunningHub 上传接口偶发返回 {"data": null}，嵌套 .get 需要 or {} 兜底
+        data_payload = data.get("data") or {}
+        download_url = (data_payload.get("download_url") or "").strip()
         if not download_url:
             raise RunningHubError(f"文件上传返回缺少 download_url: {resp.text[:500]}")
 
@@ -232,7 +265,7 @@ class RunningHubClient:
                     "description": "输入模仿的文字",
                 },
             ],
-            "instanceType": "default",
+            "instanceType": "plus",
             "usePersonalQueue": "false",
         }
 
@@ -296,7 +329,7 @@ class RunningHubClient:
                     "fieldValue": motion_prompt,
                 },
             ],
-            "instanceType": "default",
+            "instanceType": "plus",
             "usePersonalQueue": "false",
         }
 
@@ -455,13 +488,32 @@ class RunningHubClient:
             status = result.get("status", "")
 
             if status == "SUCCESS":
+                # 必须拿到至少一个有效 URL 才算真正完成。
+                # RunningHub 偶发 "status=SUCCESS 但 results 为空/null/[{}]" 的情况
+                # （CDN 回源未完成 / 节点输出元数据而非产物文件），此时继续轮询。
                 results = result.get("results")
-                if results and len(results) > 0:
+                valid_url = _pick_first_valid_url(results)
+                if valid_url:
                     logger.info(f"Task {task_id} completed successfully. "
-                                f"Output: {results[0].get('url', 'N/A')[:80]}")
-                else:
-                    logger.warning(f"Task {task_id} marked SUCCESS but has no results.")
-                return result
+                                f"Output: {valid_url[:80]}")
+                    return result
+                # results 无效 —— 等待额外轮询周期（给 CDN/后端缓冲），仍无效则报错
+                if not hasattr(self, '_empty_success_count'):
+                    self._empty_success_count: dict[str, int] = {}
+                self._empty_success_count[task_id] = self._empty_success_count.get(task_id, 0) + 1
+                retries_left = max(0, 10 - self._empty_success_count[task_id])
+                logger.warning(
+                    f"Task {task_id} marked SUCCESS but results empty/invalid "
+                    f"(attempt {self._empty_success_count[task_id]}/10), "
+                    f"retrying in {poll_interval}s..."
+                )
+                if self._empty_success_count[task_id] >= 10:
+                    raise RunningHubError(
+                        f"任务 {task_id} 已标记 SUCCESS 但连续 10 次未返回有效结果 URL，"
+                        f"可能是 RunningHub 内部错误，请到 RunningHub 控制台检查任务状态。"
+                    )
+                await _async_sleep(poll_interval)
+                continue
 
             if status == "FAILED":
                 error_msg = result.get("errorMessage") or result.get("errorCode") or "未知错误"
