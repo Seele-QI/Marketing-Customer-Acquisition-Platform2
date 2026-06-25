@@ -39,8 +39,9 @@ public/agent-*
 # Video generation runtime cache (volumes, ffmpeg output, intermediate files)
 public/video-cache/
 
-# Local ffmpeg binaries (large files, deploy separately)
-tools/ffmpeg/bin/
+# Local ffmpeg binaries
+# - bin/ 入 git（团队 clone 后直接可用，不依赖单独下载）
+# - ffmpeg.zip 不入 git（中间产物，desktop 打包时再解压即可）
 tools/ffmpeg/ffmpeg.zip
 
 # Electron 打包产物（不入 git，由 scripts/ 产出）
