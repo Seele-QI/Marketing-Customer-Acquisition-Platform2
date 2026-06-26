@@ -130,6 +130,8 @@ ALIYUN_ASR_APP_KEY = (os.getenv("ALIYUN_ASR_APP_KEY") or "").strip()
 
 logging.basicConfig(level=logging.INFO)
 ensure_credit_schema()
+from lib.api_auth import ensure_credit_idempotency_index  # noqa: E402
+ensure_credit_idempotency_index()
 
 # ── Pydantic models for video endpoints ──
 
