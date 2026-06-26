@@ -1,6 +1,8 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
 import { deepseekChatCompletion } from "@/lib/deepseek-chat"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 type Body = {
   messages?: { role: string; content: string }[]
@@ -11,7 +13,7 @@ type Body = {
  * 身份定位 ·「产品档案」对话：与「人设 / AI对话」一致，走 DeepSeek Chat Completions（DEEPSEEK_API_KEY）。
  * 若需恢复火山方舟豆包，可再单独接 POSITIONING_PRODUCT_* 环境变量。
  */
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: Body
   try {
     body = await request.json()
@@ -40,6 +42,13 @@ export async function POST(request: Request) {
     stageHint ? `用户当前自评阶段：${stageHint}（请结合该阶段给出产品与变现侧建议）。` : "",
   ].filter(Boolean)
 
+  const refId = `positioning-product:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
+
   const result = await deepseekChatCompletion(
     [{ role: "system", content: systemLines.join("\n") }, ...messages],
     120_000,
@@ -50,4 +59,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ reply: result.text.trim() })
-}
+})

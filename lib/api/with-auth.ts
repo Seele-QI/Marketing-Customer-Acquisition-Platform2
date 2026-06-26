@@ -42,6 +42,21 @@ export function withAuth(handler: AuthedHandler) {
   }
 }
 
+/** 扣费失败时返回标准 402/500 Response；成功返回 null。 */
+export function chargeErrorResponse(e: unknown): Response {
+  const msg = e instanceof Error ? e.message : ""
+  if (msg === "INSUFFICIENT_CREDIT") {
+    return NextResponse.json(
+      { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足" } },
+      { status: 402 },
+    )
+  }
+  return NextResponse.json(
+    { detail: { code: "CHARGE_FAILED", message: "扣费失败" } },
+    { status: 500 },
+  )
+}
+
 export async function chargeCredit(opts: {
   cookieHeader: string
   scene: string

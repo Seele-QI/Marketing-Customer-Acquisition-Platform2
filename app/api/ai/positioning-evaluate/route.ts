@@ -1,6 +1,8 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
 import { deepseekChatCompletion } from "@/lib/deepseek-chat"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 type Body = {
   stageId?: string | null
@@ -16,7 +18,7 @@ const MAX_CONTEXT = 48_000
 /**
  * 身份定位页：结合「当前阶段」与一条历史对话，由 DeepSeek 输出评估（密钥仅服务端）。
  */
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: Body
   try {
     body = await request.json()
@@ -58,6 +60,13 @@ export async function POST(request: Request) {
     dialogueContext,
   ].join("\n")
 
+  const refId = `positioning-eval:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
+
   const result = await deepseekChatCompletion(
     [
       { role: "system", content: system },
@@ -71,4 +80,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ report: result.text.trim() })
-}
+})

@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
 import {
@@ -6,6 +7,7 @@ import {
   normalizeArkBaseUrl,
 } from "@/lib/ark-images-api"
 import { readServerEnv } from "@/lib/server-env"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const maxDuration = 120
 
@@ -137,7 +139,7 @@ function buildEndpointNotFoundDetail(endpointId: string): string {
  * 若未单独配置生图接入点，将按顺序尝试通用接入点 ID（须本身是生图 ep，对话接入点会报 InvalidParameter）。
  * 可选：若「API 接入」里为该生图服务单独下发的 Key 与通用 Key 不同，可单独配置。
  */
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   const apiKey = readServerEnv("ARK_API_KEY")
   const apiSecret = readServerEnv("ARK_API_SECRET") || readServerEnv("VOLCENGINE_API_KEY")
   const imageApiKeyExclusive = readServerEnv("ARK_IMAGE_API_KEY")
@@ -215,6 +217,13 @@ export async function POST(request: Request) {
     const mime = firstRef.mimeType!.startsWith("image/") ? firstRef.mimeType! : "image/jpeg"
     const b64 = firstRef.dataBase64.replace(/\s/g, "")
     payload.image = b64.startsWith("data:") ? b64 : `data:${mime};base64,${b64}`
+  }
+
+  const refId = `ark-image:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_ark_image", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
   }
 
   const url = `${base}/images/generations`
@@ -327,4 +336,4 @@ export async function POST(request: Request) {
 
   urls = combined.slice(0, targetN)
   return NextResponse.json({ urls })
-}
+})

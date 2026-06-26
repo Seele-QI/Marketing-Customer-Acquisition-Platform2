@@ -1,5 +1,7 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 import { deepseekChatCompletion } from "@/lib/deepseek-chat"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const maxDuration = 60
 
@@ -25,7 +27,7 @@ type Body = {
   messages?: { role: string; content: string }[]
 }
 
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: Body
   try {
     body = await request.json()
@@ -52,6 +54,13 @@ export async function POST(request: Request) {
   const conversationText = recentMessages
     .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content}`)
     .join("\n\n")
+
+  const refId = `memory-extract:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
 
   const result = await deepseekChatCompletion(
     [
@@ -91,4 +100,4 @@ export async function POST(request: Request) {
     preferences: Array.isArray(extracted.preferences) ? extracted.preferences.filter((p): p is string => typeof p === "string").slice(0, 3) : [],
     facts: Array.isArray(extracted.facts) ? extracted.facts.filter((f): f is string => typeof f === "string").slice(0, 3) : [],
   })
-}
+})

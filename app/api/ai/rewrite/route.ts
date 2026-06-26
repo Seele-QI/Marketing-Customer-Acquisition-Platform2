@@ -5,7 +5,7 @@ import {
   DEFAULT_REWRITE_SYSTEM,
   deepseekChatCompletion,
 } from "@/lib/deepseek-chat"
-import { chargeCredit, withAuth } from "@/lib/api/with-auth"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 /**
  * AI 爆改：Next 服务端直连 DeepSeek。固定 system prompt，不再接受客户端覆盖。
@@ -35,17 +35,7 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   try {
     await chargeCredit({ cookieHeader, scene: "ai_rewrite", refId })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : ""
-    if (msg === "INSUFFICIENT_CREDIT") {
-      return NextResponse.json(
-        { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足" } },
-        { status: 402 },
-      )
-    }
-    return NextResponse.json(
-      { detail: { code: "CHARGE_FAILED", message: "扣费失败" } },
-      { status: 500 },
-    )
+    return chargeErrorResponse(e)
   }
 
   const result = await deepseekChatCompletion(

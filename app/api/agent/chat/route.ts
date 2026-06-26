@@ -5,7 +5,7 @@ import {
   XHS_AGENT_SYSTEM,
   deepseekChatCompletion,
 } from "@/lib/deepseek-chat"
-import { chargeCredit, withAuth } from "@/lib/api/with-auth"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 /**
  * 通用对话：固定「小红书爆款制造机」system；不再允许客户端覆盖 system_instruction。
@@ -35,17 +35,7 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   try {
     await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : ""
-    if (msg === "INSUFFICIENT_CREDIT") {
-      return NextResponse.json(
-        { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足" } },
-        { status: 402 },
-      )
-    }
-    return NextResponse.json(
-      { detail: { code: "CHARGE_FAILED", message: "扣费失败" } },
-      { status: 500 },
-    )
+    return chargeErrorResponse(e)
   }
 
   const result = await deepseekChatCompletion(

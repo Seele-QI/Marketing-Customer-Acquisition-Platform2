@@ -1,6 +1,8 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 import { deepseekChatCompletion } from "@/lib/deepseek-chat"
 import { IP_DIAGNOSIS_SYSTEM, getStageSupplement } from "@/lib/prompts/ip-positioning-prompts"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const maxDuration = 120
 
@@ -14,7 +16,7 @@ type Body = {
   extraContext?: string
 }
 
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: Body
   try {
     body = await request.json()
@@ -51,6 +53,13 @@ export async function POST(request: Request) {
     .filter(Boolean)
     .join("\n")
 
+  const refId = `ip-diagnosis:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_ip_positioning", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
+
   const result = await deepseekChatCompletion(
     [
       { role: "system", content: IP_DIAGNOSIS_SYSTEM + stageSupp },
@@ -67,4 +76,4 @@ export async function POST(request: Request) {
     analysis: result.text.trim(),
     platform,
   })
-}
+})

@@ -47,6 +47,7 @@ SCENE_COST_TABLE: dict[str, int] = {
     "ai_chat": CHAT_COST,
     "ai_rewrite": CHAT_COST,
     "ai_ip_positioning": 20,
+    "ai_ark_image": 20,
 }
 
 

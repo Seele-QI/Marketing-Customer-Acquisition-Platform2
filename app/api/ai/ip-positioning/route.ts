@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 import { deepseekChatCompletion } from "@/lib/deepseek-chat"
 import {
@@ -6,6 +7,7 @@ import {
 } from "@/lib/prompts/ip-positioning-prompts"
 import { recordCost } from "@/lib/cost-tracker"
 import { readServerEnv } from "@/lib/server-env"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const maxDuration = 120
 
@@ -78,7 +80,7 @@ function validateTrack(t: unknown): t is TrackJSON {
   )
 }
 
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   const startTime = Date.now()
   const model = readServerEnv("DEEPSEEK_CHAT_MODEL") || "deepseek-chat"
 
@@ -121,6 +123,13 @@ export async function POST(request: Request) {
   const systemChars = IP_POSITIONING_SYSTEM.length
   const userChars = userMessage.length
   const estimatedPromptTokens = Math.ceil((systemChars + userChars) / 2)
+
+  const refId = `ip-positioning:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_ip_positioning", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
 
   const result = await deepseekChatCompletion(messages, 120_000)
   const durationMs = Date.now() - startTime
@@ -208,4 +217,4 @@ export async function POST(request: Request) {
       ).toFixed(6),
     },
   })
-}
+})

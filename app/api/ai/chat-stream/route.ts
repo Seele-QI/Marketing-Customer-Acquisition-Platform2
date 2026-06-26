@@ -1,8 +1,10 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
 import { buildCopywritingEnrichedSystemPrompt } from "@/lib/prompts/copywriting-agent-systems"
 import { getWorkflowKnowledgeForAgent } from "@/lib/prompts/copywriting-workflow-knowledge"
 import { deepseekApiKeyMissingUserMessage, getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
+import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const runtime = "nodejs"
 
@@ -118,7 +120,42 @@ function normalizeArkBaseUrl(raw: string): string {
   return t
 }
 
-export async function POST(request: Request) {
+/** 客户端断开时取消上游 SSE 读取，避免空转。 */
+function pipeUpstreamSse(upstreamBody: ReadableStream<Uint8Array>, clientSignal: AbortSignal): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = upstreamBody.getReader()
+      const onAbort = () => {
+        reader.cancel().catch(() => {})
+        try {
+          controller.close()
+        } catch {
+          /* already closed */
+        }
+      }
+      clientSignal.addEventListener("abort", onAbort, { once: true })
+      try {
+        while (!clientSignal.aborted) {
+          const { done, value } = await reader.read()
+          if (done) break
+          controller.enqueue(value)
+        }
+      } catch {
+        /* upstream cancelled or client gone */
+      } finally {
+        clientSignal.removeEventListener("abort", onAbort)
+        reader.cancel().catch(() => {})
+        try {
+          controller.close()
+        } catch {
+          /* already closed */
+        }
+      }
+    },
+  })
+}
+
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: {
     userMessage?: string
     agentName?: string
@@ -283,6 +320,18 @@ export async function POST(request: Request) {
 
   console.log(`[chat-stream] provider=${providerLabel}, hasImages=${hasImages}, model=${(requestBody as Record<string, unknown>).model}, url=${upstreamUrl}`)
 
+  const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
+
+  const upstreamSignal = AbortSignal.any([
+    request.signal,
+    AbortSignal.timeout(90_000),
+  ])
+
   let upstream: Response
   try {
     upstream = await fetch(upstreamUrl, {
@@ -293,7 +342,7 @@ export async function POST(request: Request) {
         Accept: "text/event-stream",
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(90_000),
+      signal: upstreamSignal,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -324,7 +373,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
   }
 
-  return new Response(upstream.body, {
+  return new Response(pipeUpstreamSse(upstream.body, request.signal), {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -333,4 +382,4 @@ export async function POST(request: Request) {
       "X-Accel-Buffering": "no",
     },
   })
-}
+})
