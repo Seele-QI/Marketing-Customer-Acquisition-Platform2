@@ -38,7 +38,7 @@ from lib.credit import (
     list_redeem_code_batches,
     redeem_code,
 )
-from lib.rate_limit import check_ip, check_email
+from lib.rate_limit import check_ip, check_email, record as rate_record
 from lib.email import send_login_link
 from lib.video_extract import (
     ExtractionTask,
@@ -1967,6 +1967,12 @@ async def auth_send_link(req: SendLinkRequest, request: Request):
     base = _public_base(request)
     link = f"{base}/auth/verify?token={token}"
     send_login_link(email, link)
+    try:
+        rate_record("email", email_h)
+        if ip:
+            rate_record("ip", ip)
+    except Exception:
+        logger.exception("rate_record failed")
     return {"ok": True}
 
 
