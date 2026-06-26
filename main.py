@@ -643,6 +643,58 @@ def _is_http_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
 
 
+# —— 受信任的本地媒体根目录（用于 video/字幕 路径白名单）——
+_TRUSTED_MEDIA_ROOTS: tuple[str, ...] = tuple(
+    os.path.realpath(p) for p in (POST_PROCESS_ROOT, MANUAL_UPLOAD_ROOT, GENERATED_VIDEO_CACHE_ROOT)
+)
+
+
+def _ensure_path_in_trusted_root(raw_path: str, *, field: str) -> str:
+    """对客户端传入的本地路径做穿越检查 + 白名单匹配。
+
+    任何来自用户的 `*_path` 字段（视频路径、字幕路径、图片路径）都必须
+    经过本函数后才能交给 ffmpeg / 文件系统使用，否则攻击者可读写任意
+    磁盘位置（例如 `C:/Windows/System32/drivers/etc/hosts` 这种）。
+    """
+    cleaned = (raw_path or "").strip()
+    if not cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "PATH_EMPTY", "message": f"{field} 不能为空"},
+        )
+    # 拒绝 NUL / 控制字符（防御 shell 注入 / ASS filter 注入）
+    if any(ord(ch) < 32 for ch in cleaned) or "\x00" in cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "PATH_INVALID_CHARS", "message": f"{field} 含非法字符"},
+        )
+    real = os.path.realpath(cleaned)
+    for root in _TRUSTED_MEDIA_ROOTS:
+        if real == root or real.startswith(root + os.sep):
+            return real
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "code": "PATH_OUTSIDE_ALLOWED",
+            "message": f"{field} 必须位于受信任的媒体目录内",
+        },
+    )
+
+
+def _to_subtitle_public_url(real_path: str, *, base_url: str = "") -> str:
+    """把字幕绝对路径转成对外 URL（仅在 POST_PROCESS_ROOT 子树内）。"""
+    if not real_path:
+        return ""
+    real = os.path.realpath(real_path)
+    root = os.path.realpath(POST_PROCESS_ROOT)
+    if real == root or real.startswith(root + os.sep):
+        rel = os.path.relpath(real, root).replace(os.sep, "/")
+        base = (base_url or "").rstrip("/")
+        return f"{base}/static/video-postprocess/{rel}"
+    # 不在 POST_PROCESS_ROOT 内的字幕不对外暴露路径，避免泄露内部目录结构
+    return ""
+
+
 async def _download_video_to_project_cache(video_url: str, task_id: str, timeout: float = 180.0) -> str:
     os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
     safe_name = _safe_cache_name(task_id, f"video_{int(time.time())}")
@@ -1154,7 +1206,14 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
             _edit_task_store[edit_job_id]["progress"] = 25 if should_cleanup_cache else 35
 
         # ── 自动字幕：未提供预生成字幕文件时，自动执行 ASR 语音识别 ──
-        asr_subtitle_path = (req.subtitle_file_path or "").strip()
+        client_subtitle_path = (req.subtitle_file_path or "").strip()
+        if client_subtitle_path:
+            # 客户端给的字幕路径必须落在受信任目录里，否则 ffmpeg 的 subtitles=
+            # 过滤器可加载任意系统文件作为字幕（信息泄露 / 任意文件读取）
+            client_subtitle_path = _ensure_path_in_trusted_root(
+                client_subtitle_path, field="subtitle_file_path",
+            )
+        asr_subtitle_path = client_subtitle_path
         if not asr_subtitle_path and os.path.isfile(input_path):
             try:
                 _edit_task_store[edit_job_id]["progress"] = 40
@@ -1229,7 +1288,7 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
             bgm_dir=_resolve_bgm_dir(req.bgm_dir),
             bgm_volume=bgm_volume,
             input_video_path=input_path,
-            subtitle_file_path=asr_subtitle_path or req.subtitle_file_path,
+            subtitle_file_path=asr_subtitle_path,
             slide_image_paths=slide_temp_paths or None,
         )
 
@@ -2526,7 +2585,9 @@ async def _run_auto_subtitle(task_id: str, req: AutoSubtitleRequest) -> None:
 
             task["status"] = "completed"
             task["progress"] = 100
+            # 仅在内部存绝对路径供 ffmpeg 使用，对外只暴露相对 URL
             task["subtitle_path"] = dest_path
+            task["subtitle_url"] = _to_subtitle_public_url(dest_path)
             task["subtitle_text"] = result.text
 
             logger.info(
@@ -2560,13 +2621,8 @@ async def video_auto_subtitle(req: AutoSubtitleRequest, request: Request):
         raise HTTPException(status_code=400, detail="字幕格式仅支持 ass 或 srt")
 
     if req.source == "local":
-        real_video = os.path.realpath(req.video_path.strip())
-        allowed_roots = [os.path.realpath(POST_PROCESS_ROOT), os.path.realpath(MANUAL_UPLOAD_ROOT)]
-        if not any(real_video == r or real_video.startswith(r + os.sep) for r in allowed_roots):
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "PATH_OUTSIDE_ALLOWED", "message": "video_path 必须在受信任目录内"},
-            )
+        # 强校验：必须落在 POST_PROCESS_ROOT / MANUAL_UPLOAD_ROOT / GENERATED_VIDEO_CACHE_ROOT 内
+        _ensure_path_in_trusted_root(req.video_path, field="video_path")
 
     task_id = _new_auto_subtitle_task_id()
     _auto_subtitle_tasks[task_id] = {
@@ -2575,6 +2631,7 @@ async def video_auto_subtitle(req: AutoSubtitleRequest, request: Request):
         "status": "queued",
         "progress": 0,
         "subtitle_path": "",
+        "subtitle_url": "",
         "subtitle_text": "",
         "sentence_count": 0,
         "error": "",
@@ -2599,10 +2656,12 @@ async def video_auto_subtitle_status(task_id: str, request: Request):
         raise HTTPException(status_code=404, detail="未找到该字幕任务")
     assert_task_owner(task, user, task_id=tid)
 
+    # 对外只返回 URL 化的字幕地址；绝对磁盘路径仅供本进程内 ffmpeg 调用使用，
+    # 直接暴露会泄露 POST_PROCESS_ROOT 实际部署位置（例如 /data/...）。
     return AutoSubtitleResponse(
         task_id=task["task_id"],
         status=task["status"],
-        subtitle_path=task.get("subtitle_path", ""),
+        subtitle_path=task.get("subtitle_url", "") or task.get("subtitle_path", ""),
         subtitle_text=task.get("subtitle_text", ""),
         sentence_count=task.get("sentence_count", 0),
         error=task.get("error", ""),
