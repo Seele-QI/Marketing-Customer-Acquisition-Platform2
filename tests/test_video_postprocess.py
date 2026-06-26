@@ -297,9 +297,10 @@ def test_burn_subtitle_ffmpeg_uses_bgm_mix_and_no_visual_filters(
     assert "boxblur=" not in cmd_text
 
 
+@patch("main._resolve_bgm_dir", return_value="bgm/smooth")
 @patch("main.asyncio.to_thread", new_callable=AsyncMock)
 @patch("main.download_to_path", new_callable=AsyncMock)
-def test_run_post_process_passes_bgm_related_arguments(mock_download, mock_to_thread):
+def test_run_post_process_passes_bgm_related_arguments(mock_download, mock_to_thread, _mock_bgm):
     task_id = "task-123"
     main._task_store[task_id] = {
         "task_id": task_id,

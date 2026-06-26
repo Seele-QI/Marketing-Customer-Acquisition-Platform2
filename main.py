@@ -80,7 +80,31 @@ os.makedirs(MANUAL_UPLOAD_ROOT, exist_ok=True)
 MAX_REMOTE_VIDEO_BYTES = int(os.getenv("MAX_REMOTE_VIDEO_BYTES") or 300 * 1024 * 1024)
 MAX_REMOTE_AUDIO_BYTES = int(os.getenv("MAX_REMOTE_AUDIO_BYTES") or 80 * 1024 * 1024)
 MAX_REMOTE_IMAGE_BYTES = int(os.getenv("MAX_REMOTE_IMAGE_BYTES") or 30 * 1024 * 1024)
-app.mount("/static/video-postprocess", StaticFiles(directory=POST_PROCESS_ROOT, html=False), name="video-postprocess")
+class _HardenedStaticFiles(StaticFiles):
+    """在标准 StaticFiles 之上加 nosniff + no-index 等安全头。
+
+    standard StaticFiles 不会设置任何安全头：
+    - 浏览器会按推断 Content-Type 渲染（XSS via uploaded .html / .svg）
+    - 目录浏览本就 html=False，但 Range / 路径穿越还是 ASGI 层防护更强
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        try:
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            # 让 CDN / 浏览器都不长期缓存渲染结果（避免他用户 URL 拼凑命中缓存）
+            response.headers.setdefault("Cache-Control", "private, max-age=300")
+        except Exception:
+            pass
+        return response
+
+
+app.mount(
+    "/static/video-postprocess",
+    _HardenedStaticFiles(directory=POST_PROCESS_ROOT, html=False),
+    name="video-postprocess",
+)
 
 
 def _require_admin_key(request: Request) -> None:
@@ -681,6 +705,25 @@ def _ensure_path_in_trusted_root(raw_path: str, *, field: str) -> str:
     )
 
 
+_FFMPEG_ERROR_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^\s'\":]+|/[^\s'\":\(\)]+/")
+
+
+def _sanitize_ffmpeg_error(raw: str, *, max_len: int = 400) -> str:
+    """把 ffmpeg stderr 末段脱敏成可对外展示的短消息。
+
+    - 替换 Windows / POSIX 绝对路径为 `<path>`
+    - 保留最后 max_len 字符的关键错误信息（如 codec / 时长不匹配）
+    - 多空白合并
+    """
+    if not raw:
+        return ""
+    s = _FFMPEG_ERROR_PATH_RE.sub("<path>", raw)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > max_len:
+        s = "..." + s[-max_len:]
+    return s
+
+
 def _to_subtitle_public_url(real_path: str, *, base_url: str = "") -> str:
     """把字幕绝对路径转成对外 URL（仅在 POST_PROCESS_ROOT 子树内）。"""
     if not real_path:
@@ -736,10 +779,10 @@ async def _prepare_generated_video_input(video_url: str, task_id: str, output_di
             return candidate, False
     if cleaned.startswith("/"):
         return _resolve_project_public_path(cleaned), False
-    if os.path.isabs(cleaned) and os.path.exists(cleaned):
-        return cleaned, False
-    input_path = os.path.join(output_dir, "input.mp4")
-    return input_path, False
+    raise HTTPException(
+        status_code=400,
+        detail={"code": "BAD_VIDEO_URL", "message": "video_url 必须是 http(s) 或 /static/ / 项目 public 路径"},
+    )
 
 
 def _cleanup_generated_video_cache(input_path: str, remove_cache: bool) -> None:
@@ -964,7 +1007,7 @@ async def _run_post_process(task_id: str, video_url: str):
                 "post_video_url": "",
                 "post_stage": "failed",
                 "post_progress": 0,
-                "post_error": result.error,
+                "post_error": _sanitize_ffmpeg_error(result.error),
                 "error": "",
                 "estimated_minutes": 0,
             }
@@ -1313,7 +1356,7 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
             "status": "failed",
             "progress": 0,
             "output_video_url": "",
-            "error": result.error or "剪辑失败",
+            "error": _sanitize_ffmpeg_error(result.error) or "剪辑失败",
         }
     except Exception as e:
         _edit_task_store[edit_job_id] = {
@@ -1579,7 +1622,7 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
             return ImageToVideoResponse(
                 task_id=task_id,
                 status="failed",
-                error=result.error,
+                error=_sanitize_ffmpeg_error(result.error),
             )
 
     except RunningHubError as e:
@@ -1707,7 +1750,7 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
             return MashupVideoResponse(
                 task_id=task_id,
                 status="failed",
-                error=result.error,
+                error=_sanitize_ffmpeg_error(result.error),
             )
 
     except RunningHubError as e:
