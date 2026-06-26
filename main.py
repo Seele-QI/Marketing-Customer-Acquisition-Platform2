@@ -2307,37 +2307,110 @@ async def account_unbind(request: Request, id: str = ""):
 # ════════════════════════════════════════════════════════════════════════
 
 
+# 文案提取任务归属映射（main.py 进程内）。重启即失，与 _extract_tasks 一致。
+_extract_task_owners: dict[str, int] = {}
+
+# 允许文案提取的来源域名白名单（含主域 + 短链域）。
+# 拒绝任意域名可有效防 SSRF，并避免给攻击者提供 yt-dlp 的内网探测面。
+_COPYWRITING_HOSTS: frozenset[str] = frozenset({
+    "www.douyin.com", "douyin.com", "v.douyin.com", "iesdouyin.com",
+    "www.kuaishou.com", "kuaishou.com", "v.kuaishou.com",
+    "www.bilibili.com", "bilibili.com", "b23.tv", "m.bilibili.com",
+    "channels.weixin.qq.com",
+    "www.xiaohongshu.com", "xiaohongshu.com", "xhslink.com",
+    "www.youtube.com", "youtube.com", "youtu.be",
+})
+
+
+def _validate_extract_url(url: str) -> str:
+    """对用户传入的视频链接做协议 + 主机白名单 + 内网拦截校验。"""
+    from urllib.parse import urlparse
+    import ipaddress
+
+    cleaned = (url or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="请输入视频链接")
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "BAD_URL_SCHEME", "message": "仅支持 http(s) 链接"},
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "BAD_URL_HOST", "message": "无法解析视频域名"},
+        )
+    # 拒绝直接以 IP 访问，进一步防 SSRF / 内网探测
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "URL_PRIVATE_IP", "message": "禁止访问内网地址"},
+            )
+        # 允许 IP 形式但要求是已知 CDN —— 默认全部拒绝
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "URL_BARE_IP", "message": "请使用平台域名链接"},
+        )
+    except ValueError:
+        pass
+    if host not in _COPYWRITING_HOSTS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "URL_HOST_NOT_ALLOWED",
+                "message": "仅支持抖音 / 快手 / B 站 / 视频号 / 小红书 / YouTube 链接",
+                "host": host,
+            },
+        )
+    return cleaned
+
+
 @app.post("/api/copywriting/extract", response_model=CopyExtractResponse)
-async def copywriting_extract(req: CopyExtractRequest):
+async def copywriting_extract(req: CopyExtractRequest, request: Request):
     """
     提交文案提取任务
 
-    流程：创建任务 → 异步执行（字幕优先 → ASR） → 轮询状态
+    流程：校验来源域名 → 创建任务 → 异步执行（字幕优先 → ASR） → 轮询状态
     """
-    url = (req.url or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="请输入视频链接")
-
-    # 基础 URL 格式校验
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise HTTPException(status_code=400, detail="视频链接格式不正确，请粘贴完整的网址")
+    user = require_user(request)
+    safe_url = _validate_extract_url(req.url or "")
 
     try:
-        task = create_extract_task(url)
+        task = create_extract_task(safe_url)
+        _extract_task_owners[task.task_id] = user.id
         import asyncio
-        asyncio.create_task(run_extraction(task.task_id, url))
+        asyncio.create_task(run_extraction(task.task_id, safe_url))
 
         return CopyExtractResponse(task_id=task.task_id, status="queued")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建提取任务失败: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("create copywriting extract task failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "CREATE_TASK_FAILED", "message": "创建提取任务失败，请稍后重试"},
+        )
 
 
 @app.get("/api/copywriting/extract/status", response_model=CopyExtractStatusResponse)
-async def copywriting_extract_status(task_id: str):
-    """查询文案提取任务状态"""
+async def copywriting_extract_status(task_id: str, request: Request):
+    """查询文案提取任务状态（仅本人）"""
+    user = require_user(request)
     tid = (task_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="缺少 task_id 参数")
+
+    owner = _extract_task_owners.get(tid)
+    if owner is None or int(owner) != int(user.id):
+        # 不区分"不存在"与"不属于你"，避免枚举
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "TASK_NOT_FOUND", "message": "未找到该提取任务"},
+        )
 
     stored = get_extract_task(tid)
     if not stored:
