@@ -39,6 +39,11 @@ from lib.credit import (
     redeem_code,
 )
 from lib.rate_limit import check_ip, check_email, record as rate_record
+from lib.api_auth import (
+    require_user,
+    assert_task_owner,
+    check_base64_size,
+)
 from lib.email import send_login_link
 from lib.video_extract import (
     ExtractionTask,
@@ -594,10 +599,26 @@ def _new_manual_upload_id() -> str:
     return f"upload_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
 
 
-def _resolve_manual_upload_path(upload_id: str) -> str:
+def _resolve_manual_upload_path(upload_id: str, expected_user_id: int | None = None) -> str:
+    """解析手动上传文件路径，校验归属。
+
+    expected_user_id 不为 None 时强制校验；为 None 时仅校验存在性
+    （遗留调用兼容；新调用方应传入 user_id）。
+    """
     stored = _manual_upload_store.get(upload_id)
     if not stored:
         raise HTTPException(status_code=404, detail="上传文件不存在或已失效")
+    if expected_user_id is not None:
+        owner = stored.get("user_id")
+        if owner is None or int(owner) != int(expected_user_id):
+            logger.warning(
+                "upload ownership violation upload_id=%s user=%s owner=%s",
+                upload_id, expected_user_id, owner,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "UPLOAD_NOT_OWNED", "message": "无权访问该上传文件"},
+            )
     path = stored.get("path", "")
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="上传文件不存在或已失效")
@@ -722,14 +743,19 @@ async def _run_cover_generation(task_id: str, *, image_url: str, gender: str) ->
 
 
 @app.post("/api/video/generate", response_model=TaskStatusResponse)
-async def video_generate(req: VideoGenerateRequest):
+async def video_generate(req: VideoGenerateRequest, request: Request):
     """
     提交视频创作任务
 
     流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 视频生成 → 轮询返回结果
     """
+    user = require_user(request)
     if not req.image_base64 or not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: image_base64, audio_base64, script")
+    if len(req.script) > 5000:
+        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
+    check_base64_size(req.image_base64, max_mb=10, name="image_base64")
+    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
 
     rh = _get_rh_client()
     image_path = audio_path = None
@@ -768,6 +794,7 @@ async def video_generate(req: VideoGenerateRequest):
         # 6. 存储任务状态供后续轮询
         _task_store[video_task_id] = {
             "task_id": video_task_id,
+            "user_id": user.id,
             "status": "queued",
             "progress": 0,
             "video_url": "",
@@ -980,10 +1007,14 @@ async def _poll_video_task(task_id: str):
 
 
 @app.post("/api/video/cancel")
-async def video_cancel(req: CancelVideoTaskRequest):
+async def video_cancel(req: CancelVideoTaskRequest, request: Request):
+    user = require_user(request)
     task_id = (req.task_id or "").strip()
     if not task_id:
         raise HTTPException(status_code=400, detail="缺少 task_id 参数")
+
+    stored = _task_store.get(task_id, {})
+    assert_task_owner(stored, user, task_id=task_id)
 
     task = _poll_tasks.pop(task_id, None)
     if task is not None:
@@ -992,7 +1023,6 @@ async def video_cancel(req: CancelVideoTaskRequest):
         except Exception:
             pass
 
-    stored = _task_store.get(task_id, {})
     _task_store[task_id] = {
         **stored,
         "task_id": task_id,
@@ -1009,50 +1039,36 @@ async def video_cancel(req: CancelVideoTaskRequest):
 
 
 @app.get("/api/video/status", response_model=TaskStatusResponse)
-async def video_status(taskId: str):
-    """查询视频任务状态"""
+async def video_status(taskId: str, request: Request):
+    """查询视频任务状态。
+
+    必须登录；只能查询本人任务（按 _task_store 中 user_id 校验）。
+    响应剥离 script / image_url / audio_url 等可能泄露源素材的字段。
+    """
+    user = require_user(request)
     if not taskId:
         raise HTTPException(status_code=400, detail="缺少 taskId 参数")
 
     stored = _task_store.get(taskId)
-    if stored:
-        return TaskStatusResponse(**stored)
-
-    # 未在内存，从 RunningHub 实时查询
-    rh = _get_rh_client()
-    try:
-        result = await rh.query_task(taskId)
-        status = result.get("status", "unknown")
-        video_url = ""
-        if status == "SUCCESS":
-            results = result.get("results", [])
-            video_url = results[0].get("url", "") if results else ""
-        task_status = status.lower()
-        post_status = stored.get("post_stage", "") if stored else ""
-        return TaskStatusResponse(
-            task_id=taskId,
-            status=task_status,
-            progress=50 if status == "RUNNING" else 0,
-            video_url=video_url,
-            cover_url=stored.get("cover_url", "") if stored else "",
-            cover_status=stored.get("cover_status", "idle") if stored else "idle",
-            cover_error=stored.get("cover_error", "") if stored else "",
-            cover_task_id=stored.get("cover_task_id", "") if stored else "",
-            post_video_url=stored.get("post_video_url", "") if stored else "",
-            post_stage=post_status,
-            post_progress=stored.get("post_progress", 0) if stored else 0,
-            post_error=stored.get("post_error", "") if stored else "",
-            error=result.get("errorMessage", ""),
+    if not stored:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "TASK_NOT_FOUND", "message": "任务不存在或已过期"},
         )
-    except RunningHubError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+    assert_task_owner(stored, user, task_id=taskId)
+
+    safe = {**stored}
+    for sensitive in ("script", "image_url", "audio_url", "video_prompt", "user_id"):
+        safe.pop(sensitive, None)
+    return TaskStatusResponse(**safe)
 
 
 # ── POST /api/video/cover ────────────────────────────────────
 
 
 @app.post("/api/video/manual-upload", response_model=ManualUploadResponse)
-async def video_manual_upload(file: UploadFile = File(...)):
+async def video_manual_upload(request: Request, file: UploadFile = File(...)):
+    user = require_user(request)
     filename = (file.filename or "upload.mp4").strip() or "upload.mp4"
     content_type = (file.content_type or "").lower()
     if not (content_type.startswith("video/") or filename.lower().endswith((".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"))):
@@ -1079,6 +1095,7 @@ async def video_manual_upload(file: UploadFile = File(...)):
 
     _manual_upload_store[upload_id] = {
         "upload_id": upload_id,
+        "user_id": user.id,
         "path": stored_path,
         "original_name": filename,
         "size": size,
@@ -1087,7 +1104,7 @@ async def video_manual_upload(file: UploadFile = File(...)):
     return ManualUploadResponse(upload_id=upload_id, file_url="", original_name=filename, size=size)
 
 
-async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str = ""):
+async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str = "", user_id: int | None = None):
     stored = _edit_task_store.get(edit_job_id, {})
     task_id = req.task_id or edit_job_id
     output_dir = os.path.join(POST_PROCESS_ROOT, task_id, edit_job_id)
@@ -1110,7 +1127,7 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
 
         # ── 输入归一化：3 个分支只产生 input_path（本地文件路径） ──
         if req.upload_id.strip():
-            input_path = _resolve_manual_upload_path(req.upload_id)
+            input_path = _resolve_manual_upload_path(req.upload_id, expected_user_id=user_id)
             _edit_task_store[edit_job_id]["progress"] = 35
         elif req.video_base64.strip():
             input_path = os.path.join(output_dir, f"{task_id}_input.mp4")
@@ -1246,16 +1263,24 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
 
 @app.post("/api/video/edit", response_model=EditTaskStatusResponse)
 async def video_edit(req: EditVideoRequest, request: Request):
+    user = require_user(request)
     # subtitle_text 可选：为空时后端会自动执行 ASR 语音识别生成字幕
     # 但至少需要提供一个视频来源
     if not req.video_url.strip() and not req.video_base64.strip() and not req.upload_id.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: video_url、upload_id 或 video_base64")
+    if req.video_base64.strip():
+        check_base64_size(req.video_base64, max_mb=500, name="video_base64")
+    if req.slide_images_base64:
+        for idx, img_b64 in enumerate(req.slide_images_base64):
+            if img_b64:
+                check_base64_size(img_b64, max_mb=10, name=f"slide_images_base64[{idx}]")
 
     edit_job_id = _new_edit_job_id()
     task_id = req.task_id or edit_job_id
     _edit_task_store[edit_job_id] = {
         "edit_job_id": edit_job_id,
         "task_id": task_id,
+        "user_id": user.id,
         "status": "queued",
         "progress": 0,
         "preset": req.preset,
@@ -1264,23 +1289,26 @@ async def video_edit(req: EditVideoRequest, request: Request):
         "error": "",
     }
     edit_base_url = str(request.base_url).rstrip("/") if request is not None else ""
-    edit_task = asyncio.create_task(_run_edit_job(edit_job_id, req, edit_base_url))
+    edit_task = asyncio.create_task(_run_edit_job(edit_job_id, req, edit_base_url, user_id=user.id))
     _edit_tasks[edit_job_id] = edit_task
     return EditTaskStatusResponse(**_edit_task_store[edit_job_id])
 
 
 @app.get("/api/video/edit/status", response_model=EditTaskStatusResponse)
-async def video_edit_status(editJobId: str):
+async def video_edit_status(editJobId: str, request: Request):
+    user = require_user(request)
     if not editJobId:
         raise HTTPException(status_code=400, detail="缺少 editJobId 参数")
     stored = _edit_task_store.get(editJobId)
     if not stored:
         raise HTTPException(status_code=404, detail="剪辑任务不存在")
+    assert_task_owner(stored, user, task_id=editJobId)
     return EditTaskStatusResponse(**stored)
 
 
 @app.post("/api/video/manual-edit")
 async def video_manual_edit(req: ManualEditRequest, request: Request):
+    require_user(request)
     return await video_edit(
         EditVideoRequest(
             task_id="",
@@ -1300,8 +1328,9 @@ async def video_manual_edit(req: ManualEditRequest, request: Request):
 
 
 @app.post("/api/video/cover")
-async def video_cover(req: CoverGenerateRequest):
+async def video_cover(req: CoverGenerateRequest, request: Request):
     """独立提交封面图生成任务"""
+    user = require_user(request)
     task_id = (req.task_id or "").strip()
     if not task_id:
         raise HTTPException(status_code=400, detail="缺少 task_id")
@@ -1309,6 +1338,7 @@ async def video_cover(req: CoverGenerateRequest):
     stored = _task_store.get(task_id)
     if not stored:
         raise HTTPException(status_code=404, detail="视频任务不存在")
+    assert_task_owner(stored, user, task_id=task_id)
 
     try:
         image_url = (stored.get("image_url") or req.image_url or "").strip()
@@ -1329,10 +1359,14 @@ async def video_cover(req: CoverGenerateRequest):
 
 
 @app.post("/api/video/clone-voice")
-async def video_clone_voice(req: VoiceCloneRequest):
+async def video_clone_voice(req: VoiceCloneRequest, request: Request):
     """仅音色克隆（不生成视频）"""
+    require_user(request)
     if not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
+    if len(req.script) > 5000:
+        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
+    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
 
     rh = _get_rh_client()
     audio_path = None
@@ -1375,11 +1409,19 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
 
     流程: 多图片 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 合成（图片+字幕+转场+BGM）
     """
+    require_user(request)
     _check_request_size(request)
     if len(req.images_base64) < 7:
         raise HTTPException(status_code=400, detail="至少需要上传 7 张图片")
+    if len(req.images_base64) > 30:
+        raise HTTPException(status_code=400, detail="图片数量不能超过 30 张")
     if not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
+    if len(req.script) > 5000:
+        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
+    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
+    for idx, img_b64 in enumerate(req.images_base64):
+        check_base64_size(img_b64, max_mb=10, name=f"images_base64[{idx}]")
 
     rh = _get_rh_client()
     audio_path = None
@@ -1494,11 +1536,19 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
 
     流程: 多视频 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 混剪（视频拼接+字幕+转场+BGM）
     """
+    require_user(request)
     _check_request_size(request)
     if len(req.videos_base64) < 5:
         raise HTTPException(status_code=400, detail="至少需要上传 5 段视频素材")
+    if len(req.videos_base64) > 20:
+        raise HTTPException(status_code=400, detail="视频素材数量不能超过 20 段")
     if not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
+    if len(req.script) > 5000:
+        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
+    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
+    for idx, vid_b64 in enumerate(req.videos_base64):
+        check_base64_size(vid_b64, max_mb=200, name=f"videos_base64[{idx}]")
 
     rh = _get_rh_client()
     audio_path = None
@@ -2347,14 +2397,15 @@ async def _run_auto_subtitle(task_id: str, req: AutoSubtitleRequest) -> None:
 
 
 @app.post("/api/video/auto-subtitle", response_model=AutoSubtitleResponse)
-async def video_auto_subtitle(req: AutoSubtitleRequest):
+async def video_auto_subtitle(req: AutoSubtitleRequest, request: Request):
     """
     自动字幕生成：从视频提取音频 → ASR 识别（词级时间戳） → 生成 SRT/ASS 字幕
 
     支持两种输入模式：
-      - source=local: 提供本地视频文件路径（video_path）—— 用于剪辑板块已有视频
-      - source=url:   提供在线视频链接（video_url）—— 用于外部链接视频
+      - source=local: 提供本地视频文件路径（video_path）—— 必须落在 POST_PROCESS_ROOT 内
+      - source=url:   提供在线视频链接（video_url）
     """
+    user = require_user(request)
     if req.source == "local" and not req.video_path.strip():
         raise HTTPException(status_code=400, detail="请提供本地视频文件路径")
     if req.source == "url" and not req.video_url.strip():
@@ -2362,9 +2413,19 @@ async def video_auto_subtitle(req: AutoSubtitleRequest):
     if req.subtitle_format not in ("ass", "srt"):
         raise HTTPException(status_code=400, detail="字幕格式仅支持 ass 或 srt")
 
+    if req.source == "local":
+        real_video = os.path.realpath(req.video_path.strip())
+        allowed_roots = [os.path.realpath(POST_PROCESS_ROOT), os.path.realpath(MANUAL_UPLOAD_ROOT)]
+        if not any(real_video == r or real_video.startswith(r + os.sep) for r in allowed_roots):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "PATH_OUTSIDE_ALLOWED", "message": "video_path 必须在受信任目录内"},
+            )
+
     task_id = _new_auto_subtitle_task_id()
     _auto_subtitle_tasks[task_id] = {
         "task_id": task_id,
+        "user_id": user.id,
         "status": "queued",
         "progress": 0,
         "subtitle_path": "",
@@ -2380,8 +2441,9 @@ async def video_auto_subtitle(req: AutoSubtitleRequest):
 
 
 @app.get("/api/video/auto-subtitle/status", response_model=AutoSubtitleResponse)
-async def video_auto_subtitle_status(task_id: str):
+async def video_auto_subtitle_status(task_id: str, request: Request):
     """查询自动字幕生成任务状态"""
+    user = require_user(request)
     tid = (task_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="缺少 task_id 参数")
@@ -2389,6 +2451,7 @@ async def video_auto_subtitle_status(task_id: str):
     task = _auto_subtitle_tasks.get(tid)
     if not task:
         raise HTTPException(status_code=404, detail="未找到该字幕任务")
+    assert_task_owner(task, user, task_id=tid)
 
     return AutoSubtitleResponse(
         task_id=task["task_id"],

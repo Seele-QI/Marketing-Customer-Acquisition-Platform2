@@ -24,6 +24,7 @@ def tmp_db(monkeypatch):
 
     credit_mod.ensure_credit_schema()
 
+
     conn = sqlite3.connect(path)
     conn.executescript(
         """
@@ -72,11 +73,19 @@ def tmp_db(monkeypatch):
     conn.close()
 
     auth_mod.ensure_credit_idempotency_index()
-    yield auth_mod, credit_mod, user_id
     try:
-        os.unlink(path)
-    except OSError:
-        pass
+        yield auth_mod, credit_mod, user_id
+    finally:
+        # teardown：把 lib.db / lib.credit / lib.api_auth reload 回 monkeypatch 还原后的 env
+        # 否则全局 DB_PATH 仍指向已删除的 tmp 文件，污染后续测试
+        monkeypatch.undo()
+        importlib.reload(db_mod)
+        importlib.reload(credit_mod)
+        importlib.reload(auth_mod)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def test_check_base64_size_ok(tmp_db):

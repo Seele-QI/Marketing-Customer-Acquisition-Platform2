@@ -2,7 +2,7 @@ import importlib
 import asyncio
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.conftest import setup_test_db
 
@@ -12,6 +12,7 @@ os.environ["CREDIT_REGISTER_BONUS"] = "100"
 
 import main  # noqa: E402
 import lib.video_postprocess as video_postprocess  # noqa: E402
+from lib.auth import CurrentUser  # noqa: E402
 from lib.video_postprocess import (  # noqa: E402
     _clean_subtitle_text,
     burn_subtitle_ffmpeg,
@@ -20,7 +21,14 @@ from lib.video_postprocess import (  # noqa: E402
     split_script_segments,
 )
 
+_FAKE_USER = CurrentUser(id=1, email_masked="t**@x", login_name="tester", nickname=None)
 
+
+def _fake_request():
+    return MagicMock()
+
+
+@patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
 @patch("main._base64_to_temp_file", new_callable=AsyncMock)
@@ -30,6 +38,7 @@ def test_video_generate_stores_default_postprocess_fields(
     mock_base64_to_temp_file,
     _mock_cleanup_temp,
     mock_create_task,
+    _mock_require_user,
 ):
     def _fake_create_task(coro):
         coro.close()
@@ -54,7 +63,7 @@ def test_video_generate_stores_default_postprocess_fields(
         script="第一句\n第二句",
     )
 
-    resp = asyncio.run(main.video_generate(req))
+    resp = asyncio.run(main.video_generate(req, _fake_request()))
 
     assert resp.task_id == "video-task-123"
     stored = main._task_store["video-task-123"]
@@ -63,9 +72,11 @@ def test_video_generate_stores_default_postprocess_fields(
     assert stored["bgm_volume"] == 0.32
     assert stored["business_card_text"] == ""
     assert stored["video_prompt_mode"] == "natural"
+    assert stored["user_id"] == _FAKE_USER.id
     assert len(stored["video_prompt"].splitlines()) == 11
 
 
+@patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
 @patch("main._base64_to_temp_file", new_callable=AsyncMock)
@@ -75,6 +86,7 @@ def test_video_generate_uses_custom_video_prompt_when_provided(
     mock_base64_to_temp_file,
     _mock_cleanup_temp,
     mock_create_task,
+    _mock_require_user,
 ):
     def _fake_create_task(coro):
         coro.close()
@@ -115,7 +127,7 @@ def test_video_generate_uses_custom_video_prompt_when_provided(
         video_prompt_mode="mode2",
     )
 
-    asyncio.run(main.video_generate(req))
+    asyncio.run(main.video_generate(req, _fake_request()))
 
     assert rh.submit_video.await_args.args[2] == custom_prompt
     stored = main._task_store["video-task-123"]
@@ -124,6 +136,7 @@ def test_video_generate_uses_custom_video_prompt_when_provided(
     assert len(stored["video_prompt"].splitlines()) == 11
 
 
+@patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
 @patch("main._base64_to_temp_file", new_callable=AsyncMock)
@@ -133,6 +146,7 @@ def test_video_generate_blank_custom_prompt_falls_back_to_natural_mode(
     mock_base64_to_temp_file,
     _mock_cleanup_temp,
     mock_create_task,
+    _mock_require_user,
 ):
     def _fake_create_task(coro):
         coro.close()
@@ -158,7 +172,7 @@ def test_video_generate_blank_custom_prompt_falls_back_to_natural_mode(
         video_prompt_mode="mode3",
     )
 
-    asyncio.run(main.video_generate(req))
+    asyncio.run(main.video_generate(req, _fake_request()))
 
     final_prompt = rh.submit_video.await_args.args[2]
     assert final_prompt.startswith("他对着镜头说话")

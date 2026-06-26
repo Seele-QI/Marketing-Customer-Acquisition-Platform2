@@ -13,10 +13,13 @@ os.environ["EMAIL_HASH_SALT"] = "test-salt"
 os.environ["CREDIT_REGISTER_BONUS"] = "100"
 
 import main  # noqa: E402
+from lib.auth import CurrentUser  # noqa: E402
 from lib.runninghub_client import RunningHubClient  # noqa: E402
 
 
 client = TestClient(main.app)
+
+_FAKE_USER = CurrentUser(id=42, email_masked="t**@x", login_name="tester", nickname=None)
 
 
 @pytest.fixture(autouse=True)
@@ -158,11 +161,13 @@ def test_poll_video_task_keeps_video_success_when_cover_generation_fails(
     assert stored["cover_error"] == "封面生成失败"
 
 
+@patch("main.require_user", return_value=_FAKE_USER)
 @patch("main._get_rh_client")
-def test_video_cover_retry_returns_cover_success_without_changing_video_status(mock_get_rh_client):
+def test_video_cover_retry_returns_cover_success_without_changing_video_status(mock_get_rh_client, _mock_require_user):
     task_id = "video-task-cover-retry"
     main._task_store[task_id] = {
         "task_id": task_id,
+        "user_id": _FAKE_USER.id,
         "status": "success",
         "progress": 100,
         "video_url": "https://example.com/video.mp4",
