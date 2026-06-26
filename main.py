@@ -2178,64 +2178,98 @@ _ACCOUNTS_DB = (
 )
 
 
+_SUPPORTED_ACCOUNT_PLATFORMS = ("douyin", "shipinhao", "xiaohongshu")
+
+
 def _init_accounts_db():
-    """初始化账号数据库（首次调用时自动创建）"""
+    """初始化账号数据库（首次调用时自动创建）。
+
+    user_id 列在旧库上通过 ADD COLUMN 兼容迁移；旧数据 user_id 留空，
+    管理员可在 admin 后台清理或转移。
+    """
     os.makedirs(os.path.dirname(_ACCOUNTS_DB), exist_ok=True)
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS accounts (
-            id TEXT PRIMARY KEY,
-            platform TEXT NOT NULL,
-            nickname TEXT DEFAULT '',
-            cookie_encrypted TEXT NOT NULL,
-            cookie_iv TEXT NOT NULL,
-            login_status TEXT DEFAULT 'unknown',
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                platform TEXT NOT NULL,
+                nickname TEXT DEFAULT '',
+                cookie_encrypted TEXT NOT NULL,
+                cookie_iv TEXT NOT NULL,
+                login_status TEXT DEFAULT 'unknown',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "user_id" not in cols:
+            conn.execute("ALTER TABLE accounts ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_user_platform ON accounts(user_id, platform)"
         )
-    """)
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class AccountBindRequest(BaseModel):
     platform: str
     cookieJson: str
+    nickname: str = ""
 
 
 @app.post("/api/accounts/bind")
-async def account_bind(req: AccountBindRequest):
-    """绑定平台账号 Cookie"""
+async def account_bind(req: AccountBindRequest, request: Request):
+    """绑定平台账号 Cookie（按用户隔离）"""
+    user = require_user(request)
     _init_accounts_db()
     platform = req.platform.strip()
-    if platform not in ("douyin", "shipinhao", "xiaohongshu"):
+    if platform not in _SUPPORTED_ACCOUNT_PLATFORMS:
         raise HTTPException(status_code=400, detail="不支持的平台")
     if not req.cookieJson.strip():
         raise HTTPException(status_code=400, detail="Cookie 不能为空")
+    if len(req.cookieJson) > 65536:
+        raise HTTPException(status_code=413, detail="Cookie 过大")
 
     encrypted, iv = encrypt_cookie(req.cookieJson.strip())
     now = _time.time()
     account_id = str(_uuid.uuid4())[:8]
+    nickname = (req.nickname or "").strip()[:64]
 
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    # Replace existing binding for this platform
-    conn.execute("DELETE FROM accounts WHERE platform = ?", (platform,))
-    conn.execute(
-        "INSERT INTO accounts (id, platform, nickname, cookie_encrypted, cookie_iv, login_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (account_id, platform, "", encrypted, iv, "valid", now, now),
-    )
-    conn.commit()
-    conn.close()
-    return {"id": account_id, "platform": platform, "message": "绑定成功"}
+    try:
+        # 仅清掉当前用户在该平台的旧绑定，绝不动其他用户的记录
+        conn.execute(
+            "DELETE FROM accounts WHERE user_id = ? AND platform = ?",
+            (user.id, platform),
+        )
+        conn.execute(
+            "INSERT INTO accounts (id, user_id, platform, nickname, cookie_encrypted, cookie_iv, login_status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (account_id, user.id, platform, nickname, encrypted, iv, "valid", now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": account_id, "platform": platform, "nickname": nickname, "message": "绑定成功"}
 
 
 @app.get("/api/accounts/list")
-async def accounts_list():
-    """列出已绑定的账号"""
+async def accounts_list(request: Request):
+    """列出当前用户已绑定的账号"""
+    user = require_user(request)
     _init_accounts_db()
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    rows = conn.execute("SELECT id, platform, nickname, login_status, created_at FROM accounts ORDER BY created_at DESC").fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT id, platform, nickname, login_status, created_at FROM accounts "
+            "WHERE user_id = ? ORDER BY created_at DESC",
+            (user.id,),
+        ).fetchall()
+    finally:
+        conn.close()
     return [
         {"id": r[0], "platform": r[1], "nickname": r[2], "login_status": r[3], "created_at": r[4]}
         for r in rows
@@ -2243,14 +2277,29 @@ async def accounts_list():
 
 
 @app.delete("/api/accounts/bind")
-async def account_unbind(id: str = ""):
-    """解绑平台账号"""
+async def account_unbind(request: Request, id: str = ""):
+    """解绑平台账号（仅允许删除当前用户名下的记录）"""
+    user = require_user(request)
+    target_id = (id or "").strip()
+    if not target_id:
+        raise HTTPException(status_code=400, detail="缺少账号 id")
     _init_accounts_db()
     conn = sqlite3.connect(_ACCOUNTS_DB)
-    conn.execute("DELETE FROM accounts WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
-    return {"message": "已解绑"}
+    try:
+        cur = conn.execute(
+            "DELETE FROM accounts WHERE id = ? AND user_id = ?",
+            (target_id, user.id),
+        )
+        affected = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if affected <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ACCOUNT_NOT_FOUND", "message": "账号不存在或不属于当前用户"},
+        )
+    return {"message": "已解绑", "id": target_id}
 
 
 # ════════════════════════════════════════════════════════════════════════
