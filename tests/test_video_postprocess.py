@@ -298,8 +298,8 @@ def test_burn_subtitle_ffmpeg_uses_bgm_mix_and_no_visual_filters(
 
 
 @patch("main.asyncio.to_thread", new_callable=AsyncMock)
-@patch("main.httpx.AsyncClient")
-def test_run_post_process_passes_bgm_related_arguments(mock_client_cls, mock_to_thread):
+@patch("main.download_to_path", new_callable=AsyncMock)
+def test_run_post_process_passes_bgm_related_arguments(mock_download, mock_to_thread):
     task_id = "task-123"
     main._task_store[task_id] = {
         "task_id": task_id,
@@ -310,9 +310,7 @@ def test_run_post_process_passes_bgm_related_arguments(mock_client_cls, mock_to_
         "preset": "default",
     }
 
-    mock_client = mock_client_cls.return_value.__aenter__.return_value
-    mock_response = type("Resp", (), {"content": b"video", "raise_for_status": lambda self: None})()
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_download.return_value = 1024
     mock_to_thread.return_value = SimpleNamespace(ok=False, output_path=None, error="boom")
 
     asyncio.run(main._run_post_process(task_id, "https://example.com/video.mp4"))

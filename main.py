@@ -46,6 +46,7 @@ from lib.api_auth import (
     consume_with_idempotency,
     SCENE_COST_TABLE,
 )
+from lib.safe_http import download_to_path, SafeHttpError
 from lib.email import send_login_link
 from lib.video_extract import (
     ExtractionTask,
@@ -74,6 +75,11 @@ MANUAL_UPLOAD_ROOT = os.path.join(_DATA_DIR, "video-cache", "manual-uploads")
 os.makedirs(POST_PROCESS_ROOT, exist_ok=True)
 os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
 os.makedirs(MANUAL_UPLOAD_ROOT, exist_ok=True)
+
+# —— 远端下载大小上限（防 DoS / OOM）——
+MAX_REMOTE_VIDEO_BYTES = int(os.getenv("MAX_REMOTE_VIDEO_BYTES") or 300 * 1024 * 1024)
+MAX_REMOTE_AUDIO_BYTES = int(os.getenv("MAX_REMOTE_AUDIO_BYTES") or 80 * 1024 * 1024)
+MAX_REMOTE_IMAGE_BYTES = int(os.getenv("MAX_REMOTE_IMAGE_BYTES") or 30 * 1024 * 1024)
 app.mount("/static/video-postprocess", StaticFiles(directory=POST_PROCESS_ROOT, html=False), name="video-postprocess")
 
 
@@ -641,13 +647,12 @@ async def _download_video_to_project_cache(video_url: str, task_id: str, timeout
     os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
     safe_name = _safe_cache_name(task_id, f"video_{int(time.time())}")
     input_path = os.path.join(GENERATED_VIDEO_CACHE_ROOT, f"{safe_name}_input.mp4")
-    tmp_path = f"{input_path}.download"
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        resp = await client.get(video_url)
-        resp.raise_for_status()
-        with open(tmp_path, "wb") as f:
-            f.write(resp.content)
-    os.replace(tmp_path, input_path)
+    await download_to_path(
+        video_url,
+        input_path,
+        max_bytes=MAX_REMOTE_VIDEO_BYTES,
+        timeout=timeout,
+    )
     return input_path
 
 
@@ -854,11 +859,12 @@ async def _run_post_process(task_id: str, video_url: str):
     input_path = os.path.join(base_dir, "input.mp4")
     post_video_url = ""
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.get(video_url)
-            resp.raise_for_status()
-            with open(input_path, "wb") as f:
-                f.write(resp.content)
+        await download_to_path(
+            video_url,
+            input_path,
+            max_bytes=MAX_REMOTE_VIDEO_BYTES,
+            timeout=180.0,
+        )
         _task_store[task_id] = {
             **stored,
             "task_id": task_id,
@@ -1459,11 +1465,12 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
         output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
         os.makedirs(output_dir, exist_ok=True)
         voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.get(audio_clone_url)
-            resp.raise_for_status()
-            with open(voice_local_path, "wb") as f:
-                f.write(resp.content)
+        await download_to_path(
+            audio_clone_url,
+            voice_local_path,
+            max_bytes=MAX_REMOTE_AUDIO_BYTES,
+            timeout=180.0,
+        )
 
         # 7. 调用 ffmpeg 图文视频合成
         print(f"[image-to-video/{task_id}] Starting ffmpeg image-video render")
@@ -1586,11 +1593,12 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
         output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
         os.makedirs(output_dir, exist_ok=True)
         voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.get(audio_clone_url)
-            resp.raise_for_status()
-            with open(voice_local_path, "wb") as f:
-                f.write(resp.content)
+        await download_to_path(
+            audio_clone_url,
+            voice_local_path,
+            max_bytes=MAX_REMOTE_AUDIO_BYTES,
+            timeout=180.0,
+        )
 
         # 7. 调用 ffmpeg 视频混剪
         print(f"[mashup/{task_id}] Starting ffmpeg mashup render")
