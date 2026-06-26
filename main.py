@@ -19,7 +19,7 @@ from lib.video_postprocess import render_video_with_template
 from lib.image_video_postprocess import image_video_render
 from lib.mashup_video_postprocess import mashup_video_render
 
-load_dotenv()
+load_dotenv(override=True)
 from lib.auth import (
     SESSION_COOKIE, consume_email_token, create_password_user, create_session, destroy_session,
     get_current_user, get_or_create_user_by_hash, get_user_identity, hash_email, mask_email,
@@ -50,7 +50,7 @@ from lib.video_extract import (
 )
 from lib.subtitle_generator import timed_sentences_to_subtitle
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 # 说明：前端「爆改 / 智能体」已改为 Next 直连 DeepSeek；本服务可选（pnpm dev:all 或单独部署时保留）。
 app = FastAPI()
@@ -1085,7 +1085,7 @@ async def video_manual_upload(file: UploadFile = File(...)):
     return ManualUploadResponse(upload_id=upload_id, file_url="", original_name=filename, size=size)
 
 
-async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
+async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str = ""):
     stored = _edit_task_store.get(edit_job_id, {})
     task_id = req.task_id or edit_job_id
     output_dir = os.path.join(POST_PROCESS_ROOT, task_id, edit_job_id)
@@ -1208,8 +1208,12 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest):
 
         if result.ok and result.output_path:
             rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
-            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
+            base = (base_url or "").rstrip("/")
+            public_url = (
+                f"{base}/static/video-postprocess/{rel_path}"
+                if base
+                else f"/static/video-postprocess/{rel_path}"
+            )
             _edit_task_store[edit_job_id] = {
                 **_edit_task_store.get(edit_job_id, {}),
                 "status": "success",
@@ -1257,7 +1261,8 @@ async def video_edit(req: EditVideoRequest, request: Request):
         "output_video_url": "",
         "error": "",
     }
-    edit_task = asyncio.create_task(_run_edit_job(edit_job_id, req))
+    edit_base_url = str(request.base_url).rstrip("/") if request is not None else ""
+    edit_task = asyncio.create_task(_run_edit_job(edit_job_id, req, edit_base_url))
     _edit_tasks[edit_job_id] = edit_task
     return EditTaskStatusResponse(**_edit_task_store[edit_job_id])
 
@@ -1273,20 +1278,23 @@ async def video_edit_status(editJobId: str):
 
 
 @app.post("/api/video/manual-edit")
-async def video_manual_edit(req: ManualEditRequest):
-    return await video_edit(EditVideoRequest(
-        task_id="",
-        video_url="",
-        upload_id=req.upload_id,
-        video_base64="",
-        preset="default",
-        subtitle_text=req.script,
-        business_card_text=req.business_card_text,
-        bgm_dir=req.bgm_dir,
-        bgm_volume=req.bgm_volume,
-        source="manual",
-        slide_images_base64=req.slide_images_base64,
-    ))
+async def video_manual_edit(req: ManualEditRequest, request: Request):
+    return await video_edit(
+        EditVideoRequest(
+            task_id="",
+            video_url="",
+            upload_id=req.upload_id,
+            video_base64="",
+            preset="default",
+            subtitle_text=req.script,
+            business_card_text=req.business_card_text,
+            bgm_dir=req.bgm_dir,
+            bgm_volume=req.bgm_volume,
+            source="manual",
+            slide_images_base64=req.slide_images_base64,
+        ),
+        request,
+    )
 
 
 @app.post("/api/video/cover")
