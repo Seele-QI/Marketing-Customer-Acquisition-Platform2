@@ -26,7 +26,11 @@ const MAX_ITEMS = 12
 const lastSuccessItems: Record<string, TrendItemRow[]> = {}
 
 function getApiKey(): string {
-  return process.env.TIANAPI_KEY ?? "ca49b002c092a062687dd658f45992b0"
+  const key = (process.env.TIANAPI_KEY ?? "").trim()
+  if (!key) {
+    throw new Error("TIANAPI_KEY is not configured")
+  }
+  return key
 }
 
 export function getHotEndpoints(): Record<string, string> {

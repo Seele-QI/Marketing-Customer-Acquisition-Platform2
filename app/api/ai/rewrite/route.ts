@@ -1,15 +1,16 @@
+import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
 import {
   DEFAULT_REWRITE_SYSTEM,
   deepseekChatCompletion,
 } from "@/lib/deepseek-chat"
+import { chargeCredit, withAuth } from "@/lib/api/with-auth"
 
 /**
- * AI 爆改：Next 服务端直连 DeepSeek（无需 FastAPI）。
- * 工作台聊天会附带 system_instruction；热搜弹窗仅传 original_text。
+ * AI 爆改：Next 服务端直连 DeepSeek。固定 system prompt，不再接受客户端覆盖。
  */
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: unknown
   try {
     body = await request.json()
@@ -26,16 +27,30 @@ export async function POST(request: Request) {
   if (typeof originalText !== "string" || !originalText.trim()) {
     return NextResponse.json({ detail: "缺少 original_text" }, { status: 400 })
   }
+  if (originalText.length > 8000) {
+    return NextResponse.json({ detail: "original_text 超过 8000 字" }, { status: 400 })
+  }
 
-  const customSystem = rec.system_instruction
-  const systemContent =
-    typeof customSystem === "string" && customSystem.trim()
-      ? customSystem.trim()
-      : DEFAULT_REWRITE_SYSTEM
+  const refId = `rewrite:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeCredit({ cookieHeader, scene: "ai_rewrite", refId })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ""
+    if (msg === "INSUFFICIENT_CREDIT") {
+      return NextResponse.json(
+        { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足" } },
+        { status: 402 },
+      )
+    }
+    return NextResponse.json(
+      { detail: { code: "CHARGE_FAILED", message: "扣费失败" } },
+      { status: 500 },
+    )
+  }
 
   const result = await deepseekChatCompletion(
     [
-      { role: "system", content: systemContent },
+      { role: "system", content: DEFAULT_REWRITE_SYSTEM },
       { role: "user", content: originalText.trim() },
     ],
     120_000,
@@ -46,4 +61,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ status: "success", rewritten_text: result.text })
-}
+})

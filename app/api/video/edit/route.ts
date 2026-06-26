@@ -3,13 +3,15 @@ import path from "node:path";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import type { Props as EditProps } from "@/remotion/EditingComposition";
+import { withAuth } from "@/lib/api/with-auth";
+import { assertSafeRemotionAssets } from "@/lib/safe-remotion-asset";
 
 export const maxDuration = 300; // 5 minutes max for rendering
 
 const REMOTION_ENTRY = path.join(process.cwd(), "remotion", "index.ts");
 const OUTPUT_DIR = path.join(process.cwd(), "public", "output");
 
-export async function POST(request: Request) {
+export const POST = withAuth(async (request) => {
   let body: {
     videoUrl?: string;
     preset?: string;
@@ -26,10 +28,20 @@ export async function POST(request: Request) {
 
   const videoUrl = typeof body.videoUrl === "string" ? body.videoUrl : "";
   const preset = typeof body.preset === "string" ? body.preset : "smooth";
+  const bgMusicUrl = typeof body.bgMusicUrl === "string" ? body.bgMusicUrl : "";
+  const brollUrls = Array.isArray(body.brollUrls) ? body.brollUrls : [];
 
   if (!videoUrl) {
     return NextResponse.json(
       { detail: "缺少必填参数：videoUrl" },
+      { status: 400 },
+    );
+  }
+
+  const bad = assertSafeRemotionAssets([videoUrl, bgMusicUrl, ...brollUrls]);
+  if (bad) {
+    return NextResponse.json(
+      { detail: { code: "BAD_ASSET_URL", message: `不受信任的媒体地址: ${bad}` } },
       { status: 400 },
     );
   }
@@ -43,18 +55,16 @@ export async function POST(request: Request) {
   }
 
   try {
-    // 1. Bundle the Remotion project
     console.log(`[edit] Bundling Remotion project from ${REMOTION_ENTRY}…`);
     const bundleLocation = await bundle({ entryPoint: REMOTION_ENTRY });
 
-    // 2. Select the composition
     console.log(`[edit] Selecting composition…`);
     const inputProps: EditProps = {
       videoUrl,
       preset: preset as EditProps["preset"],
       subtitleText: typeof body.subtitleText === "string" ? body.subtitleText : "",
-      bgMusicUrl: typeof body.bgMusicUrl === "string" ? body.bgMusicUrl : "",
-      brollUrls: Array.isArray(body.brollUrls) ? body.brollUrls : [],
+      bgMusicUrl,
+      brollUrls,
     };
 
     const composition = await selectComposition({
@@ -63,7 +73,6 @@ export async function POST(request: Request) {
       inputProps,
     });
 
-    // 3. Render the video
     const outputFile = path.join(OUTPUT_DIR, `edit-${Date.now()}.mp4`);
     console.log(`[edit] Rendering to ${outputFile}…`);
 
@@ -75,7 +84,6 @@ export async function POST(request: Request) {
       inputProps,
     });
 
-    // 4. Return the public URL
     const filename = path.basename(outputFile);
     const publicUrl = `/output/${filename}`;
 
@@ -88,10 +96,10 @@ export async function POST(request: Request) {
     console.error("[edit] Render error:", e);
     return NextResponse.json(
       {
-        detail: `渲染失败：${e instanceof Error ? e.message : String(e)}`,
+        detail: "渲染失败，请稍后重试",
         status: "error",
       },
       { status: 500 },
     );
   }
-}
+});
