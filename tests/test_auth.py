@@ -205,3 +205,40 @@ def test_credit_consume_video_creation_always_costs_500_points():
     assert data["scene"] == "video_creation"
     assert data["cost"] == 500
     assert data["balance"] == 600
+
+
+def test_credit_consume_ignores_client_cost_and_rejects_unknown_scene():
+    """客户端不能用任意 scene 或低价 cost 绕过定价。"""
+    from lib.credit import refund as _refund
+
+    user_id = auth.create_password_user("server_pricing_user", "Password123")
+    _refund(user_id, 1000, ref_id="topup-srv", note="test topup")
+    login = client.post(
+        "/api/auth/login",
+        json={"login_name": "server_pricing_user", "password": "Password123"},
+    )
+    assert login.status_code == 200, login.text
+
+    # 1. 即使传 cost=1，video_creation 仍扣 500
+    r = client.post(
+        "/api/credit/consume",
+        json={"scene": "video_creation", "cost": 1, "ref_id": "pricing-1"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cost"] == 500
+
+    # 2. 未知 scene 被拒
+    r2 = client.post(
+        "/api/credit/consume",
+        json={"scene": "bogus_scene", "cost": 0, "ref_id": "pricing-2"},
+    )
+    assert r2.status_code == 400
+    assert r2.json()["detail"]["code"] in ("INVALID_SCENE", "INVALID_INPUT")
+
+    # 3. 同 ref_id 重复扣只算一次（幂等）
+    r3 = client.post(
+        "/api/credit/consume",
+        json={"scene": "video_creation", "cost": 500, "ref_id": "pricing-1"},
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["balance"] == r.json()["balance"]

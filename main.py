@@ -43,6 +43,8 @@ from lib.api_auth import (
     require_user,
     assert_task_owner,
     check_base64_size,
+    consume_with_idempotency,
+    SCENE_COST_TABLE,
 )
 from lib.email import send_login_link
 from lib.video_extract import (
@@ -2113,22 +2115,36 @@ async def credit_ledger(request: Request, limit: int = 20):
 
 @app.post("/api/credit/consume")
 async def credit_consume(req: CreditConsumeRequest, request: Request):
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
+    """服务端定价 + 幂等扣费。
+
+    安全要点：
+    - 完全忽略 req.cost（之前未被覆盖的场景任由客户端指定金额 → 可以传 0 白嫖）
+    - scene 必须命中 SCENE_COST_TABLE，否则 400
+    - ref_id 必须由客户端提供且唯一；重复扣费走幂等返回，不再次扣
+    """
+    user = require_user(request)
     scene = (req.scene or "").strip()
     if not scene:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "scene 不能为空"})
-    if scene == "video_creation":
-        cost = VIDEO_CREATION_COST
-    elif scene == "ai_chat":
-        cost = CHAT_COST
-    else:
-        cost = req.cost
-        if cost is None:
-            raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "缺少 cost"})
-    new_balance = consume(user.id, cost, ref_id=req.ref_id or scene, note=req.note or scene)
-    return {"balance": new_balance, "cost": cost, "scene": scene}
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": "scene 不能为空"},
+        )
+    if scene not in SCENE_COST_TABLE:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SCENE", "message": f"不支持的消费场景: {scene}"},
+        )
+    ref_id = (req.ref_id or "").strip() or scene
+    note = (req.note or scene)[:200]
+    new_balance = consume_with_idempotency(
+        user_id=user.id, scene=scene, ref_id=ref_id, note=note,
+    )
+    return {
+        "balance": new_balance,
+        "cost": SCENE_COST_TABLE[scene],
+        "scene": scene,
+        "ref_id": ref_id,
+    }
 
 
 @app.get("/api/credit/redeem-codes")
