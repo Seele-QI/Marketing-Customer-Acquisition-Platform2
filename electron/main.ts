@@ -198,12 +198,23 @@ async function startChildren(nextPort: number, uvicornPort: number) {
     });
   } else {
     const exeExt = process.platform === "win32" ? ".exe" : "";
+    const baseEnv: Record<string, string> = {
+      NODE_ENV: "production",
+      PYTHONUNBUFFERED: "1",
+      FFMPEG_EXE: path.join(ffmpegBinDir(), `ffmpeg${exeExt}`),
+      FFPROBE_EXE: path.join(ffmpegBinDir(), `ffprobe${exeExt}`),
+      CREDIT_DB_OVERRIDE: accountsDbPath(),
+      DATA_DIR: videoCacheDir(),
+      VIDEO_BGM_DIR: bgmDir(),
+      VIDEO_POSTPROCESS_DIR: videoPostprocessDir(),
+    };
+    const prodEnv = await injectApiKeys(baseEnv);
     await childManager.start({
       name: "next",
       command: process.execPath,
       args: [path.join(nextStandaloneRoot(), "server.js")],
       cwd: nextStandaloneRoot(),
-      env: { NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: String(nextPort) },
+      env: { ...prodEnv, NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: String(nextPort) },
       port: nextPort,
       startupTimeoutMs: 60_000,
     });
@@ -212,17 +223,7 @@ async function startChildren(nextPort: number, uvicornPort: number) {
       command: path.join(pythonRoot(), `python${exeExt}`),
       args: ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(uvicornPort), "--no-access-log"],
       cwd: resourcesRoot(),
-      env: {
-        NODE_ENV: "production",
-        PYTHONUNBUFFERED: "1",
-        PORT: String(uvicornPort),
-        FFMPEG_EXE: path.join(ffmpegBinDir(), `ffmpeg${exeExt}`),
-        FFPROBE_EXE: path.join(ffmpegBinDir(), `ffprobe${exeExt}`),
-        CREDIT_DB_OVERRIDE: accountsDbPath(),
-        DATA_DIR: videoCacheDir(),
-        VIDEO_BGM_DIR: bgmDir(),
-        VIDEO_POSTPROCESS_DIR: videoPostprocessDir(),
-      },
+      env: { ...prodEnv, NODE_ENV: "production", PORT: String(uvicornPort) },
       port: uvicornPort,
       healthUrl: `http://127.0.0.1:${uvicornPort}/api/auth/me`,
       startupTimeoutMs: 30_000,
