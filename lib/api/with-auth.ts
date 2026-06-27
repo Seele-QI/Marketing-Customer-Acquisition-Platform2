@@ -1,7 +1,7 @@
 import { cookies } from "next/headers"
 import { NextResponse } from "next/server"
 
-import { getFastapiBase } from "@/lib/fastapi-base"
+import { getServerFastapiBase } from "@/lib/fastapi-base"
 
 export type AuthedContext = { userId: number; cookieHeader: string }
 
@@ -20,7 +20,7 @@ export function withAuth(handler: AuthedHandler) {
     const sid = (await cookies()).get("session_id")?.value
     if (!sid) return notLoggedIn()
 
-    const base = getFastapiBase()
+    const base = getServerFastapiBase()
     if (!base) {
       return NextResponse.json(
         { detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置" } },
@@ -62,7 +62,7 @@ export async function chargeCredit(opts: {
   scene: string
   refId: string
 }): Promise<{ balance: number; cost: number }> {
-  const base = getFastapiBase()
+  const base = getServerFastapiBase()
   const resp = await fetch(`${base}/api/credit/consume`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: opts.cookieHeader },

@@ -54,6 +54,360 @@
 └── CLAUDE.md               # 本文件
 ```
 
+---
+
+## 文件分类清单
+
+> 按「核心业务链路」「附加工具」「运行环境配置」三类标注全量文件，
+> 接手者可直接按分类定位。分类依据：文件在业务请求链路中的角色、是否可替换/可选、是否为运行时配置。
+
+### 🧠 核心业务链路代码
+
+> 这些文件承载端到端用户请求——修改前必须理解调用链上下游，测试覆盖率以此为基准。
+
+#### FastAPI 后端（Python）
+
+| 文件 | 职责 | 被依赖方 |
+|---|---|---|
+| [main.py](main.py) | **FastAPI 入口**：视频生成/剪辑/分享管线、积分账本 HTTP 接口、RunningHub 回调、IP 定位等 AI 业务；`_set_stage` stage 追踪系统 | 所有前端 `fetch()` 调用 |
+| [lib/auth.py](lib/auth.py) | 邮箱 Magic Link 认证、会话管理、密码哈希 | `app/api/auth/*` |
+| [lib/credit.py](lib/credit.py) | 积分账本（注册赠送、消费校验、兑换码生成/核销） | `app/api/credit/*` + `main.py` 视频消费 |
+| [lib/db.py](lib/db.py) | SQLite 数据库连接 + 表初始化（accounts / credit_ledger / redeem_codes） | `lib/auth.py` / `lib/credit.py` |
+| [lib/email.py](lib/email.py) | Resend 邮件投递（Magic Link、验证码） | `lib/auth.py` |
+| [lib/runninghub_client.py](lib/runninghub_client.py) | RunningHub 远程工作流客户端（提交任务、轮询、下载、`_pick_first_valid_url`） | `main.py` 视频管线 |
+| [lib/video_postprocess.py](lib/video_postprocess.py) | **ffmpeg 通用剪辑模板**（数字人口播）：字幕烧录、BGM 混音、名片叠加；`TEMPLATE_CONFIG`、`_build_ffmpeg_command` | `main.py:_run_post_process` |
+| [lib/image_video_postprocess.py](lib/image_video_postprocess.py) | 图文视频 ffmpeg 渲染（xfade 转场链、字幕、BGM）；335 行全量实现 | `main.py:1418`（同步，待改异步） |
+| [lib/mashup_video_postprocess.py](lib/mashup_video_postprocess.py) | 视频混剪 ffmpeg 渲染（xfade 转场链、字幕、BGM）；364 行全量实现 | `main.py`（同步，待改异步） |
+| [lib/subtitle_generator.py](lib/subtitle_generator.py) | ASS 字幕生成（段落切分、语义换行、时间轴分配） | 3 个 postprocess 模块 |
+| [lib/video_extract.py](lib/video_extract.py) | 视频帧/音频提取、阿里云 NLS 录音文件识别（ASR 文案提取） | `main.py` + 前端文案提取 |
+| [lib/promo_video_service.py](lib/promo_video_service.py) | 推广视频服务（ai_video 合成） | `routes/promo_video_routes.py` |
+| [lib/crypto_utils.py](lib/crypto_utils.py) | 加密工具（AES、哈希） | `lib/auth.py` |
+| [lib/rate_limit.py](lib/rate_limit.py) | 请求频率限制 | `main.py` |
+| [lib/douyin_login.py](lib/douyin_login.py) | 抖音登录集成 | `main.py` 抖音相关 |
+| [routes/promo_video_routes.py](routes/promo_video_routes.py) | 推广视频 API 路由（已拆分但**未注册到 main.py**） | — |
+
+#### Next.js API Routes（TypeScript，直连 AI / 不经过 FastAPI）
+
+| 文件 | 职责 |
+|---|---|
+| [app/api/ai/chat-stream/route.ts](app/api/ai/chat-stream/route.ts) | AI 对话流（SSE），直连 DeepSeek |
+| [app/api/ai/rewrite/route.ts](app/api/ai/rewrite/route.ts) | 热点文案重写 |
+| [app/api/ai/ark-images/route.ts](app/api/ai/ark-images/route.ts) | 火山方舟图像生成 + 识图/多模态 |
+| [app/api/ai/ip-positioning/route.ts](app/api/ai/ip-positioning/route.ts) | IP 定位报告生成 |
+| [app/api/ai/ip-diagnosis/route.ts](app/api/ai/ip-diagnosis/route.ts) | IP 诊断分析 |
+| [app/api/ai/ip-competitor-scan/route.ts](app/api/ai/ip-competitor-scan/route.ts) | IP 竞争对手扫描 |
+| [app/api/ai/ip-viral-analysis/route.ts](app/api/ai/ip-viral-analysis/route.ts) | IP 病毒式传播分析 |
+| [app/api/ai/positioning-chat/route.ts](app/api/ai/positioning-chat/route.ts) | 定位策略对话 |
+| [app/api/ai/positioning-evaluate/route.ts](app/api/ai/positioning-evaluate/route.ts) | 定位效果评估 |
+| [app/api/ai/positioning-product-chat/route.ts](app/api/ai/positioning-product-chat/route.ts) | 产品定位对话 |
+| [app/api/ai/memory-extract/route.ts](app/api/ai/memory-extract/route.ts) | 对话用户记忆提取 |
+| [app/api/agent/chat/route.ts](app/api/agent/chat/route.ts) | Agent 系统聊天端点 |
+
+#### Next.js API Routes（Auth / Credit / Trends / Video — 中继到 FastAPI 或自处理）
+
+| 文件 | 职责 |
+|---|---|
+| [app/api/auth/login/route.ts](app/api/auth/login/route.ts) | 密码登录 |
+| [app/api/auth/logout/route.ts](app/api/auth/logout/route.ts) | 登出 |
+| [app/api/auth/me/route.ts](app/api/auth/me/route.ts) | 当前用户信息 |
+| [app/api/auth/register/route.ts](app/api/auth/register/route.ts) | 注册 |
+| [app/api/auth/send-link/route.ts](app/api/auth/send-link/route.ts) | 发送邮箱验证码 |
+| [app/api/auth/verify-token/route.ts](app/api/auth/verify-token/route.ts) | 验证邮箱 token |
+| [app/api/credit/balance/route.ts](app/api/credit/balance/route.ts) | 查询积分余额 |
+| [app/api/credit/consume/route.ts](app/api/credit/consume/route.ts) | 消费积分 |
+| [app/api/credit/ledger/route.ts](app/api/credit/ledger/route.ts) | 交易流水 |
+| [app/api/credit/redeem/route.ts](app/api/credit/redeem/route.ts) | 兑换充值码 |
+| [app/api/credit/redeem-codes/route.ts](app/api/credit/redeem-codes/route.ts) | 充值码 CRUD（管理员） |
+| [app/api/credit/redeem-codes/generate/route.ts](app/api/credit/redeem-codes/generate/route.ts) | 批量生成充值码 |
+| [app/api/credit/admin/verify/route.ts](app/api/credit/admin/verify/route.ts) | 管理员验证 |
+| [app/api/credit/admin/logout/route.ts](app/api/credit/admin/logout/route.ts) | 管理员登出 |
+| [app/api/trends/fetch/route.ts](app/api/trends/fetch/route.ts) | 获取单个热点源 |
+| [app/api/trends/fetch-all/route.ts](app/api/trends/fetch-all/route.ts) | 获取所有热点源 |
+| [app/api/trends/fetch-board/route.ts](app/api/trends/fetch-board/route.ts) | 热点看板 |
+| [app/api/video/clone-voice/route.ts](app/api/video/clone-voice/route.ts) | 语音克隆 |
+| [app/api/video/edit/route.ts](app/api/video/edit/route.ts) | 视频编辑 |
+| [app/api/video/generate/route.ts](app/api/video/generate/route.ts) | 数字人视频生成 |
+| [app/api/video/status/route.ts](app/api/video/status/route.ts) | 视频任务状态查询 |
+
+#### Next.js 页面（App Router）
+
+| 文件 | 职责 |
+|---|---|
+| [app/layout.tsx](app/layout.tsx) | 根布局（HTML shell + 主题提供者） |
+| [app/page.tsx](app/page.tsx) | 主页（仪表板/落地） |
+| [app/auth/verify/page.tsx](app/auth/verify/page.tsx) | 邮箱验证页面 |
+| [app/admin/credit/page.tsx](app/admin/credit/page.tsx) | 积分管理后台 |
+
+#### 核心 React 组件（业务页面级）
+
+| 文件 | 职责 | 关联后端 |
+|---|---|---|
+| [components/video-creation-workflow.tsx](components/video-creation-workflow.tsx) | **数字人口播主流程**（sidebar: "数字人口播"，view key: "视频创作"） | `main.py:POST /api/video/generate` |
+| [components/image-video-workflow.tsx](components/image-video-workflow.tsx) | 图文视频工作流（待改轮询） | `main.py:POST /api/video/image-to-video` |
+| [components/mashup-video-workflow.tsx](components/mashup-video-workflow.tsx) | 视频混剪工作流（待改轮询） | `main.py:POST /api/video/mashup` |
+| [components/promo-video-workflow.tsx](components/promo-video-workflow.tsx) | 推广视频工作流 | `routes/promo_video_routes.py` |
+| [components/chat-workspace.tsx](components/chat-workspace.tsx) | AI 对话工作区 | `app/api/ai/chat-stream` |
+| [components/copywriting-chat-workspace.tsx](components/copywriting-chat-workspace.tsx) | 文案对话工作区 | `app/api/ai/rewrite` |
+| [components/copywriting-view.tsx](components/copywriting-view.tsx) | 文案查看器 | — |
+| [components/copywriting-extract-view.tsx](components/copywriting-extract-view.tsx) | 文案提取视图 | `main.py` 视频提取 |
+| [components/ip-positioning-report.tsx](components/ip-positioning-report.tsx) | ⚠ 注：实际在 `lib/ip-positioning-report.ts` | `app/api/ai/ip-positioning` |
+| [components/ip-competitor-scan.tsx](components/ip-competitor-scan.tsx) | IP 竞品扫描面板 | `app/api/ai/ip-competitor-scan` |
+| [components/ip-viral-analysis.tsx](components/ip-viral-analysis.tsx) | IP 病毒传播分析面板 | `app/api/ai/ip-viral-analysis` |
+| [components/positioning-chat-dialog.tsx](components/positioning-chat-dialog.tsx) | 定位对话弹窗 | `app/api/ai/positioning-chat` |
+| [components/dashboard-view.tsx](components/dashboard-view.tsx) | 仪表板主视图 | — |
+| [components/dashboard-ai-insights.tsx](components/dashboard-ai-insights.tsx) | 仪表板 AI 洞察 | — |
+| [components/dashboard-data-panel.tsx](components/dashboard-data-panel.tsx) | 仪表板数据面板 | — |
+| [components/dashboard-quick-actions.tsx](components/dashboard-quick-actions.tsx) | 仪表板快捷操作 | — |
+| [components/dashboard-sidebar.tsx](components/dashboard-sidebar.tsx) | 仪表板侧边栏 | — |
+| [components/admin-credit-view.tsx](components/admin-credit-view.tsx) | 管理员积分管理 | `app/api/credit/redeem-codes` |
+| [components/credit-recharge-view.tsx](components/credit-recharge-view.tsx) | 积分充值界面 | `app/api/credit/redeem` |
+| [components/account-binding.tsx](components/account-binding.tsx) | 账号绑定（邮箱/密码） | `app/api/auth/*` |
+| [components/account-positioning.tsx](components/account-positioning.tsx) | 账号定位面板 | — |
+| [components/agent-center.tsx](components/agent-center.tsx) | Agent 中心 | `app/api/agent/chat` |
+| [components/hot-topics.tsx](components/hot-topics.tsx) | 热点话题展示 | `app/api/trends/fetch-all` |
+| [components/share-distribute.tsx](components/share-distribute.tsx) | 分享分发面板 | `main.py:share_generate` |
+| [components/video-history.tsx](components/video-history.tsx) | 视频历史列表 | `app/api/video/status` |
+| [components/settings-view.tsx](components/settings-view.tsx) | 设置页面 | — |
+| [components/help-center-view.tsx](components/help-center-view.tsx) | 帮助中心 | — |
+| [components/plan-route-view.tsx](components/plan-route-view.tsx) | 计划路线视图 | — |
+
+#### 核心 TypeScript 库（前端业务逻辑）
+
+| 文件 | 职责 |
+|---|---|
+| [lib/deepseek-chat.ts](lib/deepseek-chat.ts) | DeepSeek AI 对话 API 封装 |
+| [lib/ark-chat-completion.ts](lib/ark-chat-completion.ts) | 火山方舟 ARK 聊天补全 SDK |
+| [lib/ark-images-api.ts](lib/ark-images-api.ts) | ARK 图像生成 API 调用 |
+| [lib/ark-images-client.ts](lib/ark-images-client.ts) | ARK 图像客户端 |
+| [lib/tianapi-trends.ts](lib/tianapi-trends.ts) | 天行 API 全网热搜客户端 |
+| [lib/fastapi-base.ts](lib/fastapi-base.ts) | FastAPI 基础 URL 配置（`NEXT_PUBLIC_FASTAPI_URL`） |
+| [lib/video/api.ts](lib/video/api.ts) | 视频模块客户端 API（generate / status / edit / clone-voice） |
+| [lib/video/types.ts](lib/video/types.ts) | 视频模块 TypeScript 类型 |
+| [lib/video/constants.ts](lib/video/constants.ts) | 视频模块常量 |
+| [lib/video/utils.ts](lib/video/utils.ts) | 视频工具函数 |
+| [lib/video/video-prompt-presets.ts](lib/video/video-prompt-presets.ts) | 视频提示预设 |
+| [lib/video/storage.ts](lib/video/storage.ts) | 视频存储管理 |
+| [lib/video-task-runtime.ts](lib/video-task-runtime.ts) | 数字人口播任务运行时（轮询 + stage 推进） |
+| [lib/video-task-store.ts](lib/video-task-store.ts) | localStorage 任务持久化（排除 base64 大字段） |
+| [lib/video-cover-ui.ts](lib/video-cover-ui.ts) | 视频封面 UI 逻辑 |
+| [lib/video-preview-embed.ts](lib/video-preview-embed.ts) | 视频预览嵌入 |
+| [lib/cost-tracker.ts](lib/cost-tracker.ts) | API 调用成本追踪 |
+| [lib/credit-types.ts](lib/credit-types.ts) | 积分系统类型定义 |
+| [lib/server-env.ts](lib/server-env.ts) | 服务端环境变量 |
+| [lib/user-memory.ts](lib/user-memory.ts) | 用户记忆存储 |
+| [lib/copywriting-script-format.ts](lib/copywriting-script-format.ts) | 文案脚本格式化 |
+| [lib/ip-positioning-report.ts](lib/ip-positioning-report.ts) | IP 定位报告生成 |
+| [lib/global-search.ts](lib/global-search.ts) | 全局搜索逻辑 |
+| [lib/hotspot-insight-variants.ts](lib/hotspot-insight-variants.ts) | 热点洞察变体 |
+| [lib/publish-time.ts](lib/publish-time.ts) | 发布时机工具 |
+| [lib/image-base64.ts](lib/image-base64.ts) | 图片 Base64 编解码 |
+| [lib/download-image.ts](lib/download-image.ts) | 图片下载工具 |
+| [lib/generated-image-archive.ts](lib/generated-image-archive.ts) | 生成图片归档 |
+| [lib/team-agents.ts](lib/team-agents.ts) | 团队 Agent 定义 |
+| [lib/theme-init-script.ts](lib/theme-init-script.ts) | 主题初始化脚本 |
+| [lib/utils.ts](lib/utils.ts) | 通用工具函数（`cn()`、格式化等） |
+| [lib/prompts/copywriting-agent-systems.ts](lib/prompts/copywriting-agent-systems.ts) | 文案 Agent 系统提示词 |
+| [lib/prompts/copywriting-workflow-knowledge.ts](lib/prompts/copywriting-workflow-knowledge.ts) | 文案工作流知识 |
+| [lib/prompts/hotspot-rewrite-system.ts](lib/prompts/hotspot-rewrite-system.ts) | 热点重写系统提示词 |
+| [lib/prompts/ip-positioning-prompts.ts](lib/prompts/ip-positioning-prompts.ts) | IP 定位提示词 |
+
+#### Electron 桌面壳（核心）
+
+| 文件 | 职责 |
+|---|---|
+| [electron/main.ts](electron/main.ts) | **Electron 主进程入口**：窗口创建、bootstrap（dev/prod 分支）、子进程生命周期 |
+| [electron/preload.ts](electron/preload.ts) | 预加载脚本（安全 IPC 桥） |
+| [electron/services/child-process-manager.ts](electron/services/child-process-manager.ts) | 子进程管理（启动/停止 Python uvicorn + Next.js standalone） |
+| [electron/services/activation-client.ts](electron/services/activation-client.ts) | 中央激活验证客户端 |
+| [electron/services/env-injector.ts](electron/services/env-injector.ts) | 环境变量注入（API Key / ffmpeg 路径等） |
+| [electron/services/tray-controller.ts](electron/services/tray-controller.ts) | 系统托盘控制器 |
+| [electron/services/updater.ts](electron/services/updater.ts) | 自动更新（electron-updater → GitHub Releases） |
+| [electron/services/credential-store.ts](electron/services/credential-store.ts) | 凭据安全存储 |
+| [electron/services/logger.ts](electron/services/logger.ts) | Electron 日志 |
+| [electron/services/log-collector.ts](electron/services/log-collector.ts) | 日志收集 |
+| [electron/services/auto-launch.ts](electron/services/auto-launch.ts) | 开机自启 |
+| [electron/services/machine-id.ts](electron/services/machine-id.ts) | 机器 ID 获取 |
+| [electron/services/env-loader.ts](electron/services/env-loader.ts) | 环境加载器 |
+| [electron/utils/paths.ts](electron/utils/paths.ts) | 路径工具 |
+| [electron/utils/port-finder.ts](electron/utils/port-finder.ts) | 空闲端口查找 |
+| [electron/utils/process-tree.ts](electron/utils/process-tree.ts) | 进程树管理 |
+| [electron/utils/crypto.ts](electron/utils/crypto.ts) | 加密工具 |
+| [electron/windows/wizard-window.ts](electron/windows/wizard-window.ts) | 设置向导窗口（首次启动） |
+
+#### Remotion 视频渲染
+
+| 文件 | 职责 |
+|---|---|
+| [remotion/index.ts](remotion/index.ts) | Remotion 导出/注册入口 |
+| [remotion/Root.tsx](remotion/Root.tsx) | Remotion 根组合 |
+| [remotion/EditingComposition.tsx](remotion/EditingComposition.tsx) | 编辑流程视频组合 |
+
+---
+
+### 🔧 附加工具
+
+> 这些文件是项目运行的辅助支撑——它们不在核心请求链路上，可独立替换或移除而不影响业务逻辑。
+
+#### FFmpeg 二进制（视频处理引擎）
+
+| 文件 | 说明 |
+|---|---|
+| [tools/ffmpeg/bin/ffmpeg.exe](tools/ffmpeg/bin/ffmpeg.exe) | ffmpeg 视频编解码（仓库内自备，部署必检） |
+| [tools/ffmpeg/bin/ffprobe.exe](tools/ffmpeg/bin/ffprobe.exe) | ffprobe 媒体信息探测 |
+| [tools/ffmpeg/ffmpeg.zip](tools/ffmpeg/ffmpeg.zip) | ffmpeg 源码/二进制压缩包 |
+| [resources/ffmpeg/bin/ffmpeg.exe](resources/ffmpeg/bin/ffmpeg.exe) | Electron 打包用 ffmpeg（从 tools copy） |
+| [resources/ffmpeg/bin/ffprobe.exe](resources/ffmpeg/bin/ffprobe.exe) | Electron 打包用 ffprobe |
+
+#### 构建与打包脚本（`scripts/`）
+
+| 文件 | 说明 |
+|---|---|
+| [scripts/build-next-standalone.mjs](scripts/build-next-standalone.mjs) | 构建 Next.js standalone 产物（→ `resources/next-standalone/`） |
+| [scripts/build-python-bundle.mjs](scripts/build-python-bundle.mjs) | 打包嵌入式 Python 3.13 + site-packages（→ `resources/python/`） |
+| [scripts/extract-ffmpeg.mjs](scripts/extract-ffmpeg.mjs) | 从 ZIP 解压 ffmpeg 二进制 |
+| [scripts/preflight.mjs](scripts/preflight.mjs) | **出包前校验**：检查 `resources/` 下所有产物齐全 |
+| [scripts/dev-electron.mjs](scripts/dev-electron.mjs) | 开发模式启动 Electron |
+| [scripts/patch-next-themes.mjs](scripts/patch-next-themes.mjs) | 补丁 next-themes 兼容性 |
+| [scripts/clean-cache.mjs](scripts/clean-cache.mjs) | 清理缓存文件 |
+| [scripts/dev-fix.mjs](scripts/dev-fix.mjs) | 开发环境修复 |
+| [scripts/init_credit_db.py](scripts/init_credit_db.py) | 初始化积分数据库表 |
+| [scripts/reconcile.py](scripts/reconcile.py) | 数据协调/修复工具 |
+| [scripts/fix-byte.py](scripts/fix-byte.py) | 编码修复（一次性工具） |
+| [scripts/fix-chars.py](scripts/fix-chars.py) | 字符修复（一次性工具） |
+| [scripts/fix-encoding.py](scripts/fix-encoding.py) | 编码修复（一次性工具） |
+| [scripts/fix-final.py](scripts/fix-final.py) | 最终修复（一次性工具） |
+
+#### 测试工具与 E2E
+
+| 文件 | 说明 |
+|---|---|
+| [tools/run_e2e_template_test.py](tools/run_e2e_template_test.py) | 端到端模板测试运行器 |
+| [tools/run_template_test.py](tools/run_template_test.py) | 模板测试运行器 |
+| [tests/conftest.py](tests/conftest.py) | Pytest 全局 fixtures |
+| [tests/alias-loader.mjs](tests/alias-loader.mjs) | Node.js 测试别名加载器（`@/` → `./`） |
+| [tests/test_auth.py](tests/test_auth.py) | 认证流程测试 |
+| [tests/test_credit.py](tests/test_credit.py) | 积分系统测试 |
+| [tests/test_video_postprocess.py](tests/test_video_postprocess.py) | ffmpeg 剪辑模板测试 |
+| [tests/test_video_cover.py](tests/test_video_cover.py) | 视频封面测试 |
+| [tests/chat-stream-route.test.ts](tests/chat-stream-route.test.ts) | 对话流 API 测试 |
+| [tests/copywriting-oral-script.test.ts](tests/copywriting-oral-script.test.ts) | 口播脚本格式测试 |
+| [tests/video-task-runtime.test.ts](tests/video-task-runtime.test.ts) | 视频任务运行时测试 |
+| [tests/video-task-store.test.ts](tests/video-task-store.test.ts) | 视频任务存储测试 |
+| [tests/video-cover-ui.test.ts](tests/video-cover-ui.test.ts) | 视频封面 UI 测试 |
+| [tests/video-prompt-presets.test.ts](tests/video-prompt-presets.test.ts) | 视频提示预设测试 |
+
+#### UI 组件库（shadcn/ui — 第三方封装，非业务代码）
+
+`components/ui/` 下约 50 个文件（`accordion.tsx` ~ `tooltip.tsx`）均为 shadcn/ui + Radix UI 原始组件封装。它们不是本项目业务代码——由 `npx shadcn-ui@latest add` 自动生成，按需修改。
+
+#### 静态资源
+
+| 位置 | 说明 |
+|---|---|
+| [assets/bgm/](assets/bgm/) | 视频 BGM 素材库（16 首 mp3 + 1 首 boss_voice.mp3） |
+| [public/agents/](public/agents/) | Agent 头像（8 位名人） |
+| [public/avatar-*.jpg/png](public/) | 用户默认头像素材 |
+| [public/placeholder-*](public/) | 占位图 |
+| [public/icon-*](public/) | 网站图标 |
+| [public/preview-images.html](public/preview-images.html) | 图片预览 HTML |
+| [tupian/](tupian/) | 中文命名的 Agent 头像（与 `public/agents/` 重复） |
+| [data/test.png](data/test.png) | 测试用图片 |
+| [build/icon.ico](build/icon.ico) | Windows 安装程序图标 |
+| [build/icon.png](build/icon.png) | 应用图标 |
+| [build/installer.nsh](build/installer.nsh) | NSIS 安装程序自定义脚本 |
+| [build/tray-icon.png](build/tray-icon.png) | 系统托盘图标 |
+
+#### 辅助 / 一次性脚本
+
+| 文件 | 说明 |
+|---|---|
+| [dummy_work.py](dummy_work.py) | 测试/模拟工作占位脚本 |
+| [\_write_file.py](_write_file.py) | 小型文件写入辅助 |
+| [logger.js](logger.js) | JavaScript 日志工具 |
+| [安装启动.bat](安装启动.bat) | Windows 安装/启动批处理 |
+| [setup.ps1](setup.ps1) | Windows 安装 PowerShell 脚本 |
+| [deploy.sh](deploy.sh) | 部署脚本 |
+
+#### Claude Code Superpowers 插件（`superpowers-main/`）
+
+第三方 AI 辅助开发 Skills 框架，通过 git submodule 或手动复制引入。不是本项目业务代码。含 13 个 Skills（`brainstorming/` ~ `writing-skills/`）+ 多 IDE 插件配置。
+
+---
+
+### ⚙️ 运行环境配置
+
+> 修改这些文件影响部署形态、运行参数或依赖版本。生产变更需同步 Docker / Electron。
+
+#### 依赖声明
+
+| 文件 | 说明 |
+|---|---|
+| [package.json](package.json) | Node.js 依赖（Next.js 16 / React 19 / Electron 33 / Remotion / shadcn/ui） + pnpm scripts |
+| [pnpm-lock.yaml](pnpm-lock.yaml) | PNPM 依赖锁 |
+| [pnpm-workspace.yaml](pnpm-workspace.yaml) | PNPM 工作区 |
+| [requirements.txt](requirements.txt) | Python 依赖（FastAPI / httpx / Pillow / python-dotenv 等） |
+
+#### 运行时配置
+
+| 文件 | 说明 |
+|---|---|
+| [.env](.env) | **实际环境变量**（git 忽略，含 API Key） |
+| [.env.example](.env.example) | 环境变量模板（git 跟踪，用于新机器初始化） |
+| [next.config.mjs](next.config.mjs) | Next.js 配置（standalone 输出、Remotion serverExternalPackages、30MB serverActions 限制） |
+| [tsconfig.json](tsconfig.json) | TypeScript 配置（`@/*` → `./*` 路径别名） |
+| [electron/tsconfig.json](electron/tsconfig.json) | Electron TypeScript 配置 |
+| [postcss.config.mjs](postcss.config.mjs) | PostCSS 配置（Tailwind v4） |
+| [components.json](components.json) | shadcn/ui 配置（New York style / RSC / 别名） |
+
+#### 容器化与部署
+
+| 文件 | 说明 |
+|---|---|
+| [Dockerfile](Dockerfile) | 主 Docker 构建 |
+| [Dockerfile.web](Dockerfile.web) | Next.js web 服务镜像 |
+| [Dockerfile.api](Dockerfile.api) | FastAPI api 服务镜像 |
+| [docker-compose.yml](docker-compose.yml) | Docker Compose 编排 |
+| [zeabur.json](zeabur.json) | Zeabur 平台服务编排 + Volume 绑定 |
+| [vercel.json](vercel.json) | Vercel 部署配置 |
+| [netlify.toml](netlify.toml) | Netlify 部署配置 |
+
+#### Electron 打包
+
+| 文件 | 说明 |
+|---|---|
+| [electron-builder.yml](electron-builder.yml) | NSIS 打包配置（appId / 中文语言 / Windows 目标） |
+
+#### 忽略与排除规则
+
+| 文件 | 说明 |
+|---|---|
+| [.gitignore](.gitignore) | Git 忽略（node_modules / .next / .env / resources/ / build/ / release/） |
+| [.gitattributes](.gitattributes) | Git 属性 |
+| [.dockerignore](.dockerignore) | Docker 构建排除 |
+| [.vercelignore](.vercelignore) | Vercel 部署排除 |
+
+#### 编辑器 / AI 辅助
+
+| 文件 | 说明 |
+|---|---|
+| [.claude/settings.local.json](.claude/settings.local.json) | Claude Code 本地设置 |
+| [.claude/launch.json](.claude/launch.json) | Claude Code 启动配置 |
+| [AGENTS.md](AGENTS.md) | AI Agent 配置文档 |
+| [CLAUDE.md](CLAUDE.md) | 本文件 — 项目速查表 |
+
+#### 运行时数据（git 忽略）
+
+| 路径 | 说明 |
+|---|---|
+| `data/accounts.db` | SQLite 用户/积分数据库 |
+| `public/video-cache/` | 视频缓存（下载产物、ASR 临时文件） |
+| `resources/` | Electron 打包资源（python / ffmpeg / next-standalone / bgm） |
+| `build/` | electron-builder 中间产物 |
+| `release/` | NSIS 安装包产出 |
+| `.electron-cache/` | Electron 构建缓存 |
+
+---
+
 ### 双服务架构
 
 | 进程 | 入口 | 职责 |
@@ -77,7 +431,8 @@
 | `TIANAPI_KEY` | `main.py:fetch_trends` | ✅ | 全网热搜 API |
 | `DEEPSEEK_API_KEY` | `main.py` / `app/api/ai/...` | ✅ | 对话/润色/回退识图 |
 | `RUNNINGHUB_API_KEY` | `main.py:_get_rh_client` | ✅ | 数字人视频生成 |
-| `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ | Next → FastAPI 反向地址 |
+| `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ 生产 | 浏览器直连 API（视频 static 等） |
+| `FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ Docker/PaaS | Next 服务端 proxy 内网地址（如 `http://api:8000`） |
 | `EMAIL_HASH_SALT` | `lib/auth.py` | ✅ | 邮箱哈希盐（32 字节 hex）|
 | `CREDIT_REGISTER_BONUS` | `lib/credit.py` | ✅ | 注册赠送积分数 |
 | `CREDIT_SESSION_TTL_DAYS` | `lib/auth.py` | ✅ | 登录会话有效期 |
@@ -151,7 +506,7 @@
 
 **关键配置文件**：[zeabur.json](zeabur.json)（服务编排 + Volume 绑定），[.dockerignore](.dockerignore)（排除 node_modules / .next / pycache）。
 
-**容器内环境变量**：`NEXT_PUBLIC_FASTAPI_URL=http://api:8000`（web → api 内网 DNS），`DATA_DIR=/data` + `CREDIT_DB_OVERRIDE=/data/accounts.db` + `VIDEO_BGM_DIR=/app/assets/bgm`（api Volume 持久化）。
+**容器内环境变量**：`FASTAPI_URL=http://api:8000`（web 服务端 proxy），`NEXT_PUBLIC_FASTAPI_URL=https://api.你的域名.com`（浏览器公网），`DATA_DIR=/data` + `CREDIT_DB_OVERRIDE=/data/accounts.db` + `VIDEO_BGM_DIR=/app/assets/bgm`（api Volume 持久化）。部署手册见 [docs/deploy/PAAS.md](docs/deploy/PAAS.md)。
 
 **本地 Docker 测试**：
 ```bash
@@ -401,9 +756,23 @@ npx tsc --noEmit
 
 ---
 
-## 待解决：图文视频 / 视频混剪 修复（2026-06-25）
+## 图文视频 / 视频混剪 修复（2026-06-27 已实施）
 
-> **状态**：已诊断，待实施。已与用户确认修复方向。
+> **状态**：已实施。图文视频与视频混剪改为异步任务 + Next.js 代理 + 前端轮询，修复 `Failed to fetch`。
+
+### 已实施内容
+
+| 项 | 位置 |
+|---|---|
+| Next 代理 | `app/api/video/image-to-video/`、`app/api/video/mashup/`（POST + status + cancel） |
+| 异步管线 | `main.py` — `_image_task_store` / `_mashup_task_store` + `STAGE_IV_*` / `STAGE_MV_*` |
+| 前端轮询 | `components/image-video-workflow.tsx`、`components/mashup-video-workflow.tsx` |
+| 运行时 | `lib/image-video-task-runtime.ts`、`lib/mashup-video-task-runtime.ts` |
+| 加固 | `_pick_first_result_url`、克隆音频 `probe_audio_duration` 校验、产物大小校验 |
+
+### 历史诊断记录（2026-06-25）
+
+> 以下为修复前的诊断，保留供参考。
 
 ### 用户报告的现象
 

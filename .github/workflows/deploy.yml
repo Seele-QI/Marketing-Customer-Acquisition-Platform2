@@ -1,0 +1,81 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/agenthub
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt pytest
+
+      - name: Pytest
+        run: python -m pytest tests/test_auth.py tests/test_central_signing.py -q --tb=short
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Node deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Node unit tests
+        run: node --experimental-strip-types --loader ./tests/alias-loader.mjs --test tests/clip-task-runtime.test.ts tests/parse-detail.test.ts
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - service: web
+            dockerfile: Dockerfile.web
+          - service: api
+            dockerfile: Dockerfile.api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
+
+  deploy-webhook:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger PaaS redeploy
+        if: ${{ secrets.DEPLOY_WEBHOOK_URL != '' }}
+        env:
+          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+        run: curl -fsS -X POST "$DEPLOY_WEBHOOK_URL"

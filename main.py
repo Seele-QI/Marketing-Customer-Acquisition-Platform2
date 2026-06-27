@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from lib.runninghub_client import RunningHubClient, RunningHubError, build_motion_prompt, build_cover_prompt
-from lib.video_postprocess import render_video_with_template
+from lib.video_postprocess import render_video_with_template, probe_audio_duration
 from lib.image_video_postprocess import image_video_render
 from lib.mashup_video_postprocess import mashup_video_render
 
@@ -166,6 +166,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/health")
+async def health_check():
+    """容器/PaaS 探活：检查 ffmpeg 是否可用。"""
+    import shutil
+    import subprocess
+
+    ffmpeg_bin = os.environ.get("FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg"
+    ffprobe_bin = os.environ.get("FFPROBE_EXE") or shutil.which("ffprobe") or "ffprobe"
+    checks: dict[str, str] = {"api": "ok"}
+    try:
+        subprocess.run(
+            [ffmpeg_bin, "-version"],
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+        checks["ffmpeg"] = "ok"
+    except Exception as e:
+        checks["ffmpeg"] = f"fail:{e}"
+    try:
+        subprocess.run(
+            [ffprobe_bin, "-version"],
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+        checks["ffprobe"] = "ok"
+    except Exception as e:
+        checks["ffprobe"] = f"fail:{e}"
+    data_dir = os.getenv("DATA_DIR") or POST_PROCESS_ROOT
+    checks["data_dir_writable"] = "ok" if os.access(data_dir, os.W_OK) else "fail"
+    ok = checks.get("ffmpeg") == "ok" and checks["data_dir_writable"] == "ok"
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ok" if ok else "degraded", "checks": checks},
+    )
+
+
 TIANAPI_KEY = (os.getenv("TIANAPI_KEY") or "").strip()
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 RUNNINGHUB_API_KEY = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
@@ -248,6 +287,56 @@ STAGE_LABELS = {
     STAGE_CANCELLED: "已停止",
 }
 
+# —— 图文视频 stage 常量 ——
+STAGE_IV_DECODING_IMAGES = "iv_decoding_images"
+STAGE_IV_DECODING_AUDIO = "iv_decoding_audio"
+STAGE_IV_UPLOADING_AUDIO = "iv_uploading_audio"
+STAGE_IV_SUBMITTING_CLONE = "iv_submitting_clone"
+STAGE_IV_WAITING_CLONE = "iv_waiting_clone"
+STAGE_IV_DOWNLOADING_CLONE = "iv_downloading_clone"
+STAGE_IV_RENDERING = "iv_rendering"
+STAGE_IV_COMPLETED = "iv_completed"
+STAGE_IV_FAILED = "iv_failed"
+STAGE_IV_CANCELLED = "iv_cancelled"
+
+IV_STAGE_LABELS = {
+    STAGE_IV_DECODING_IMAGES: "解码图片素材",
+    STAGE_IV_DECODING_AUDIO: "解码音色样本",
+    STAGE_IV_UPLOADING_AUDIO: "上传音色到云端",
+    STAGE_IV_SUBMITTING_CLONE: "提交音频克隆",
+    STAGE_IV_WAITING_CLONE: "等待配音生成",
+    STAGE_IV_DOWNLOADING_CLONE: "下载克隆配音",
+    STAGE_IV_RENDERING: "ffmpeg 视频合成中",
+    STAGE_IV_COMPLETED: "生成完成",
+    STAGE_IV_FAILED: "生成失败",
+    STAGE_IV_CANCELLED: "已停止",
+}
+
+# —— 视频混剪 stage 常量 ——
+STAGE_MV_DECODING_VIDEOS = "mv_decoding_videos"
+STAGE_MV_DECODING_AUDIO = "mv_decoding_audio"
+STAGE_MV_UPLOADING_AUDIO = "mv_uploading_audio"
+STAGE_MV_SUBMITTING_CLONE = "mv_submitting_clone"
+STAGE_MV_WAITING_CLONE = "mv_waiting_clone"
+STAGE_MV_DOWNLOADING_CLONE = "mv_downloading_clone"
+STAGE_MV_RENDERING = "mv_rendering"
+STAGE_MV_COMPLETED = "mv_completed"
+STAGE_MV_FAILED = "mv_failed"
+STAGE_MV_CANCELLED = "mv_cancelled"
+
+MV_STAGE_LABELS = {
+    STAGE_MV_DECODING_VIDEOS: "解码视频素材",
+    STAGE_MV_DECODING_AUDIO: "解码音色样本",
+    STAGE_MV_UPLOADING_AUDIO: "上传音色到云端",
+    STAGE_MV_SUBMITTING_CLONE: "提交音频克隆",
+    STAGE_MV_WAITING_CLONE: "等待配音生成",
+    STAGE_MV_DOWNLOADING_CLONE: "下载克隆配音",
+    STAGE_MV_RENDERING: "ffmpeg 混剪合成中",
+    STAGE_MV_COMPLETED: "混剪完成",
+    STAGE_MV_FAILED: "混剪失败",
+    STAGE_MV_CANCELLED: "已停止",
+}
+
 
 def _set_stage(task_id: str, stage: str, **extras) -> None:
     """原子更新任务 sub-step。"""
@@ -265,6 +354,37 @@ def _set_stage(task_id: str, stage: str, **extras) -> None:
         "stage_updated_at": time.time(),
         **extras,
     }
+
+
+def _set_generic_stage(
+    store: dict[str, dict],
+    labels: dict[str, str],
+    task_id: str,
+    stage: str,
+    **extras,
+) -> None:
+    if not task_id:
+        return
+    stored = store.get(task_id) or {}
+    history = list(stored.get("stage_history") or [])
+    if not history or history[-1] != stage:
+        history.append(stage)
+    store[task_id] = {
+        **stored,
+        "stage": stage,
+        "stage_label": labels.get(stage, stage),
+        "stage_history": history,
+        "stage_updated_at": time.time(),
+        **extras,
+    }
+
+
+def _set_iv_stage(task_id: str, stage: str, **extras) -> None:
+    _set_generic_stage(_image_task_store, IV_STAGE_LABELS, task_id, stage, **extras)
+
+
+def _set_mv_stage(task_id: str, stage: str, **extras) -> None:
+    _set_generic_stage(_mashup_task_store, MV_STAGE_LABELS, task_id, stage, **extras)
 
 
 class CoverGenerateRequest(BaseModel):
@@ -347,6 +467,23 @@ class MashupVideoResponse(BaseModel):
     video_url: str = ""
     audio_url: str = ""
     error: str = ""
+
+
+class ClipTaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    progress: int = 0
+    video_url: str = ""
+    audio_url: str = ""
+    error: str = ""
+    stage: str = ""
+    stage_label: str = ""
+    stage_history: list[str] = []
+    stage_updated_at: float = 0
+
+
+class CancelClipTaskRequest(BaseModel):
+    task_id: str
 
 
 class CopyExtractRequest(BaseModel):
@@ -553,6 +690,10 @@ _poll_tasks: dict[str, object] = {}
 _edit_task_store: dict[str, dict] = {}
 _edit_tasks: dict[str, object] = {}
 _manual_upload_store: dict[str, dict] = {}
+_image_task_store: dict[str, dict] = {}
+_mashup_task_store: dict[str, dict] = {}
+_image_pipeline_tasks: dict[str, asyncio.Task] = {}
+_mashup_pipeline_tasks: dict[str, asyncio.Task] = {}
 _VIDEO_PROMPT_MODES = {"natural", "mode2", "mode3"}
 
 
@@ -1527,16 +1668,230 @@ async def video_clone_voice(req: VoiceCloneRequest, request: Request):
         _cleanup_temp(*[p for p in [audio_path] if p])
 
 
-# ── POST /api/video/image-to-video ──────────────────────────────
+# ── 图文视频 / 视频混剪 异步管线 ─────────────────────────────────
+
+
+async def _decode_b64_file(b64: str, dest_path: str) -> None:
+    try:
+        raw = base64.b64decode(b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Base64 解码失败: {e}")
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with open(dest_path, "wb") as f:
+        f.write(raw)
+
+
+def _validate_cloned_audio(voice_local_path: str) -> None:
+    duration = probe_audio_duration(voice_local_path)
+    if duration <= 0:
+        raise ValueError("配音下载异常，可能为错误页面或损坏文件，请重试")
+
+
+def _clip_public_video_url(public_base: str, output_path: str) -> str:
+    rel_path = os.path.relpath(output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
+    return f"{public_base.rstrip('/')}/static/video-postprocess/{rel_path}"
+
+
+def _is_iv_cancelled(task_id: str) -> bool:
+    stored = _image_task_store.get(task_id) or {}
+    return stored.get("stage") == STAGE_IV_CANCELLED or stored.get("status") == "cancelled"
+
+
+def _is_mv_cancelled(task_id: str) -> bool:
+    stored = _mashup_task_store.get(task_id) or {}
+    return stored.get("stage") == STAGE_MV_CANCELLED or stored.get("status") == "cancelled"
+
+
+async def _tick_iv_render_progress(task_id: str, started_at: float) -> None:
+    while True:
+        await asyncio.sleep(15)
+        stored = _image_task_store.get(task_id) or {}
+        if stored.get("stage") != STAGE_IV_RENDERING:
+            return
+        elapsed = time.time() - started_at
+        progress = min(95, int(elapsed / 600.0 * 95))
+        _set_iv_stage(task_id, STAGE_IV_RENDERING, progress=progress, status="processing")
+
+
+async def _tick_mv_render_progress(task_id: str, started_at: float) -> None:
+    while True:
+        await asyncio.sleep(15)
+        stored = _mashup_task_store.get(task_id) or {}
+        if stored.get("stage") != STAGE_MV_RENDERING:
+            return
+        elapsed = time.time() - started_at
+        progress = min(95, int(elapsed / 900.0 * 95))
+        _set_mv_stage(task_id, STAGE_MV_RENDERING, progress=progress, status="processing")
+
+
+async def _run_iv_pipeline(task_id: str) -> None:
+    stored = _image_task_store.get(task_id) or {}
+    public_base = stored.get("public_base_url") or ""
+    image_paths = list(stored.get("image_paths") or [])
+    audio_path = stored.get("audio_path") or ""
+    script = stored.get("script") or ""
+    bgm_volume = float(stored.get("bgm_volume") or 0.32)
+    output_dir = stored.get("output_dir") or os.path.join(POST_PROCESS_ROOT, task_id)
+    try:
+        if _is_iv_cancelled(task_id):
+            return
+        rh = _get_rh_client()
+        _set_iv_stage(task_id, STAGE_IV_UPLOADING_AUDIO, status="processing", progress=5)
+        audio_url = await rh.upload_file(audio_path)
+        if _is_iv_cancelled(task_id):
+            return
+        _set_iv_stage(task_id, STAGE_IV_SUBMITTING_CLONE, progress=15)
+        audio_clone_task_id = await rh.submit_audio_clone(audio_url, audio_url, script)
+        _image_task_store[task_id]["rh_clone_task_id"] = audio_clone_task_id
+        if _is_iv_cancelled(task_id):
+            return
+        _set_iv_stage(task_id, STAGE_IV_WAITING_CLONE, progress=25)
+        audio_result = await rh.wait_for_completion(audio_clone_task_id, max_wait=600)
+        audio_clone_url = _pick_first_result_url(audio_result)
+        if not audio_clone_url:
+            raise RunningHubError("音频克隆完成但未返回结果 URL")
+        if _is_iv_cancelled(task_id):
+            return
+        _set_iv_stage(task_id, STAGE_IV_DOWNLOADING_CLONE, progress=55)
+        voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
+        await download_to_path(audio_clone_url, voice_local_path, max_bytes=MAX_REMOTE_AUDIO_BYTES, timeout=180.0)
+        await asyncio.to_thread(_validate_cloned_audio, voice_local_path)
+        if _is_iv_cancelled(task_id):
+            return
+        render_started = time.time()
+        _set_iv_stage(task_id, STAGE_IV_RENDERING, progress=60)
+        progress_task = asyncio.create_task(_tick_iv_render_progress(task_id, render_started))
+        try:
+            result = await asyncio.to_thread(
+                image_video_render,
+                task_id=task_id,
+                output_dir=output_dir,
+                image_paths=image_paths,
+                script=script,
+                voice_audio_path=voice_local_path,
+                bgm_dir=_resolve_bgm_dir(""),
+                bgm_volume=bgm_volume,
+            )
+        finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+        if _is_iv_cancelled(task_id):
+            return
+        if result.ok and result.output_path and os.path.isfile(result.output_path):
+            file_size = os.path.getsize(result.output_path)
+            if file_size < 1024:
+                raise ValueError(f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏")
+            public_url = _clip_public_video_url(public_base, result.output_path)
+            _set_iv_stage(task_id, STAGE_IV_COMPLETED, status="completed", progress=100, video_url=public_url, audio_url=audio_clone_url, error="")
+        else:
+            raise ValueError(_sanitize_ffmpeg_error(result.error) or "ffmpeg 合成失败")
+    except asyncio.CancelledError:
+        _set_iv_stage(task_id, STAGE_IV_CANCELLED, status="cancelled", error="用户已停止生成（中断任务不会返还积分）")
+        raise
+    except RunningHubError as e:
+        _set_iv_stage(task_id, STAGE_IV_FAILED, status="failed", error=str(e))
+    except Exception as e:
+        _set_iv_stage(task_id, STAGE_IV_FAILED, status="failed", error=str(e) or "图文视频生成流程异常")
+    finally:
+        _image_pipeline_tasks.pop(task_id, None)
+
+
+async def _run_mv_pipeline(task_id: str) -> None:
+    stored = _mashup_task_store.get(task_id) or {}
+    public_base = stored.get("public_base_url") or ""
+    video_paths = list(stored.get("video_paths") or [])
+    audio_path = stored.get("audio_path") or ""
+    script = stored.get("script") or ""
+    bgm_volume = float(stored.get("bgm_volume") or 0.32)
+    output_dir = stored.get("output_dir") or os.path.join(POST_PROCESS_ROOT, task_id)
+    try:
+        if _is_mv_cancelled(task_id):
+            return
+        rh = _get_rh_client()
+        _set_mv_stage(task_id, STAGE_MV_UPLOADING_AUDIO, status="processing", progress=5)
+        audio_url = await rh.upload_file(audio_path)
+        if _is_mv_cancelled(task_id):
+            return
+        _set_mv_stage(task_id, STAGE_MV_SUBMITTING_CLONE, progress=15)
+        audio_clone_task_id = await rh.submit_audio_clone(audio_url, audio_url, script)
+        _mashup_task_store[task_id]["rh_clone_task_id"] = audio_clone_task_id
+        if _is_mv_cancelled(task_id):
+            return
+        _set_mv_stage(task_id, STAGE_MV_WAITING_CLONE, progress=25)
+        audio_result = await rh.wait_for_completion(audio_clone_task_id, max_wait=600)
+        audio_clone_url = _pick_first_result_url(audio_result)
+        if not audio_clone_url:
+            raise RunningHubError("音频克隆完成但未返回结果 URL")
+        if _is_mv_cancelled(task_id):
+            return
+        _set_mv_stage(task_id, STAGE_MV_DOWNLOADING_CLONE, progress=55)
+        voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
+        await download_to_path(audio_clone_url, voice_local_path, max_bytes=MAX_REMOTE_AUDIO_BYTES, timeout=180.0)
+        await asyncio.to_thread(_validate_cloned_audio, voice_local_path)
+        if _is_mv_cancelled(task_id):
+            return
+        render_started = time.time()
+        _set_mv_stage(task_id, STAGE_MV_RENDERING, progress=60)
+        progress_task = asyncio.create_task(_tick_mv_render_progress(task_id, render_started))
+        try:
+            result = await asyncio.to_thread(
+                mashup_video_render,
+                task_id=task_id,
+                output_dir=output_dir,
+                video_paths=video_paths,
+                script=script,
+                voice_audio_path=voice_local_path,
+                bgm_dir=_resolve_bgm_dir(""),
+                bgm_volume=bgm_volume,
+            )
+        finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+        if _is_mv_cancelled(task_id):
+            return
+        if result.ok and result.output_path and os.path.isfile(result.output_path):
+            file_size = os.path.getsize(result.output_path)
+            if file_size < 1024:
+                raise ValueError(f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏")
+            public_url = _clip_public_video_url(public_base, result.output_path)
+            _set_mv_stage(task_id, STAGE_MV_COMPLETED, status="completed", progress=100, video_url=public_url, audio_url=audio_clone_url, error="")
+        else:
+            raise ValueError(_sanitize_ffmpeg_error(result.error) or "ffmpeg 混剪失败")
+    except asyncio.CancelledError:
+        _set_mv_stage(task_id, STAGE_MV_CANCELLED, status="cancelled", error="用户已停止生成（中断任务不会返还积分）")
+        raise
+    except RunningHubError as e:
+        _set_mv_stage(task_id, STAGE_MV_FAILED, status="failed", error=str(e))
+    except Exception as e:
+        _set_mv_stage(task_id, STAGE_MV_FAILED, status="failed", error=str(e) or "视频混剪流程异常")
+    finally:
+        _mashup_pipeline_tasks.pop(task_id, None)
+
+
+def _clip_status_from_store(stored: dict) -> ClipTaskStatusResponse:
+    return ClipTaskStatusResponse(
+        task_id=stored.get("task_id", ""),
+        status=stored.get("status", ""),
+        progress=int(stored.get("progress") or 0),
+        video_url=stored.get("video_url", ""),
+        audio_url=stored.get("audio_url", ""),
+        error=stored.get("error", ""),
+        stage=stored.get("stage", ""),
+        stage_label=stored.get("stage_label", ""),
+        stage_history=list(stored.get("stage_history") or []),
+        stage_updated_at=float(stored.get("stage_updated_at") or 0),
+    )
 
 
 @app.post("/api/video/image-to-video", response_model=ImageToVideoResponse)
 async def video_image_to_video(req: ImageToVideoRequest, request: Request):
-    """
-    图文视频创作任务
-
-    流程: 多图片 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 合成（图片+字幕+转场+BGM）
-    """
+    """图文视频创作（异步）：解码素材后返回 task_id，后台克隆 + ffmpeg。"""
     user = require_user(request)
     _check_request_size(request)
     if len(req.images_base64) < 7:
@@ -1551,115 +1906,83 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
     for idx, img_b64 in enumerate(req.images_base64):
         check_base64_size(img_b64, max_mb=10, name=f"images_base64[{idx}]")
 
-    rh = _get_rh_client()
-    audio_path = None
-    image_temp_paths: list[str] = []
     task_id = f"img2vid_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+    consume_with_idempotency(user_id=user.id, scene="video_image_to_video", ref_id=task_id, note="图文视频创作")
 
-    consume_with_idempotency(
-        user_id=user.id,
-        scene="video_image_to_video",
-        ref_id=task_id,
-        note="图文视频创作",
-    )
+    output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
+    inputs_dir = os.path.join(output_dir, "inputs")
+    public_base = str(request.base_url).rstrip("/")
+
+    _image_task_store[task_id] = {
+        "task_id": task_id,
+        "user_id": user.id,
+        "status": "queued",
+        "progress": 0,
+        "stage": STAGE_IV_DECODING_IMAGES,
+        "stage_label": IV_STAGE_LABELS[STAGE_IV_DECODING_IMAGES],
+        "stage_history": [STAGE_IV_DECODING_IMAGES],
+        "stage_updated_at": time.time(),
+        "video_url": "",
+        "audio_url": "",
+        "error": "",
+        "script": req.script.strip(),
+        "bgm_volume": max(0.0, min(float(req.bgm_volume), 1.0)),
+        "image_paths": [],
+        "audio_path": "",
+        "output_dir": output_dir,
+        "public_base_url": public_base,
+        "rh_clone_task_id": "",
+    }
 
     try:
-        # 1. 解码所有图片 base64 → 临时文件
+        image_paths: list[str] = []
         for idx, img_b64 in enumerate(req.images_base64):
-            img_path = await _base64_to_temp_file(img_b64, f"_img{idx}.png")
-            image_temp_paths.append(img_path)
-
-        # 2. 解码音色样本
-        audio_path = await _base64_to_temp_file(req.audio_base64, ".mp3")
-
-        # 3. 上传音色到 RunningHub
-        print(f"[image-to-video/{task_id}] Uploading voice sample: {audio_path}")
-        audio_url = await rh.upload_file(audio_path)
-
-        # 4. 声音克隆（直接用全文生成完整配音）
-        print(f"[image-to-video/{task_id}] Submitting audio clone")
-        audio_clone_task_id = await rh.submit_audio_clone(audio_url, audio_url, req.script)
-
-        # 5. 等待克隆完成
-        print(f"[image-to-video/{task_id}] Waiting for audio clone: {audio_clone_task_id}")
-        audio_result = await rh.wait_for_completion(audio_clone_task_id, max_wait=600)
-        audio_clone_url = audio_result.get("results", [{}])[0].get("url", "")
-        if not audio_clone_url:
-            raise HTTPException(status_code=502, detail="音频克隆完成但未返回结果 URL")
-
-        # 6. 下载克隆音频到本地
-        print(f"[image-to-video/{task_id}] Downloading cloned audio: {audio_clone_url}")
-        output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
-        os.makedirs(output_dir, exist_ok=True)
-        voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
-        await download_to_path(
-            audio_clone_url,
-            voice_local_path,
-            max_bytes=MAX_REMOTE_AUDIO_BYTES,
-            timeout=180.0,
-        )
-
-        # 7. 调用 ffmpeg 图文视频合成
-        print(f"[image-to-video/{task_id}] Starting ffmpeg image-video render")
-        bgm_dir = _resolve_bgm_dir("")
-        bgm_volume = max(0.0, min(float(req.bgm_volume), 1.0))
-        result = await asyncio.to_thread(
-            image_video_render,
-            task_id=task_id,
-            output_dir=output_dir,
-            image_paths=image_temp_paths,
-            script=req.script,
-            voice_audio_path=voice_local_path,
-            bgm_dir=bgm_dir,
-            bgm_volume=bgm_volume,
-        )
-
-        if result.ok and result.output_path:
-            # 产物文件存在性 + 大小校验（防止 ffmpeg 上报成功但产物异常导致返回 .htm）
-            if not os.path.isfile(result.output_path):
-                err_msg = f"ffmpeg 上报成功但产物文件不存在: {result.output_path}"
-                print(f"[image-to-video/{task_id}] {err_msg}", flush=True)
-                return ImageToVideoResponse(
-                    task_id=task_id,
-                    status="failed",
-                    error=err_msg,
-                )
-            file_size = os.path.getsize(result.output_path)
-            if file_size < 1024:
-                err_msg = f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏: {result.output_path}"
-                print(f"[image-to-video/{task_id}] {err_msg}", flush=True)
-                return ImageToVideoResponse(
-                    task_id=task_id,
-                    status="failed",
-                    error=err_msg,
-                )
-            rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
-            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
-            print(f"[image-to-video/{task_id}] Done → {public_url} ({file_size} bytes)")
-            return ImageToVideoResponse(
-                task_id=task_id,
-                status="success",
-                video_url=public_url,
-                audio_url=audio_clone_url,
-            )
-        else:
-            return ImageToVideoResponse(
-                task_id=task_id,
-                status="failed",
-                error=_sanitize_ffmpeg_error(result.error),
-            )
-
-    except RunningHubError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            img_path = os.path.join(inputs_dir, f"img_{idx}.png")
+            await _decode_b64_file(img_b64, img_path)
+            image_paths.append(img_path)
+        _set_iv_stage(task_id, STAGE_IV_DECODING_AUDIO, progress=3)
+        audio_path = os.path.join(inputs_dir, "audio_sample.mp3")
+        await _decode_b64_file(req.audio_base64, audio_path)
+        _image_task_store[task_id]["image_paths"] = image_paths
+        _image_task_store[task_id]["audio_path"] = audio_path
+        pipeline = asyncio.create_task(_run_iv_pipeline(task_id))
+        _image_pipeline_tasks[task_id] = pipeline
+        return ImageToVideoResponse(task_id=task_id, status="queued")
     except HTTPException:
+        _image_task_store.pop(task_id, None)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"图文视频生成流程异常: {e}")
-    finally:
-        _cleanup_temp(*[p for p in ([audio_path] if audio_path else [])], *image_temp_paths)
+        _image_task_store.pop(task_id, None)
+        raise HTTPException(status_code=500, detail=f"图文视频任务初始化失败: {e}")
+
+
+@app.get("/api/video/image-to-video/status", response_model=ClipTaskStatusResponse)
+async def image_to_video_status(taskId: str, request: Request):
+    user = require_user(request)
+    if not taskId:
+        raise HTTPException(status_code=400, detail="缺少 taskId 参数")
+    stored = _image_task_store.get(taskId)
+    if not stored:
+        raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND", "message": "任务不存在或已过期"})
+    assert_task_owner(stored, user, task_id=taskId)
+    return _clip_status_from_store(stored)
+
+
+@app.post("/api/video/image-to-video/cancel")
+async def image_to_video_cancel(req: CancelClipTaskRequest, request: Request):
+    user = require_user(request)
+    task_id = (req.task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="缺少 task_id 参数")
+    stored = _image_task_store.get(task_id, {})
+    if not stored:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    assert_task_owner(stored, user, task_id=task_id)
+    pipeline = _image_pipeline_tasks.pop(task_id, None)
+    if pipeline is not None:
+        pipeline.cancel()
+    _set_iv_stage(task_id, STAGE_IV_CANCELLED, status="cancelled", progress=0, video_url="", error="用户已停止生成（中断任务不会返还积分）")
+    return {"ok": True, "task_id": task_id}
 
 
 # ── POST /api/video/mashup ──────────────────────────────────────
@@ -1667,11 +1990,7 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
 
 @app.post("/api/video/mashup", response_model=MashupVideoResponse)
 async def video_mashup(req: MashupVideoRequest, request: Request):
-    """
-    视频混剪创作任务
-
-    流程: 多视频 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 混剪（视频拼接+字幕+转场+BGM）
-    """
+    """视频混剪创作（异步）：解码素材后返回 task_id，后台克隆 + ffmpeg。"""
     user = require_user(request)
     _check_request_size(request)
     if len(req.videos_base64) < 5:
@@ -1686,115 +2005,83 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
     for idx, vid_b64 in enumerate(req.videos_base64):
         check_base64_size(vid_b64, max_mb=200, name=f"videos_base64[{idx}]")
 
-    rh = _get_rh_client()
-    audio_path = None
-    video_temp_paths: list[str] = []
     task_id = f"mashup_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+    consume_with_idempotency(user_id=user.id, scene="video_mashup", ref_id=task_id, note="视频素材混剪")
 
-    consume_with_idempotency(
-        user_id=user.id,
-        scene="video_mashup",
-        ref_id=task_id,
-        note="视频素材混剪",
-    )
+    output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
+    inputs_dir = os.path.join(output_dir, "inputs")
+    public_base = str(request.base_url).rstrip("/")
+
+    _mashup_task_store[task_id] = {
+        "task_id": task_id,
+        "user_id": user.id,
+        "status": "queued",
+        "progress": 0,
+        "stage": STAGE_MV_DECODING_VIDEOS,
+        "stage_label": MV_STAGE_LABELS[STAGE_MV_DECODING_VIDEOS],
+        "stage_history": [STAGE_MV_DECODING_VIDEOS],
+        "stage_updated_at": time.time(),
+        "video_url": "",
+        "audio_url": "",
+        "error": "",
+        "script": req.script.strip(),
+        "bgm_volume": max(0.0, min(float(req.bgm_volume), 1.0)),
+        "video_paths": [],
+        "audio_path": "",
+        "output_dir": output_dir,
+        "public_base_url": public_base,
+        "rh_clone_task_id": "",
+    }
 
     try:
-        # 1. 解码所有视频 base64 → 临时文件
+        video_paths: list[str] = []
         for idx, vid_b64 in enumerate(req.videos_base64):
-            vid_path = await _base64_to_temp_file(vid_b64, f"_vid{idx}.mp4")
-            video_temp_paths.append(vid_path)
-
-        # 2. 解码音色样本
-        audio_path = await _base64_to_temp_file(req.audio_base64, ".mp3")
-
-        # 3. 上传音色到 RunningHub
-        print(f"[mashup/{task_id}] Uploading voice sample")
-        audio_url = await rh.upload_file(audio_path)
-
-        # 4. 声音克隆
-        print(f"[mashup/{task_id}] Submitting audio clone")
-        audio_clone_task_id = await rh.submit_audio_clone(audio_url, audio_url, req.script)
-
-        # 5. 等待克隆完成
-        print(f"[mashup/{task_id}] Waiting for audio clone: {audio_clone_task_id}")
-        audio_result = await rh.wait_for_completion(audio_clone_task_id, max_wait=600)
-        audio_clone_url = audio_result.get("results", [{}])[0].get("url", "")
-        if not audio_clone_url:
-            raise HTTPException(status_code=502, detail="音频克隆完成但未返回结果 URL")
-
-        # 6. 下载克隆音频
-        print(f"[mashup/{task_id}] Downloading cloned audio")
-        output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
-        os.makedirs(output_dir, exist_ok=True)
-        voice_local_path = os.path.join(output_dir, f"{task_id}_voice.mp3")
-        await download_to_path(
-            audio_clone_url,
-            voice_local_path,
-            max_bytes=MAX_REMOTE_AUDIO_BYTES,
-            timeout=180.0,
-        )
-
-        # 7. 调用 ffmpeg 视频混剪
-        print(f"[mashup/{task_id}] Starting ffmpeg mashup render")
-        bgm_dir = _resolve_bgm_dir("")
-        bgm_volume = max(0.0, min(float(req.bgm_volume), 1.0))
-        result = await asyncio.to_thread(
-            mashup_video_render,
-            task_id=task_id,
-            output_dir=output_dir,
-            video_paths=video_temp_paths,
-            script=req.script,
-            voice_audio_path=voice_local_path,
-            bgm_dir=bgm_dir,
-            bgm_volume=bgm_volume,
-        )
-
-        if result.ok and result.output_path:
-            # 产物文件存在性 + 大小校验（防止 ffmpeg 上报成功但产物异常导致返回 .htm）
-            if not os.path.isfile(result.output_path):
-                err_msg = f"ffmpeg 上报成功但产物文件不存在: {result.output_path}"
-                print(f"[mashup/{task_id}] {err_msg}", flush=True)
-                return MashupVideoResponse(
-                    task_id=task_id,
-                    status="failed",
-                    error=err_msg,
-                )
-            file_size = os.path.getsize(result.output_path)
-            if file_size < 1024:
-                err_msg = f"ffmpeg 产物过小 ({file_size} bytes)，疑似损坏: {result.output_path}"
-                print(f"[mashup/{task_id}] {err_msg}", flush=True)
-                return MashupVideoResponse(
-                    task_id=task_id,
-                    status="failed",
-                    error=err_msg,
-                )
-            rel_path = os.path.relpath(result.output_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-            # 返回绝对 URL（含 FastAPI base），避免 Next.js 反代未覆盖 /static/* 时 404
-            public_url = f"{str(request.base_url).rstrip('/')}/static/video-postprocess/{rel_path}"
-            print(f"[mashup/{task_id}] Done → {public_url} ({file_size} bytes)")
-            return MashupVideoResponse(
-                task_id=task_id,
-                status="success",
-                video_url=public_url,
-                audio_url=audio_clone_url,
-            )
-        else:
-            return MashupVideoResponse(
-                task_id=task_id,
-                status="failed",
-                error=_sanitize_ffmpeg_error(result.error),
-            )
-
-    except RunningHubError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            vid_path = os.path.join(inputs_dir, f"vid_{idx}.mp4")
+            await _decode_b64_file(vid_b64, vid_path)
+            video_paths.append(vid_path)
+        _set_mv_stage(task_id, STAGE_MV_DECODING_AUDIO, progress=3)
+        audio_path = os.path.join(inputs_dir, "audio_sample.mp3")
+        await _decode_b64_file(req.audio_base64, audio_path)
+        _mashup_task_store[task_id]["video_paths"] = video_paths
+        _mashup_task_store[task_id]["audio_path"] = audio_path
+        pipeline = asyncio.create_task(_run_mv_pipeline(task_id))
+        _mashup_pipeline_tasks[task_id] = pipeline
+        return MashupVideoResponse(task_id=task_id, status="queued")
     except HTTPException:
+        _mashup_task_store.pop(task_id, None)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"视频混剪流程异常: {e}")
-    finally:
-        _cleanup_temp(*[p for p in ([audio_path] if audio_path else [])], *video_temp_paths)
+        _mashup_task_store.pop(task_id, None)
+        raise HTTPException(status_code=500, detail=f"视频混剪任务初始化失败: {e}")
+
+
+@app.get("/api/video/mashup/status", response_model=ClipTaskStatusResponse)
+async def mashup_status(taskId: str, request: Request):
+    user = require_user(request)
+    if not taskId:
+        raise HTTPException(status_code=400, detail="缺少 taskId 参数")
+    stored = _mashup_task_store.get(taskId)
+    if not stored:
+        raise HTTPException(status_code=404, detail={"code": "TASK_NOT_FOUND", "message": "任务不存在或已过期"})
+    assert_task_owner(stored, user, task_id=taskId)
+    return _clip_status_from_store(stored)
+
+
+@app.post("/api/video/mashup/cancel")
+async def mashup_cancel(req: CancelClipTaskRequest, request: Request):
+    user = require_user(request)
+    task_id = (req.task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="缺少 task_id 参数")
+    stored = _mashup_task_store.get(task_id, {})
+    if not stored:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    assert_task_owner(stored, user, task_id=task_id)
+    pipeline = _mashup_pipeline_tasks.pop(task_id, None)
+    if pipeline is not None:
+        pipeline.cancel()
+    _set_mv_stage(task_id, STAGE_MV_CANCELLED, status="cancelled", progress=0, video_url="", error="用户已停止生成（中断任务不会返还积分）")
+    return {"ok": True, "task_id": task_id}
 
 
 # ════════════════════════════════════════════════════════════════════════

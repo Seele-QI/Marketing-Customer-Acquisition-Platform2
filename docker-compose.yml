@@ -2,7 +2,7 @@
 #  docker compose up -d  一键启动全栈服务
 #  - web（Next.js）: localhost:3000
 #  - api（FastAPI）: localhost:8000
-#  生产环境建议前面加 nginx/Caddy 反代 + HTTPS
+#  公网部署详见 docs/deploy/PAAS.md
 # ────────────────────────────────────────────────────────────────
 services:
   web:
@@ -12,10 +12,18 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_FASTAPI_URL=http://api:8000
+      - FASTAPI_URL=http://api:8000
+      - NEXT_PUBLIC_FASTAPI_URL=https://api.example.com
       - NODE_ENV=production
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   api:
@@ -26,13 +34,19 @@ services:
       - "8000:8000"
     volumes:
       - zhongtai_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       # ── 固定配置 ──
       - VIDEO_BGM_DIR=/app/assets/bgm
       - DATA_DIR=/data
       - CREDIT_DB_OVERRIDE=/data/accounts.db
       - PYTHONUNBUFFERED=1
-      - CORS_ALLOW_ORIGINS=*
+      - CORS_ALLOW_ORIGINS=https://www.example.com,https://example.com
       # ── 以下从 .env 文件读取 ──
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - RUNNINGHUB_API_KEY=${RUNNINGHUB_API_KEY}

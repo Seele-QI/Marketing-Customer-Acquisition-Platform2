@@ -1,8 +1,5 @@
 /**
- * 视频模块 API 客户端
- *
- * 集中管理对 FastAPI / Next API Route 的视频相关请求。
- * 所有实际 API 调用均通过此模块发起，便于后续替换 Mock 为真实服务。
+ * 视频模块 API 客户端 — 浏览器侧统一走同源 Next 代理（转发 session cookie）。
  */
 import type {
   VideoGenerateRequest,
@@ -14,173 +11,187 @@ import type {
   VoiceCloneResponse,
   ImageToVideoRequest,
   ImageToVideoResponse,
+  ImageToVideoStatusResponse,
   MashupVideoRequest,
   MashupVideoResponse,
+  MashupStatusResponse,
 } from "./types"
+import { parseApiDetail, parseApiErrorResponse } from "@/lib/api/parse-detail"
 import { getFastapiBase } from "@/lib/fastapi-base"
 
-// ── 文案提取 API 类型 ──────────────────────────────────────────
+const JSON_HEADERS = { "Content-Type": "application/json" }
+const FETCH_INIT: RequestInit = { credentials: "include" }
+
+async function readError(res: Response, fallback: string): Promise<never> {
+  const data = (await res.json().catch(() => ({}))) as { detail?: unknown }
+  throw new Error(parseApiErrorResponse(res.status, data, fallback))
+}
+
+async function fastapiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const base = getFastapiBase()
+  if (!base) throw new Error("请配置 NEXT_PUBLIC_FASTAPI_URL")
+  return fetch(`${base}${path}`, { credentials: "include", ...init })
+}
 
 export type ExtractCopyRequest = { url: string; platform?: string }
 export type ExtractCopyResponse = { task_id: string; status: string }
 export type ExtractCopyStatusResponse = {
   task_id: string
-  status: string       // "queued" | "downloading" | "transcribing" | "completed" | "failed"
-  step: string         // 中文步骤描述
-  progress: number     // 0-100
+  status: string
+  step: string
+  progress: number
   text?: string
   title?: string
   duration?: number
-  source?: string      // "subtitles" | "asr"
+  source?: string
   error?: string
 }
 
-/**
- * 提交视频生成任务 → FastAPI POST /api/video/generate
- */
 export async function submitVideoGeneration(
   req: VideoGenerateRequest,
 ): Promise<VideoGenerateResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/generate`, {
+  const res = await fetch("/api/video/generate", {
+    ...FETCH_INIT,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "提交任务失败")
-  }
+  if (!res.ok) await readError(res, "提交任务失败")
   return data as VideoGenerateResponse
 }
 
-/**
- * 查询视频任务状态 → FastAPI GET /api/video/status?taskId=xxx
- */
-export async function queryVideoStatus(
-  taskId: string,
-): Promise<VideoStatusResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/status?taskId=${taskId}`)
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(typeof data.detail === "string" ? data.detail : "查询状态失败")
-  }
+export async function queryVideoStatus(taskId: string): Promise<VideoStatusResponse> {
+  const res = await fetch(
+    `/api/video/status?taskId=${encodeURIComponent(taskId)}`,
+    FETCH_INIT,
+  )
+  if (!res.ok) await readError(res, "查询状态失败")
   return (await res.json()) as VideoStatusResponse
 }
 
-/**
- * 应用剪辑效果 → Next POST /api/video/edit (Remotion)
- */
-export async function applyEdit(
-  req: VideoEditRequest,
-): Promise<VideoEditResponse> {
-  const res = await fetch("/api/video/edit", {
+export async function cancelVideoTask(taskId: string): Promise<void> {
+  const res = await fetch("/api/video/cancel", {
+    ...FETCH_INIT,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ task_id: taskId }),
+  })
+  if (!res.ok) await readError(res, "取消任务失败")
+}
+
+/** Remotion 预设剪辑 */
+export async function applyEdit(req: VideoEditRequest): Promise<VideoEditResponse> {
+  const res = await fetch("/api/video/remotion-edit", {
+    ...FETCH_INIT,
+    method: "POST",
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "剪辑失败")
-  }
+  if (!res.ok) await readError(res, "剪辑失败")
   return data as VideoEditResponse
 }
 
-/**
- * 音色克隆 → FastAPI POST /api/video/clone-voice
- */
-export async function cloneVoice(
-  req: VoiceCloneRequest,
-): Promise<VoiceCloneResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/clone-voice`, {
+export async function cloneVoice(req: VoiceCloneRequest): Promise<VoiceCloneResponse> {
+  const res = await fastapiFetch("/api/video/clone-voice", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "音色克隆失败")
-  }
+  if (!res.ok) await readError(res, "音色克隆失败")
   return data as VoiceCloneResponse
 }
 
-/**
- * 图文视频创作 → FastAPI POST /api/video/image-to-video
- */
 export async function submitImageToVideo(
   req: ImageToVideoRequest,
 ): Promise<ImageToVideoResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/image-to-video`, {
+  const res = await fetch("/api/video/image-to-video", {
+    ...FETCH_INIT,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "图文视频创作失败")
-  }
+  if (!res.ok) await readError(res, "图文视频创作失败")
   return data as ImageToVideoResponse
 }
 
-/**
- * 视频混剪创作 → FastAPI POST /api/video/mashup
- */
-export async function submitMashup(
-  req: MashupVideoRequest,
-): Promise<MashupVideoResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/mashup`, {
+export async function queryImageToVideoStatus(
+  taskId: string,
+): Promise<ImageToVideoStatusResponse> {
+  const res = await fetch(
+    `/api/video/image-to-video/status?taskId=${encodeURIComponent(taskId)}`,
+    FETCH_INIT,
+  )
+  if (!res.ok) await readError(res, "查询图文视频状态失败")
+  return (await res.json()) as ImageToVideoStatusResponse
+}
+
+export async function cancelImageToVideo(taskId: string): Promise<void> {
+  const res = await fetch("/api/video/image-to-video/cancel", {
+    ...FETCH_INIT,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ task_id: taskId }),
+  })
+  if (!res.ok) await readError(res, "取消图文视频任务失败")
+}
+
+export async function submitMashup(req: MashupVideoRequest): Promise<MashupVideoResponse> {
+  const res = await fetch("/api/video/mashup", {
+    ...FETCH_INIT,
+    method: "POST",
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "视频混剪创作失败")
-  }
+  if (!res.ok) await readError(res, "视频混剪创作失败")
   return data as MashupVideoResponse
 }
 
-// ── 文案提取 API ───────────────────────────────────────────────
+export async function queryMashupStatus(taskId: string): Promise<MashupStatusResponse> {
+  const res = await fetch(
+    `/api/video/mashup/status?taskId=${encodeURIComponent(taskId)}`,
+    FETCH_INIT,
+  )
+  if (!res.ok) await readError(res, "查询混剪状态失败")
+  return (await res.json()) as MashupStatusResponse
+}
 
-/**
- * 提交文案提取任务 → FastAPI POST /api/copywriting/extract
- */
+export async function cancelMashup(taskId: string): Promise<void> {
+  const res = await fetch("/api/video/mashup/cancel", {
+    ...FETCH_INIT,
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ task_id: taskId }),
+  })
+  if (!res.ok) await readError(res, "取消混剪任务失败")
+}
+
 export async function startCopyExtraction(
   req: ExtractCopyRequest,
 ): Promise<ExtractCopyResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/copywriting/extract`, {
+  const res = await fastapiFetch("/api/copywriting/extract", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "提交提取任务失败")
-  }
+  if (!res.ok) await readError(res, "提交提取任务失败")
   return data as ExtractCopyResponse
 }
 
-/**
- * 查询文案提取任务状态 → FastAPI GET /api/copywriting/extract/status
- */
 export async function queryExtractStatus(
   taskId: string,
 ): Promise<ExtractCopyStatusResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/copywriting/extract/status?task_id=${encodeURIComponent(taskId)}`)
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(typeof data.detail === "string" ? data.detail : "查询提取状态失败")
-  }
+  const res = await fastapiFetch(
+    `/api/copywriting/extract/status?task_id=${encodeURIComponent(taskId)}`,
+  )
+  if (!res.ok) await readError(res, "查询提取状态失败")
   return (await res.json()) as ExtractCopyStatusResponse
 }
-
-// ── 自动字幕生成 API ────────────────────────────────────────────
 
 export type AutoSubtitleRequest = {
   source: "local" | "url"
@@ -192,43 +203,36 @@ export type AutoSubtitleRequest = {
 
 export type AutoSubtitleResponse = {
   task_id: string
-  status: string          // "queued" | "processing" | "completed" | "failed"
-  subtitle_path?: string  // 生成的字幕文件路径
-  subtitle_text?: string  // 字幕纯文本（供预览）
+  status: string
+  subtitle_path?: string
+  subtitle_text?: string
   sentence_count?: number
   error?: string
 }
 
-/**
- * 提交自动字幕生成任务 → FastAPI POST /api/video/auto-subtitle
- */
 export async function startAutoSubtitle(
   req: AutoSubtitleRequest,
 ): Promise<AutoSubtitleResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/auto-subtitle`, {
+  const res = await fetch("/api/video/auto-subtitle", {
+    ...FETCH_INIT,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
   const data = await res.json()
-  if (!res.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "提交字幕生成失败")
-  }
+  if (!res.ok) await readError(res, "提交字幕生成失败")
   return data as AutoSubtitleResponse
 }
 
-/**
- * 查询自动字幕任务状态 → FastAPI GET /api/video/auto-subtitle/status
- */
 export async function queryAutoSubtitleStatus(
   taskId: string,
 ): Promise<AutoSubtitleResponse> {
-  const base = getFastapiBase()
-  const res = await fetch(`${base}/api/video/auto-subtitle/status?task_id=${encodeURIComponent(taskId)}`)
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(typeof data.detail === "string" ? data.detail : "查询字幕状态失败")
-  }
+  const res = await fetch(
+    `/api/video/auto-subtitle/status?task_id=${encodeURIComponent(taskId)}`,
+    FETCH_INIT,
+  )
+  if (!res.ok) await readError(res, "查询字幕状态失败")
   return (await res.json()) as AutoSubtitleResponse
 }
+
+export { parseApiDetail, parseApiErrorResponse }

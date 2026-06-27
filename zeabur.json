@@ -8,7 +8,8 @@
       },
       "port": 3000,
       "env": {
-        "NEXT_PUBLIC_FASTAPI_URL": "http://api:8000",
+        "FASTAPI_URL": "http://api:8000",
+        "NEXT_PUBLIC_FASTAPI_URL": "https://api.example.com",
         "NODE_ENV": "production",
         "NEXT_PUBLIC_OPEN_SOURCE_REPO_URL": "https://github.com/your-org/your-repo"
       }
@@ -27,7 +28,10 @@
         "VIDEO_BGM_DIR": "/app/assets/bgm",
         "DATA_DIR": "/data",
         "CREDIT_DB_OVERRIDE": "/data/accounts.db",
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "CORS_ALLOW_ORIGINS": "https://www.example.com,https://example.com",
+        "APP_PUBLIC_BASE": "https://www.example.com",
+        "DEV_EMAIL_MODE": "0"
       }
     }
   ]

@@ -1,0 +1,48 @@
+# AgentHub 生产反代示例（Nginx）
+# 用法：替换 example.com，放入 /etc/nginx/conf.d/ 或 sites-enabled
+
+# 混剪 POST 体可达数百 MB；首次解码请求最长约 600s
+client_max_body_size 512m;
+proxy_read_timeout 600s;
+proxy_send_timeout 600s;
+
+upstream agenthub_web {
+    server 127.0.0.1:3000;
+}
+
+upstream agenthub_api {
+    server 127.0.0.1:8000;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name www.example.com example.com;
+
+    # ssl_certificate /path/to/fullchain.pem;
+    # ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://agenthub_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name api.example.com;
+
+    location / {
+        proxy_pass http://agenthub_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 512m;
+        proxy_read_timeout 600s;
+    }
+}

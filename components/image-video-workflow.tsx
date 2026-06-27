@@ -18,7 +18,16 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
-import { submitImageToVideo } from "@/lib/video/api"
+import { submitImageToVideo, queryImageToVideoStatus, cancelImageToVideo } from "@/lib/video/api"
+import {
+  CLIP_POLL_INTERVAL_MS,
+  POLL_ERROR_LIMIT,
+  TASK_TIMEOUT_MS,
+  formatClipNetworkError,
+  ivStageToStep,
+  isClipSuccess,
+  isClipTerminal,
+} from "@/lib/image-video-task-runtime"
 import { fileToBase64 } from "@/lib/video/utils"
 import type { ImageToVideoResponse } from "@/lib/video/types"
 
@@ -57,8 +66,12 @@ type WorkflowState = {
   script: string
   audioSample: AudioItem | null
   isProcessing: boolean
+  taskId: string
+  stageLabel: string
+  progress: number
   result: ImageToVideoResponse | null
   errorMessage: string
+  submittedAt: number
 }
 
 /* ================================================================== */
@@ -371,7 +384,7 @@ function StepMaterialPrep({
 /*  Step 2: Audio Generation                                           */
 /* ================================================================== */
 
-function StepAudioGen() {
+function StepAudioGen({ stageLabel, progress }: { stageLabel: string; progress: number }) {
   return (
     <div className="flex flex-col items-center justify-center py-16">
       <div className="relative mb-6">
@@ -382,8 +395,11 @@ function StepAudioGen() {
         正在生成AI配音
       </h3>
       <p className="max-w-md text-center text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-        正在通过 AI 引擎克隆您的音色并生成完整配音，预计需要 2~3 分钟，请耐心等待...
+        {stageLabel || "正在通过 AI 引擎克隆您的音色并生成完整配音"}，预计需要 2~10 分钟，请耐心等待...
       </p>
+      {progress > 0 && (
+        <p className="mt-3 text-[12px] text-slate-400">进度 {progress}%</p>
+      )}
     </div>
   )
 }
@@ -392,7 +408,17 @@ function StepAudioGen() {
 /*  Step 3: Video Result                                               */
 /* ================================================================== */
 
-function StepVideoResult({ result, error }: { result: ImageToVideoResponse | null; error: string }) {
+function StepVideoResult({
+  result,
+  error,
+  stageLabel,
+  progress,
+}: {
+  result: ImageToVideoResponse | null
+  error: string
+  stageLabel: string
+  progress: number
+}) {
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
@@ -411,8 +437,11 @@ function StepVideoResult({ result, error }: { result: ImageToVideoResponse | nul
           视频合成中...
         </h3>
         <p className="text-[13px] text-slate-500 dark:text-slate-400">
-          正在使用 ffmpeg 合成图片、字幕、BGM 和转场效果
+          {stageLabel || "正在使用 ffmpeg 合成图片、字幕、BGM 和转场效果"}
         </p>
+        {progress > 0 && (
+          <p className="mt-3 text-[12px] text-slate-400">进度 {progress}%</p>
+        )}
       </div>
     )
   }
@@ -459,15 +488,62 @@ export function ImageVideoWorkflow() {
     script: "",
     audioSample: null,
     isProcessing: false,
+    taskId: "",
+    stageLabel: "",
+    progress: 0,
     result: null,
     errorMessage: "",
+    submittedAt: 0,
   })
+  const pollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollErrorCountRef = React.useRef(0)
+
+  React.useEffect(() => {
+    return () => {
+      if (pollRef.current) clearTimeout(pollRef.current)
+    }
+  }, [])
+
+  const stopPolling = React.useCallback(() => {
+    if (pollRef.current) {
+      clearTimeout(pollRef.current)
+      pollRef.current = null
+    }
+  }, [])
+
+  const handleCancel = async () => {
+    if (!state.taskId) return
+    stopPolling()
+    try {
+      await cancelImageToVideo(state.taskId)
+    } catch {
+      // ignore
+    }
+    setState((s) => ({
+      ...s,
+      isProcessing: false,
+      errorMessage: "已停止生成",
+    }))
+  }
 
   const handleSubmit = async () => {
     const { images, script, audioSample } = state
     if (images.length < MIN_IMAGES || !script.trim() || !audioSample) return
 
-    setState((s) => ({ ...s, currentStep: 2, isProcessing: true, errorMessage: "" }))
+    stopPolling()
+    pollErrorCountRef.current = 0
+    const submittedAt = Date.now()
+    setState((s) => ({
+      ...s,
+      currentStep: 2,
+      isProcessing: true,
+      errorMessage: "",
+      taskId: "",
+      stageLabel: "提交任务中",
+      progress: 0,
+      result: null,
+      submittedAt,
+    }))
 
     try {
       const req = {
@@ -477,32 +553,83 @@ export function ImageVideoWorkflow() {
         bgm_volume: 0.32,
       }
 
-      // 进入 Step 3（ffmpeg 合成阶段）
-      setState((s) => ({ ...s, currentStep: 3 }))
+      const queued = await submitImageToVideo(req)
+      const taskId = queued.task_id
+      if (!taskId) throw new Error("未返回任务 ID")
 
-      const result = await submitImageToVideo(req)
+      setState((s) => ({ ...s, taskId, stageLabel: "任务已入队" }))
 
-      if (result.status === "success") {
-        setState((s) => ({
-          ...s,
-          currentStep: 3,
-          isProcessing: false,
-          result,
-          errorMessage: "",
-        }))
-        toast({ title: "图文视频生成成功！" })
-      } else {
-        setState((s) => ({
-          ...s,
-          currentStep: 3,
-          isProcessing: false,
-          result: null,
-          errorMessage: result.error || "未知错误",
-        }))
-        toast({ title: "生成失败", description: result.error, variant: "destructive" })
+      const pollOnce = async () => {
+        try {
+          if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
+            throw new Error("任务超时，请稍后重试")
+          }
+          const status = await queryImageToVideoStatus(taskId)
+          pollErrorCountRef.current = 0
+          const step = ivStageToStep(status.stage || "", status.status)
+          const stageLabel = status.stage_label || status.stage || ""
+
+          if (isClipTerminal(status)) {
+            if (isClipSuccess(status) && status.video_url) {
+              const result: ImageToVideoResponse = {
+                task_id: taskId,
+                status: "success",
+                video_url: status.video_url,
+                audio_url: status.audio_url,
+              }
+              setState((s) => ({
+                ...s,
+                currentStep: 3,
+                isProcessing: false,
+                result,
+                errorMessage: "",
+                stageLabel,
+                progress: status.progress ?? 100,
+              }))
+              toast({ title: "图文视频生成成功！" })
+            } else {
+              const err = status.error || "生成失败"
+              setState((s) => ({
+                ...s,
+                currentStep: 3,
+                isProcessing: false,
+                result: null,
+                errorMessage: err,
+                stageLabel,
+                progress: status.progress ?? 0,
+              }))
+              toast({ title: "生成失败", description: err, variant: "destructive" })
+            }
+            return
+          }
+
+          setState((s) => ({
+            ...s,
+            currentStep: step,
+            stageLabel,
+            progress: status.progress ?? s.progress,
+          }))
+          pollRef.current = setTimeout(() => { void pollOnce() }, CLIP_POLL_INTERVAL_MS)
+        } catch (err: unknown) {
+          pollErrorCountRef.current += 1
+          if (pollErrorCountRef.current >= POLL_ERROR_LIMIT) {
+            const msg = formatClipNetworkError(err)
+            setState((s) => ({
+              ...s,
+              currentStep: 3,
+              isProcessing: false,
+              errorMessage: msg,
+            }))
+            toast({ title: "生成失败", description: msg, variant: "destructive" })
+            return
+          }
+          pollRef.current = setTimeout(() => { void pollOnce() }, CLIP_POLL_INTERVAL_MS)
+        }
       }
-    } catch (err: any) {
-      const msg = err?.message || "网络或服务错误"
+
+      void pollOnce()
+    } catch (err: unknown) {
+      const msg = formatClipNetworkError(err)
       setState((s) => ({
         ...s,
         currentStep: 3,
@@ -514,14 +641,19 @@ export function ImageVideoWorkflow() {
   }
 
   const handleReset = () => {
+    stopPolling()
     setState({
       currentStep: 1,
       images: [],
       script: "",
       audioSample: null,
       isProcessing: false,
+      taskId: "",
+      stageLabel: "",
+      progress: 0,
       result: null,
       errorMessage: "",
+      submittedAt: 0,
     })
   }
 
@@ -552,15 +684,29 @@ export function ImageVideoWorkflow() {
         />
       )}
 
-      {state.currentStep === 2 && <StepAudioGen />}
+      {state.currentStep === 2 && (
+        <StepAudioGen stageLabel={state.stageLabel} progress={state.progress} />
+      )}
 
       {state.currentStep === 3 && (
         <>
-          <StepVideoResult result={state.result} error={state.errorMessage} />
+          <StepVideoResult
+            result={state.result}
+            error={state.errorMessage}
+            stageLabel={state.stageLabel}
+            progress={state.progress}
+          />
           {!state.isProcessing && (
             <div className="flex justify-center gap-4 pt-4">
               <Button variant="outline" onClick={handleReset} className="rounded-full">
                 重新创作
+              </Button>
+            </div>
+          )}
+          {state.isProcessing && state.taskId && (
+            <div className="flex justify-center pt-4">
+              <Button variant="outline" onClick={() => { void handleCancel() }} className="rounded-full">
+                停止生成
               </Button>
             </div>
           )}

@@ -163,6 +163,21 @@ export type ImageToVideoResponse = {
   error?: string
 }
 
+export type ClipTaskStatusResponse = {
+  task_id: string
+  status: string
+  progress?: number
+  video_url?: string
+  audio_url?: string
+  error?: string
+  stage?: string
+  stage_label?: string
+  stage_history?: string[]
+  stage_updated_at?: number
+}
+
+export type ImageToVideoStatusResponse = ClipTaskStatusResponse
+
 /* ================================================================== */
 /*  视频混剪（MashupVideo）                                              */
 /* ================================================================== */
@@ -181,3 +196,5 @@ export type MashupVideoResponse = {
   audio_url?: string
   error?: string
 }
+
+export type MashupStatusResponse = ClipTaskStatusResponse

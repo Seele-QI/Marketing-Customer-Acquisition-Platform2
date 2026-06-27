@@ -57,7 +57,8 @@
 | `TIANAPI_KEY` | `main.py:fetch_trends` | ✅ | 全网热搜 API |
 | `DEEPSEEK_API_KEY` | `main.py` / `app/api/ai/...` | ✅ | 对话/润色/回退识图 |
 | `RUNNINGHUB_API_KEY` | `main.py:_get_rh_client` | ✅ | 数字人视频生成 |
-| `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ | Next → FastAPI 反向地址 |
+| `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ 生产 | 浏览器直连 API |
+| `FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ Docker/PaaS | Next 服务端 proxy 内网地址 |
 | `EMAIL_HASH_SALT` | `lib/auth.py` | ✅ | 邮箱哈希盐（32 字节 hex）|
 | `CREDIT_REGISTER_BONUS` | `lib/credit.py` | ✅ | 注册赠送积分数 |
 | `CREDIT_SESSION_TTL_DAYS` | `lib/auth.py` | ✅ | 登录会话有效期 |
@@ -118,7 +119,7 @@
 
 **关键配置文件**：[zeabur.json](zeabur.json)（服务编排 + Volume 绑定），[.dockerignore](.dockerignore)（排除 node_modules / .next / pycache）。
 
-**容器内环境变量**：`NEXT_PUBLIC_FASTAPI_URL=http://api:8000`（web → api 内网 DNS），`DATA_DIR=/data` + `CREDIT_DB_OVERRIDE=/data/accounts.db` + `VIDEO_BGM_DIR=/app/assets/bgm`（api Volume 持久化）。
+**容器内环境变量**：见 [docs/deploy/PAAS.md](docs/deploy/PAAS.md)（`FASTAPI_URL` 内网 + `NEXT_PUBLIC_FASTAPI_URL` 公网）。
 
 **本地 Docker 测试**：
 ```bash
