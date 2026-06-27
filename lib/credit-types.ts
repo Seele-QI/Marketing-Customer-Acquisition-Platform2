@@ -23,3 +23,11 @@ export type RedeemResult = {
   reason?: string
   amount?: number
 }
+
+export type RedeemCodeItem = {
+  code: string
+  amount: number
+  batch_id?: string
+  status: "active" | "redeemed"
+  redeemed_at?: number | null
+}

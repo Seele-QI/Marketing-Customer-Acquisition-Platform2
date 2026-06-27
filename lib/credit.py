@@ -16,6 +16,8 @@ TYPE_REFUND = "refund"
 TYPE_ADMIN_ADJUST = "admin_adjust"
 TYPE_REDEEM_CODE = "redeem_code"
 VIDEO_CREATION_COST = 500
+VIDEO_IMAGE_TO_VIDEO_COST = 100
+VIDEO_MASHUP_COST = 150
 PROMO_VIDEO_COST_PER_15S = 800
 CHAT_COST = 3
 REDEEM_CODE_AMOUNTS = (5000, 8000, 10000, 20000, 30000)
@@ -250,6 +252,34 @@ def list_redeem_code_batches(limit: int = 50) -> list[dict]:
             (max(1, min(200, limit)),),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_redeem_codes_by_batch(batch_id: str) -> list[dict]:
+    """按批次列出兑换码（管理员查看/复制）。"""
+    normalized_batch = (batch_id or "").strip()
+    if not normalized_batch:
+        return []
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT code, amount, status, batch_id, redeemed_at
+               FROM credit_redeem_codes
+               WHERE batch_id = ?
+               ORDER BY created_at ASC, code ASC""",
+            (normalized_batch,),
+        ).fetchall()
+        return [
+            {
+                "code": _format_redeem_code(row["code"]),
+                "amount": int(row["amount"]),
+                "batch_id": row["batch_id"],
+                "status": row["status"],
+                "redeemed_at": row["redeemed_at"],
+            }
+            for row in rows
+        ]
     finally:
         conn.close()
 

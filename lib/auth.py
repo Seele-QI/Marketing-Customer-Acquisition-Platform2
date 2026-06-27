@@ -27,6 +27,7 @@ EMAIL_TOKEN_TTL_S = int(os.getenv("CREDIT_EMAIL_TOKEN_TTL_SECONDS", "900"))
 SESSION_COOKIE = "session_id"
 ADMIN_LOGIN_NAME = os.getenv("ADMIN_LOGIN_NAME", "18000634365")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
+ADMIN_PASSWORD_SALT = os.getenv("ADMIN_PASSWORD_SALT", "")
 
 
 def normalize_login_name(login_name: str) -> str:
@@ -71,6 +72,15 @@ def verify_password(password: str, password_hash: str, salt: str | None = None) 
         return False
     digest, _ = hash_password(password, salt)
     return hmac.compare_digest(digest, password_hash)
+
+
+def verify_admin_login(login_name: str, password: str) -> bool:
+    """校验管理员账号密码（与 Next admin-credentials.ts 算法一致）。"""
+    if not ADMIN_PASSWORD_HASH or not ADMIN_PASSWORD_SALT:
+        return False
+    if normalize_login_name(login_name) != normalize_login_name(ADMIN_LOGIN_NAME):
+        return False
+    return verify_password(password, ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT)
 
 
 def hash_email(email: str) -> str:

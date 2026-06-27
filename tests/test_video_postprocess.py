@@ -28,6 +28,7 @@ def _fake_request():
     return MagicMock()
 
 
+@patch("main.consume_with_idempotency", return_value=500)
 @patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
@@ -39,6 +40,7 @@ def test_video_generate_stores_default_postprocess_fields(
     _mock_cleanup_temp,
     mock_create_task,
     _mock_require_user,
+    _mock_consume,
 ):
     def _fake_create_task(coro):
         coro.close()
@@ -76,6 +78,7 @@ def test_video_generate_stores_default_postprocess_fields(
     assert len(stored["video_prompt"].splitlines()) == 11
 
 
+@patch("main.consume_with_idempotency", return_value=500)
 @patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
@@ -87,6 +90,7 @@ def test_video_generate_uses_custom_video_prompt_when_provided(
     _mock_cleanup_temp,
     mock_create_task,
     _mock_require_user,
+    _mock_consume,
 ):
     def _fake_create_task(coro):
         coro.close()
@@ -136,6 +140,7 @@ def test_video_generate_uses_custom_video_prompt_when_provided(
     assert len(stored["video_prompt"].splitlines()) == 11
 
 
+@patch("main.consume_with_idempotency", return_value=500)
 @patch("main.require_user", return_value=_FAKE_USER)
 @patch("main.asyncio.create_task")
 @patch("main._cleanup_temp")
@@ -147,6 +152,7 @@ def test_video_generate_blank_custom_prompt_falls_back_to_natural_mode(
     _mock_cleanup_temp,
     mock_create_task,
     _mock_require_user,
+    _mock_consume,
 ):
     def _fake_create_task(coro):
         coro.close()

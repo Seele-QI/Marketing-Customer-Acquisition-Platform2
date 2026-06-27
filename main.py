@@ -36,9 +36,17 @@ from lib.credit import (
     get_account,
     list_ledger,
     list_redeem_code_batches,
+    list_redeem_codes_by_batch,
     redeem_code,
 )
-from lib.rate_limit import check_ip, check_email, record as rate_record
+from lib.rate_limit import (
+    CENTRAL_ACTIVATE_IP_LIMITS,
+    check_ip,
+    check_email,
+    check_scoped,
+    record as rate_record,
+)
+from lib.central_signing import get_public_key_pem, sign_activate_response
 from lib.api_auth import (
     require_user,
     assert_task_owner,
@@ -852,12 +860,21 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
     流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 视频生成 → 轮询返回结果
     """
     user = require_user(request)
+    logger.info("video_generate user_id=%s", user.id)
     if not req.image_base64 or not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: image_base64, audio_base64, script")
     if len(req.script) > 5000:
         raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
     check_base64_size(req.image_base64, max_mb=10, name="image_base64")
     check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
+
+    local_task_id = f"vg_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+    consume_with_idempotency(
+        user_id=user.id,
+        scene="video_creation",
+        ref_id=local_task_id,
+        note="口播视频创作",
+    )
 
     rh = _get_rh_client()
     image_path = audio_path = None
@@ -896,6 +913,7 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
         # 6. 存储任务状态供后续轮询
         _task_store[video_task_id] = {
             "task_id": video_task_id,
+            "local_task_id": local_task_id,
             "user_id": user.id,
             "status": "queued",
             "progress": 0,
@@ -1519,7 +1537,7 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
 
     流程: 多图片 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 合成（图片+字幕+转场+BGM）
     """
-    require_user(request)
+    user = require_user(request)
     _check_request_size(request)
     if len(req.images_base64) < 7:
         raise HTTPException(status_code=400, detail="至少需要上传 7 张图片")
@@ -1537,6 +1555,13 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
     audio_path = None
     image_temp_paths: list[str] = []
     task_id = f"img2vid_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+
+    consume_with_idempotency(
+        user_id=user.id,
+        scene="video_image_to_video",
+        ref_id=task_id,
+        note="图文视频创作",
+    )
 
     try:
         # 1. 解码所有图片 base64 → 临时文件
@@ -1647,7 +1672,7 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
 
     流程: 多视频 + 音色样本上传 → 声音克隆（RunningHub）→ ffmpeg 混剪（视频拼接+字幕+转场+BGM）
     """
-    require_user(request)
+    user = require_user(request)
     _check_request_size(request)
     if len(req.videos_base64) < 5:
         raise HTTPException(status_code=400, detail="至少需要上传 5 段视频素材")
@@ -1665,6 +1690,13 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
     audio_path = None
     video_temp_paths: list[str] = []
     task_id = f"mashup_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+
+    consume_with_idempotency(
+        user_id=user.id,
+        scene="video_mashup",
+        ref_id=task_id,
+        note="视频素材混剪",
+    )
 
     try:
         # 1. 解码所有视频 base64 → 临时文件
@@ -2263,6 +2295,14 @@ async def credit_redeem_codes_admin(request: Request):
     return {"amounts": list(REDEEM_CODE_AMOUNTS), "batches": list_redeem_code_batches()}
 
 
+@app.get("/api/credit/redeem-codes/items")
+async def credit_redeem_codes_items(request: Request, batch_id: str = ""):
+    _require_admin_key(request)
+    if not batch_id.strip():
+        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "batch_id 不能为空"})
+    return {"items": list_redeem_codes_by_batch(batch_id.strip())}
+
+
 @app.post("/api/credit/redeem-codes/generate")
 async def credit_redeem_codes_generate(req: RedeemGenerateRequest, request: Request):
     _require_admin_key(request)
@@ -2819,6 +2859,8 @@ class ActivateResponse(BaseModel):
     expires_at: float = 0.0
     keys: dict = {}
     server_time: float = 0.0
+    signature: str = ""
+    key_id: str = "v1"
 
 
 class HeartbeatRequest(BaseModel):
@@ -2854,8 +2896,13 @@ class CreateCodesRequest(BaseModel):
 
 
 @app.post("/api/central/activate")
-def central_activate(req: ActivateRequest):
+def central_activate(req: ActivateRequest, request: Request):
     """激活码校验 + 密钥下发"""
+    ip = request.client.host if request.client else ""
+    ok, msg = check_scoped("central_activate", ip, CENTRAL_ACTIVATE_IP_LIMITS)
+    if not ok:
+        raise HTTPException(status_code=429, detail={"code": "RATE_LIMITED", "message": msg})
+
     now = time.time()
     conn = _sqlite3.connect(_ACCOUNTS_DB)
     try:
@@ -2905,15 +2952,35 @@ def central_activate(req: ActivateRequest):
         # 密钥下发
         pool = _load_key_pool()
         keys = pool.get(plan, pool.get("standard", {}))
+        keys = {str(k): str(v) for k, v in (keys or {}).items()}
+
+        signature, key_id = sign_activate_response(
+            plan=plan,
+            expires_at=float(expires_at),
+            keys=keys,
+            server_time=now,
+        )
+        rate_record("central_activate", ip)
 
         return ActivateResponse(
             plan=plan,
             expires_at=expires_at,
             keys=keys,
             server_time=now,
+            signature=signature,
+            key_id=key_id,
         )
     finally:
         conn.close()
+
+
+@app.get("/api/central/public-key")
+def central_public_key():
+    """导出 Ed25519 公钥 PEM（供桌面客户端验签配置）"""
+    pem = get_public_key_pem()
+    if not pem:
+        raise HTTPException(status_code=503, detail="未配置 CENTRAL_SIGNING_PRIVATE_KEY")
+    return {"key_id": (os.getenv("CENTRAL_SIGNING_KEY_ID") or "v1").strip() or "v1", "public_key_pem": pem}
 
 
 @app.get("/api/central/manifest")

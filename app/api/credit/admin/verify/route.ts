@@ -5,8 +5,8 @@ import {
   issueAdminSession,
   isAdminLoginBlocked,
   recordAdminLoginAttempt,
-  timingSafeEq,
 } from "@/lib/admin-session"
+import { isAdminCredentialsConfigured, verifyAdminCredentials } from "@/lib/admin-credentials"
 import { getAdminAccessKey } from "@/lib/server-env"
 
 export const runtime = "nodejs"
@@ -16,6 +16,12 @@ export async function POST(req: Request) {
   if (!expected) {
     return NextResponse.json(
       { detail: { code: "ADMIN_KEY_NOT_CONFIGURED", message: "未配置后台访问密钥" } },
+      { status: 503 },
+    )
+  }
+  if (!isAdminCredentialsConfigured()) {
+    return NextResponse.json(
+      { detail: { code: "ADMIN_CREDENTIALS_NOT_CONFIGURED", message: "未配置管理员账号密码" } },
       { status: 503 },
     )
   }
@@ -29,18 +35,19 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json().catch(() => ({}))
-  const key = typeof body?.access_key === "string" ? body.access_key.trim() : ""
-  if (!key) {
+  const loginName = typeof body?.login_name === "string" ? body.login_name.trim() : ""
+  const password = typeof body?.password === "string" ? body.password : ""
+  if (!loginName || !password) {
     return NextResponse.json(
-      { detail: { code: "INVALID_INPUT", message: "access_key 不能为空" } },
+      { detail: { code: "INVALID_INPUT", message: "账号和密码不能为空" } },
       { status: 400 },
     )
   }
 
-  if (!timingSafeEq(key, expected)) {
+  if (!verifyAdminCredentials(loginName, password)) {
     recordAdminLoginAttempt(ip, false)
     return NextResponse.json(
-      { detail: { code: "FORBIDDEN", message: "后台访问密钥错误" } },
+      { detail: { code: "FORBIDDEN", message: "管理员账号或密码错误" } },
       { status: 403 },
     )
   }

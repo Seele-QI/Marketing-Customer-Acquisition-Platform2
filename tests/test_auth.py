@@ -207,6 +207,50 @@ def test_credit_consume_video_creation_always_costs_500_points():
     assert data["balance"] == 600
 
 
+def test_credit_consume_video_image_to_video_costs_100_points():
+    from lib.credit import refund
+
+    user_id = auth.create_password_user("iv_cost_user", "Password123")
+    refund(user_id, 500, ref_id="topup-iv", note="test topup")
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"login_name": "iv_cost_user", "password": "Password123"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+
+    resp = client.post(
+        "/api/credit/consume",
+        json={"scene": "video_image_to_video", "ref_id": "iv-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["scene"] == "video_image_to_video"
+    assert data["cost"] == 100
+    assert data["balance"] == 500
+
+
+def test_credit_consume_video_mashup_costs_150_points():
+    from lib.credit import refund
+
+    user_id = auth.create_password_user("mv_cost_user", "Password123")
+    refund(user_id, 500, ref_id="topup-mv", note="test topup")
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"login_name": "mv_cost_user", "password": "Password123"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+
+    resp = client.post(
+        "/api/credit/consume",
+        json={"scene": "video_mashup", "ref_id": "mv-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["scene"] == "video_mashup"
+    assert data["cost"] == 150
+    assert data["balance"] == 450
+
+
 def test_credit_consume_ignores_client_cost_and_rejects_unknown_scene():
     """客户端不能用任意 scene 或低价 cost 绕过定价。"""
     from lib.credit import refund as _refund

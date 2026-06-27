@@ -31,6 +31,8 @@ from lib.auth import CurrentUser, get_current_user
 from lib.credit import (
     CHAT_COST,
     VIDEO_CREATION_COST,
+    VIDEO_IMAGE_TO_VIDEO_COST,
+    VIDEO_MASHUP_COST,
     consume,
     refund,
 )
@@ -41,8 +43,8 @@ logger = logging.getLogger(__name__)
 # 服务端固定定价表；客户端不允许覆盖。
 SCENE_COST_TABLE: dict[str, int] = {
     "video_creation": VIDEO_CREATION_COST,
-    "video_image_to_video": VIDEO_CREATION_COST,
-    "video_mashup": VIDEO_CREATION_COST,
+    "video_image_to_video": VIDEO_IMAGE_TO_VIDEO_COST,
+    "video_mashup": VIDEO_MASHUP_COST,
     "video_clone_voice": 50,
     "ai_chat": CHAT_COST,
     "ai_rewrite": CHAT_COST,

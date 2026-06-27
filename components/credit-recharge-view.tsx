@@ -107,7 +107,7 @@ export function CreditRechargeView() {
               <Badge className="bg-white/20 text-white hover:bg-white/20">积分系统</Badge>
               <h1 className="text-3xl font-semibold tracking-tight">积分消费与兑换码充值中心</h1>
               <p className="max-w-2xl text-sm text-white/80">
-                视频创作每条固定消耗 500 积分；大模型对话每次固定消耗 3 积分。可在此输入兑换码充值，也可在后端登记生成不同额度兑换码。
+                视频创作按类型扣费：口播 500 积分、图文视频 100 积分、视频混剪 150 积分；大模型对话每次 3 积分。可在此输入兑换码充值。
               </p>
             </div>
             <div className="rounded-2xl bg-white/15 p-5 backdrop-blur">
@@ -173,11 +173,11 @@ export function CreditRechargeView() {
               <CardTitle className="flex items-center gap-2 text-blue-700">
                 <WandSparkles className="h-5 w-5" /> 后台管理入口
               </CardTitle>
-              <CardDescription>验证密钥后进入管理员独立页，统一完成兑换码生成与批次管理。</CardDescription>
+              <CardDescription>使用管理员账号与密码登录后，可生成兑换码并查看批次。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-blue-700/80">
-                管理员独立页将承载验证密钥、生成不同额度兑换码、批次查看等后台能力。
+                管理员独立页使用账号密码登录，可生成不同额度兑换码、查看批次并一键复制兑换码。
               </p>
               <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={() => window.location.href = "/admin/credit"}>
                 进入管理员页
