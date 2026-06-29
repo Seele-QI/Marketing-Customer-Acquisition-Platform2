@@ -1,136 +1,114 @@
 #!/usr/bin/env node
 /**
- * 解压 ffmpeg 二进制到 resources/ffmpeg/bin/
+ * 从 tools/ffmpeg/ffmpeg.zip 解压 ffmpeg/ffprobe 到：
+ * - tools/ffmpeg/bin/     （本地 dev / Docker 可选）
+ * - resources/ffmpeg/bin/ （Electron 打包）
  *
- * 来源：tools/ffmpeg/ffmpeg.zip
- * 目标：resources/ffmpeg/bin/ffmpeg.exe + ffprobe.exe
- *
- * 触发时机：
- * - 阶段 2 出包前
- * - `pnpm resources:build` 自动跑
+ * 触发：pnpm ffmpeg:ensure | pnpm resources:build
  */
 
-import { existsSync, mkdirSync, copyFileSync, rmSync, readdirSync, statSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, mkdirSync, copyFileSync, rmSync, readdirSync, statSync } from "node:fs"
+import { spawn } from "node:child_process"
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '..');
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const projectRoot = path.resolve(__dirname, "..")
 
-const zipSrc = path.join(projectRoot, 'tools', 'ffmpeg', 'ffmpeg.zip');
-const targetDir = path.join(projectRoot, 'resources', 'ffmpeg', 'bin');
+const zipSrc = path.join(projectRoot, "tools", "ffmpeg", "ffmpeg.zip")
+const targetDirs = [
+  path.join(projectRoot, "tools", "ffmpeg", "bin"),
+  path.join(projectRoot, "resources", "ffmpeg", "bin"),
+]
 
-console.log('[extract-ffmpeg] source:', zipSrc);
-console.log('[extract-ffmpeg] target:', targetDir);
+const exeExt = process.platform === "win32" ? ".exe" : ""
+const ffmpegName = `ffmpeg${exeExt}`
+const ffprobeName = `ffprobe${exeExt}`
 
-if (!existsSync(zipSrc)) {
-  console.error(`[extract-ffmpeg] ERROR: ${zipSrc} not found`);
-  console.error('  Expected ffmpeg.zip in tools/ffmpeg/. Download from:');
-  console.error('  https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip');
-  process.exit(1);
+function allTargetsReady() {
+  return targetDirs.every((dir) => {
+    return existsSync(path.join(dir, ffmpegName)) && existsSync(path.join(dir, ffprobeName))
+  })
 }
 
-// 目标目录
-mkdirSync(targetDir, { recursive: true });
-
-// 检查是否已经解压好（避免重复）
-const ffmpegExe = path.join(targetDir, 'ffmpeg.exe');
-const ffprobeExe = path.join(targetDir, 'ffprobe.exe');
-if (existsSync(ffmpegExe) && existsSync(ffprobeExe)) {
-  console.log('[extract-ffmpeg] already extracted, skipping');
-  process.exit(0);
-}
-
-// 简易解压：用系统 tar.exe（Windows 10+ 自带）
-// 或者用 unzip（git bash 自带）
-// 不引入 adm-zip 等第三方依赖，保持轻量
-
-const isWindows = process.platform === 'win32';
-
-async function tryExtract() {
-  if (isWindows) {
-    // tar.exe 可解压 zip（Windows 10 1803+ 内置）
-    return new Promise((resolve, reject) => {
-      const { spawn } = require('node:child_process');
-      const tmpDir = path.join(projectRoot, 'resources', 'ffmpeg', '_tmp');
-      mkdirSync(tmpDir, { recursive: true });
-      const tk = spawn(
-        'tar',
-        ['-xf', zipSrc, '-C', tmpDir],
-        { stdio: 'inherit', shell: false }
-      );
-      tk.on('exit', (code) => {
-        if (code !== 0) {
-          reject(new Error(`tar exit ${code}`));
-          return;
-        }
-        // tar 解出 <dirname>/bin/ffmpeg.exe 结构
-        const entries = readdirSync(tmpDir);
-        if (entries.length === 0) {
-          reject(new Error('no entries extracted'));
-          return;
-        }
-        const innerDir = path.join(tmpDir, entries[0], 'bin');
-        if (!existsSync(innerDir)) {
-          reject(new Error(`expected bin/ inside ${entries[0]}`));
-          return;
-        }
-        for (const f of readdirSync(innerDir)) {
-          if (f.endsWith('.exe')) {
-            copyFileSync(path.join(innerDir, f), path.join(targetDir, f));
-          }
-        }
-        // 清理 tmp
-        rmSync(tmpDir, { recursive: true, force: true });
-        resolve();
-      });
-      tk.on('error', reject);
-    });
-  } else {
-    // POSIX: 用 unzip
-    return new Promise((resolve, reject) => {
-      const { spawn } = require('node:child_process');
-      const tmpDir = path.join(projectRoot, 'resources', 'ffmpeg', '_tmp');
-      mkdirSync(tmpDir, { recursive: true });
-      const tk = spawn('unzip', ['-o', zipSrc, '-d', tmpDir], { stdio: 'inherit' });
-      tk.on('exit', (code) => {
-        if (code !== 0) {
-          reject(new Error(`unzip exit ${code}`));
-          return;
-        }
-        const entries = readdirSync(tmpDir);
-        const innerDir = path.join(tmpDir, entries[0], 'bin');
-        for (const f of readdirSync(innerDir)) {
-          copyFileSync(path.join(innerDir, f), path.join(targetDir, f));
-        }
-        rmSync(tmpDir, { recursive: true, force: true });
-        resolve();
-      });
-      tk.on('error', reject);
-    });
+function copyBinFromInner(innerBinDir, targetDir) {
+  mkdirSync(targetDir, { recursive: true })
+  for (const f of readdirSync(innerBinDir)) {
+    if (f === ffmpegName || f === ffprobeName || f.endsWith(".exe")) {
+      copyFileSync(path.join(innerBinDir, f), path.join(targetDir, f))
+    }
   }
 }
 
+async function extractToTmp() {
+  const tmpDir = path.join(projectRoot, "tools", "ffmpeg", "_tmp_extract")
+  rmSync(tmpDir, { recursive: true, force: true })
+  mkdirSync(tmpDir, { recursive: true })
+
+  if (process.platform === "win32") {
+    await new Promise((resolve, reject) => {
+      const tk = spawn("tar", ["-xf", zipSrc, "-C", tmpDir], { stdio: "inherit", shell: false })
+      tk.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))))
+      tk.on("error", reject)
+    })
+  } else {
+    await new Promise((resolve, reject) => {
+      const tk = spawn("unzip", ["-o", zipSrc, "-d", tmpDir], { stdio: "inherit" })
+      tk.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`unzip exit ${code}`))))
+      tk.on("error", reject)
+    })
+  }
+
+  const entries = readdirSync(tmpDir)
+  if (entries.length === 0) throw new Error("no entries extracted")
+  const innerBin = path.join(tmpDir, entries[0], "bin")
+  if (!existsSync(innerBin)) throw new Error(`expected bin/ inside ${entries[0]}`)
+  return innerBin
+}
+
+console.log("[extract-ffmpeg] source:", zipSrc)
+
+if (!existsSync(zipSrc)) {
+  console.error(`[extract-ffmpeg] ERROR: ${zipSrc} not found`)
+  console.error("  Download: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip")
+  console.error("  Save as tools/ffmpeg/ffmpeg.zip")
+  process.exit(1)
+}
+
+if (allTargetsReady()) {
+  console.log("[extract-ffmpeg] already extracted to all targets, skipping")
+  process.exit(0)
+}
+
 try {
-  await tryExtract();
+  const innerBin = await extractToTmp()
+  for (const targetDir of targetDirs) {
+    const ffmpegPath = path.join(targetDir, ffmpegName)
+    const ffprobePath = path.join(targetDir, ffprobeName)
+    if (existsSync(ffmpegPath) && existsSync(ffprobePath)) {
+      console.log("[extract-ffmpeg] skip (ready):", targetDir)
+      continue
+    }
+    console.log("[extract-ffmpeg] writing:", targetDir)
+    copyBinFromInner(innerBin, targetDir)
+  }
+  rmSync(path.join(projectRoot, "tools", "ffmpeg", "_tmp_extract"), { recursive: true, force: true })
 } catch (err) {
-  console.error('[extract-ffmpeg] FAILED:', err.message);
-  process.exit(1);
+  console.error("[extract-ffmpeg] FAILED:", err instanceof Error ? err.message : err)
+  process.exit(1)
 }
 
-// 校验
-if (!existsSync(ffmpegExe)) {
-  console.error('[extract-ffmpeg] ERROR: ffmpeg.exe not found after extract');
-  process.exit(1);
+for (const targetDir of targetDirs) {
+  const ffmpegPath = path.join(targetDir, ffmpegName)
+  const ffprobePath = path.join(targetDir, ffprobeName)
+  if (!existsSync(ffmpegPath) || !existsSync(ffprobePath)) {
+    console.error(`[extract-ffmpeg] ERROR: missing binaries in ${targetDir}`)
+    process.exit(1)
+  }
+  const ffmpegStat = statSync(ffmpegPath)
+  const ffprobeStat = statSync(ffprobePath)
+  console.log(
+    `[extract-ffmpeg] OK ${targetDir}: ffmpeg=${(ffmpegStat.size / 1024 / 1024).toFixed(1)}MB, ` +
+      `ffprobe=${(ffprobeStat.size / 1024 / 1024).toFixed(1)}MB`,
+  )
 }
-if (!existsSync(ffprobeExe)) {
-  console.error('[extract-ffmpeg] ERROR: ffprobe.exe not found after extract');
-  process.exit(1);
-}
-
-const ffmpegStat = statSync(ffmpegExe);
-const ffprobeStat = statSync(ffprobeExe);
-console.log(
-  `[extract-ffmpeg] OK: ffmpeg.exe=${(ffmpegStat.size / 1024 / 1024).toFixed(1)}MB, ` +
-    `ffprobe.exe=${(ffprobeStat.size / 1024 / 1024).toFixed(1)}MB`
-);

@@ -135,12 +135,13 @@ export type VideoEditResponse = {
 }
 
 export type VoiceCloneRequest = {
-  audioBase64: string
+  audio_base64: string
   script: string
 }
 
 export type VoiceCloneResponse = {
-  audioBase64?: string
+  audio_url?: string
+  task_id?: string
   message?: string
 }
 

@@ -2,6 +2,16 @@
  * 积分系统共享类型（前端）
  * 后端对应实现：lib/credit.py:list_redeem_code_batches 返回的 dict 结构
  */
+export type LedgerItem = {
+  id: number
+  type: string
+  delta: number
+  balance_after: number
+  ref_id: string
+  note: string
+  created_at: number
+}
+
 export type Batch = {
   batch_id: string
   amount: number

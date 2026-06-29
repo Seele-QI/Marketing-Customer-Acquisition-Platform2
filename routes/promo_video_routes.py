@@ -34,6 +34,7 @@ async def promo_video_submit(req: Request):
         raise HTTPException(status_code=400, detail="Enter selling points")
 
     task_id = _new_promo_video_task_id()
+    public_base = str(req.base_url).rstrip("/")
     _promo_video_task_store[task_id] = {
         "task_id": task_id,
         "user_id": user.id,
@@ -46,6 +47,11 @@ async def promo_video_submit(req: Request):
         "duration": story_req.duration,
         "frame_count": story_req.frame_count,
         "ratio": story_req.ratio,
+        "product_name": story_req.product_name,
+        "selling_points": story_req.selling_points,
+        "target_audience": story_req.target_audience,
+        "style": story_req.style,
+        "public_base_url": public_base,
         "error": "",
     }
 
@@ -54,9 +60,9 @@ async def promo_video_submit(req: Request):
 
 
 @router.get("/api/promo-video/storyboard-status")
-async def promo_video_storyboard_status(task_id: str):
+async def promo_video_storyboard_status(taskId: str):
     from main import _promo_video_task_store, PromoStoryboardStatusResponse
-    tid = (task_id or "").strip()
+    tid = (taskId or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="Missing task_id")
     task = _promo_video_task_store.get(tid)
@@ -140,6 +146,7 @@ async def promo_video_generate(req: Request):
         raise HTTPException(status_code=402, detail={"code": "INSUFFICIENT_CREDIT", "message": "Need " + str(cost)})
 
     task_id = _new_promo_video_task_id()
+    public_base = str(req.base_url).rstrip("/")
     _promo_video_task_store[task_id] = {
         "task_id": task_id,
         "user_id": user.id,
@@ -147,6 +154,8 @@ async def promo_video_generate(req: Request):
         "progress": 0,
         "video_url": "",
         "rh_task_ids": [],
+        "storyboard_task_id": gen_req.storyboard_task_id,
+        "public_base_url": public_base,
         "error": "",
         "cost": cost,
     }
@@ -156,9 +165,9 @@ async def promo_video_generate(req: Request):
 
 
 @router.get("/api/promo-video/video-status")
-async def promo_video_video_status(task_id: str):
+async def promo_video_video_status(taskId: str):
     from main import _promo_video_task_store, PromoVideoStatusResponse
-    tid = (task_id or "").strip()
+    tid = (taskId or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="Missing task_id")
     task = _promo_video_task_store.get(tid)

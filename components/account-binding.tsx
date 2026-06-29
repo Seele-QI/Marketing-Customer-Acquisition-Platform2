@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Link, Shield, CheckCircle2, Plus, Trash2, Loader2, QrCode, X } from "lucide-react"
+import { Shield, CheckCircle2, Trash2, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
 import { getFastapiBase } from "@/lib/fastapi-base"
@@ -39,10 +39,6 @@ export function AccountBinding() {
   const [selectedPlatform, setSelectedPlatform] = React.useState<string>("douyin")
   const [cookieText, setCookieText] = React.useState("")
   const [isSaving, setIsSaving] = React.useState(false)
-  const [showQrModal, setShowQrModal] = React.useState(false)
-  const [qrBase64, setQrBase64] = React.useState("")
-  const [qrSessionId, setQrSessionId] = React.useState("")
-  const [qrStatus, setQrStatus] = React.useState<"idle" | "loading" | "scanned" | "done" | "error">("idle")
 
   React.useEffect(() => {
     loadAccounts()
@@ -106,62 +102,6 @@ export function AccountBinding() {
     }
   }
 
-  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
-
-  React.useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
-
-  const handleQrLogin = async () => {
-    const base = getFastapiBase()
-    if (!base) { toast({ title: "缺少后端配置", variant: "destructive" }); return }
-    // Cancel any existing poll
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    setQrStatus("loading")
-    setShowQrModal(true)
-    try {
-      const res = await fetch(`${base}/api/accounts/douyin/qrcode`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || "获取二维码失败")
-      setQrBase64(data.qrcode_base64)
-      setQrSessionId(data.session_id)
-      setQrStatus("scanned")
-      const poll = setInterval(async () => {
-        try {
-          const pr = await fetch(`${base}/api/accounts/douyin/qrcode/poll`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: data.session_id }),
-          })
-          const pd = await pr.json()
-          if (pd.status === "done") {
-            clearInterval(poll); setQrStatus("done"); pollRef.current = null
-            toast({ title: "登录成功", description: "抖音账号已绑定" })
-            setTimeout(() => { setShowQrModal(false); loadAccounts() }, 1500)
-          } else if (pd.status === "error") {
-            clearInterval(poll); setQrStatus("error"); pollRef.current = null
-            toast({ title: "登录失败", description: pd.message, variant: "destructive" })
-          }
-        } catch { /* poll error */ }
-      }, 2000)
-      pollRef.current = poll
-    } catch (e) {
-      setQrStatus("error")
-      toast({ title: "启动失败", description: e instanceof Error ? e.message : "请重试", variant: "destructive" })
-    }
-  }
-
-  const handleCancelQr = async () => {
-    const base = getFastapiBase()
-    if (base && qrSessionId) {
-      await fetch(`${base}/api/accounts/douyin/qrcode/cancel`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: qrSessionId }),
-      }).catch(() => {})
-    }
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    setShowQrModal(false); setQrStatus("idle")
-  }
-
   const accountMap = new Map(accounts.map(a => [a.platform, a]))
 
   return (
@@ -202,19 +142,14 @@ export function AccountBinding() {
                         <CheckCircle2 className="h-3 w-3" />已绑定
                       </p>
                     ) : (
-                      <button
-                        onClick={p.id === "douyin" ? handleQrLogin : undefined}
-                        disabled={p.id !== "douyin"}
+                      <span
                         className={cn(
-                          "mt-1 inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium transition-all",
-                          p.id === "douyin"
-                            ? "bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400"
-                            : "bg-slate-50 text-slate-300 cursor-not-allowed dark:bg-white/5 dark:text-slate-600",
+                          "mt-1 inline-flex items-center rounded-lg px-2.5 py-1 text-[11px] font-medium",
+                          "bg-slate-50 text-slate-400 cursor-not-allowed dark:bg-white/5 dark:text-slate-600",
                         )}
                       >
-                        <QrCode className="h-3 w-3" />
-                        {p.id === "douyin" ? "扫码登录" : "即将支持"}
-                      </button>
+                        {p.id === "douyin" ? "扫码登录（暂未开放）" : "即将支持"}
+                      </span>
                     )}
                   </div>
                   {acc && (
@@ -321,47 +256,6 @@ export function AccountBinding() {
           </button>
         </section>
       </div>
-
-      {/* QR Code Modal */}
-      {showQrModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={handleCancelQr}>
-          <div className="relative w-[360px] rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
-            <button onClick={handleCancelQr} className="absolute right-4 top-4 rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10">
-              <X className="h-5 w-5" />
-            </button>
-            <div className="flex flex-col items-center gap-4">
-              <h3 className="text-[16px] font-semibold text-slate-800 dark:text-slate-200">抖音扫码登录</h3>
-              {qrStatus === "loading" && (
-                <div className="flex flex-col items-center gap-2 py-10">
-                  <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-                  <p className="text-[13px] text-slate-500">正在获取二维码…</p>
-                </div>
-              )}
-              {(qrStatus === "scanned" || qrStatus === "done") && qrBase64 && (
-                <>
-                  <img src={qrBase64} alt="抖音登录二维码" className="h-56 w-56 rounded-xl border" />
-                  {qrStatus === "scanned" && (
-                    <p className="text-[13px] font-medium text-blue-600">请用抖音 App 扫描二维码</p>
-                  )}
-                  {qrStatus === "done" && (
-                    <div className="flex items-center gap-2 text-emerald-600">
-                      <CheckCircle2 className="h-5 w-5" />
-                      <span className="text-[14px] font-semibold">登录成功</span>
-                    </div>
-                  )}
-                </>
-              )}
-              {qrStatus === "error" && (
-                <div className="flex flex-col items-center gap-2 py-6">
-                  <p className="text-[13px] text-red-500">获取二维码失败，请重试</p>
-                  <button onClick={handleQrLogin} className="rounded-xl bg-blue-500 px-4 py-2 text-[13px] font-medium text-white">重新尝试</button>
-                </div>
-              )}
-              <p className="text-[11px] text-slate-400">二维码有效期内扫码即可自动绑定</p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

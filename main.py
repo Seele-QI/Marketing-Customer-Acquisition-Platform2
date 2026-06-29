@@ -173,8 +173,22 @@ async def health_check():
     import shutil
     import subprocess
 
-    ffmpeg_bin = os.environ.get("FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg"
-    ffprobe_bin = os.environ.get("FFPROBE_EXE") or shutil.which("ffprobe") or "ffprobe"
+    from pathlib import Path
+
+    _local_ffmpeg = Path(__file__).resolve().parent / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    _local_ffprobe = Path(__file__).resolve().parent / "tools" / "ffmpeg" / "bin" / "ffprobe.exe"
+    ffmpeg_bin = (
+        os.environ.get("FFMPEG_EXE")
+        or (str(_local_ffmpeg) if _local_ffmpeg.exists() else None)
+        or shutil.which("ffmpeg")
+        or "ffmpeg"
+    )
+    ffprobe_bin = (
+        os.environ.get("FFPROBE_EXE")
+        or (str(_local_ffprobe) if _local_ffprobe.exists() else None)
+        or shutil.which("ffprobe")
+        or "ffprobe"
+    )
     checks: dict[str, str] = {"api": "ok"}
     try:
         subprocess.run(
@@ -3371,6 +3385,203 @@ def central_admin_create_codes(req: CreateCodesRequest, request: Request):
         return {"created": created}
     finally:
         conn.close()
+
+
+# ── Promo video（宣传视频）────────────────────────────────────────
+
+from lib.promo_video_service import (
+    calculate_promo_video_cost,
+    concatenate_videos_ffmpeg,
+    crop_storyboard_grid,
+    download_file,
+    generate_storyboard_prompt,
+    generate_video_prompt,
+    get_grid_dims,
+    pick_first_valid_url,
+    slice_images_for_segments,
+    submit_sparkvideo_task,
+    submit_storyboard_to_rh,
+    upload_to_runninghub,
+    wait_for_runninghub_task,
+)
+
+_promo_video_task_store: dict = {}
+_PROMO_FRAME_COUNT_RH = {9: "1", 16: "2", 25: "3"}
+
+
+class PromoStoryboardRequest(BaseModel):
+    product_name: str = ""
+    product_image: str = ""
+    selling_points: list[str] = []
+    target_audience: str = ""
+    style: str = ""
+    duration: int = 15
+    frame_count: int = 9
+    ratio: str = "adaptive"
+
+
+class PromoStoryboardStatusResponse(BaseModel):
+    task_id: str
+    status: str = ""
+    frame_urls: list[str] = []
+    storyboard_grid_url: str = ""
+    creative_prompt: str = ""
+    progress: int = 0
+    error: str = ""
+
+
+class PromoAutoPromptRequest(BaseModel):
+    storyboard_task_id: str
+    selected_count: int = 1
+
+
+class PromoVideoGenerateRequest(BaseModel):
+    storyboard_task_id: str
+    selected_indices: list[int] = []
+    video_prompt: str = ""
+
+
+class PromoVideoStatusResponse(BaseModel):
+    task_id: str
+    status: str = ""
+    video_url: str = ""
+    progress: int = 0
+    error: str = ""
+
+
+def _new_promo_video_task_id() -> str:
+    return f"pv_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+
+
+def _promo_public_url(public_base: str, abs_path: str) -> str:
+    rel = os.path.relpath(abs_path, POST_PROCESS_ROOT).replace(os.sep, "/")
+    return f"{public_base.rstrip('/')}/static/video-postprocess/{rel}"
+
+
+async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> None:
+    task = _promo_video_task_store.get(task_id)
+    if not task:
+        return
+    public_base = task.get("public_base_url") or ""
+    output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
+    os.makedirs(output_dir, exist_ok=True)
+    try:
+        task["status"] = "storyboard_processing"
+        task["progress"] = 5
+        if not DEEPSEEK_API_KEY:
+            raise RuntimeError("未配置 DEEPSEEK_API_KEY")
+        creative = await generate_storyboard_prompt(
+            DEEPSEEK_API_KEY,
+            req.product_name,
+            req.selling_points,
+            req.target_audience,
+            req.style,
+        )
+        task["creative_prompt"] = creative
+        task["progress"] = 15
+
+        rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
+        if not rh_key:
+            raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
+
+        product_path = os.path.join(output_dir, "product.png")
+        await _decode_b64_file(req.product_image, product_path)
+        product_url = await upload_to_runninghub(rh_key, product_path)
+
+        fc_val = _PROMO_FRAME_COUNT_RH.get(req.frame_count, "1")
+        rh_task = await submit_storyboard_to_rh(rh_key, product_url, creative, fc_val)
+        task["progress"] = 30
+
+        result = await wait_for_runninghub_task(rh_key, rh_task, max_wait=600)
+        grid_url = pick_first_valid_url(result.get("results"))
+        if not grid_url:
+            raise RuntimeError("分镜工作流无有效输出 URL")
+        task["storyboard_grid_url"] = grid_url
+        task["progress"] = 60
+
+        grid_path = await download_file(grid_url, output_dir, "storyboard_grid.png")
+        with open(grid_path, "rb") as f:
+            grid_data = f.read()
+        cols, rows = get_grid_dims(req.frame_count)
+        frames_dir = os.path.join(output_dir, "frames")
+        frame_paths = crop_storyboard_grid(grid_data, cols, rows, frames_dir)
+
+        frame_urls = [_promo_public_url(public_base, fp) for fp in frame_paths]
+        task["frame_paths"] = frame_paths
+        task["frame_urls"] = frame_urls
+        task["status"] = "storyboard_ready"
+        task["progress"] = 100
+    except Exception as e:
+        task["status"] = "storyboard_failed"
+        task["error"] = str(e)
+        task["progress"] = 0
+
+
+async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> None:
+    task = _promo_video_task_store.get(task_id)
+    if not task:
+        return
+    story = _promo_video_task_store.get(gen_req.storyboard_task_id)
+    if not story:
+        task["status"] = "video_failed"
+        task["error"] = "分镜任务不存在"
+        return
+    public_base = task.get("public_base_url") or story.get("public_base_url") or ""
+    output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
+    os.makedirs(output_dir, exist_ok=True)
+    ffmpeg_bin = os.environ.get("FFMPEG_EXE") or (
+        _local_ff
+        if (_local_ff := os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "ffmpeg", "bin", "ffmpeg.exe"))
+        and os.path.isfile(_local_ff)
+        else "ffmpeg"
+    )
+    try:
+        task["status"] = "video_processing"
+        task["progress"] = 5
+        rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
+        if not rh_key:
+            raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
+
+        frame_urls = story.get("frame_urls") or []
+        selected = [frame_urls[i] for i in gen_req.selected_indices if 0 <= i < len(frame_urls)]
+        if not selected:
+            raise RuntimeError("未选中有效分镜")
+
+        duration = int(story.get("duration") or 15)
+        ratio = story.get("ratio") or "adaptive"
+        segment_count = max(1, (duration + 14) // 15)
+        segments = slice_images_for_segments(selected, segment_count)
+
+        segment_paths: list[str] = []
+        rh_ids: list[str] = []
+        for seg_idx, seg_images in enumerate(segments):
+            seg_dur = min(15, duration - seg_idx * 15) if segment_count > 1 else duration
+            rh_id = await submit_sparkvideo_task(
+                rh_key, gen_req.video_prompt.strip(), seg_images, seg_dur, ratio=ratio
+            )
+            rh_ids.append(rh_id)
+            task["progress"] = 10 + int(70 * (seg_idx + 1) / max(1, segment_count))
+            result = await wait_for_runninghub_task(rh_key, rh_id, max_wait=900)
+            video_url = pick_first_valid_url(result.get("results"))
+            if not video_url:
+                raise RuntimeError(f"SparkVideo 段 {seg_idx + 1} 无有效输出")
+            seg_path = await download_file(video_url, output_dir, f"segment_{seg_idx}.mp4")
+            segment_paths.append(seg_path)
+
+        final_path = os.path.join(output_dir, "final.mp4")
+        concatenate_videos_ffmpeg(segment_paths, final_path, ffmpeg_path=ffmpeg_bin)
+        task["video_url"] = _promo_public_url(public_base, final_path)
+        task["rh_task_ids"] = rh_ids
+        task["status"] = "video_completed"
+        task["progress"] = 100
+    except Exception as e:
+        task["status"] = "video_failed"
+        task["error"] = str(e)
+
+
+from routes.promo_video_routes import router as promo_video_router
+
+app.include_router(promo_video_router)
 
 
 # ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──

@@ -6,9 +6,10 @@
   "scripts": {
     "postinstall": "node scripts/patch-next-themes.mjs",
     "dev": "next dev",
-    "dev:all": "concurrently -k -n next,api -c cyan,magenta \"next dev\" \"python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload\"",
+    "dev:all": "concurrently -k -n next,api -c cyan,magenta \"next dev\" \"node scripts/dev-api.mjs\"",
     "dev:web": "next dev",
-    "dev:api": "python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload",
+    "dev:api": "node scripts/dev-api.mjs",
+    "ffmpeg:ensure": "node scripts/ensure-ffmpeg.mjs",
     "clean:cache": "node scripts/clean-cache.mjs",
     "build": "next build",
     "start": "next start",

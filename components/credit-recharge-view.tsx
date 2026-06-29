@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import type { Batch, CreditAccount } from "@/lib/credit-types"
+import type { CreditAccount, LedgerItem } from "@/lib/credit-types"
 
 type GeneratedCode = {
   code: string
@@ -27,12 +27,22 @@ function formatTime(ms: number) {
   return new Date(ms).toLocaleString("zh-CN", { hour12: false })
 }
 
+function formatLedgerType(type: string) {
+  const map: Record<string, string> = {
+    register_bonus: "注册赠送",
+    redeem: "兑换充值",
+    consume: "消费扣减",
+    admin_adjust: "管理员调整",
+  }
+  return map[type] ?? type
+}
+
 export function CreditRechargeView() {
   const [balance, setBalance] = React.useState<CreditAccount | null>(null)
   const [code, setCode] = React.useState("")
   const [redeeming, setRedeeming] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
-  const [batches, setBatches] = React.useState<Batch[]>([])
+  const [ledger, setLedger] = React.useState<LedgerItem[]>([])
 
   const refreshBalance = React.useCallback(async () => {
     setLoading(true)
@@ -52,21 +62,25 @@ export function CreditRechargeView() {
     }
   }, [])
 
-  const refreshBatches = React.useCallback(async () => {
+  const refreshLedger = React.useCallback(async () => {
     try {
-      const res = await fetch("/api/credit/redeem-codes", { credentials: "include" })
+      const res = await fetch("/api/credit/ledger?limit=20", { credentials: "include" })
+      if (res.status === 401) {
+        setLedger([])
+        return
+      }
       if (!res.ok) return
-      const data = (await res.json()) as { batches?: Batch[] }
-      setBatches(data.batches ?? [])
+      const data = (await res.json()) as { items?: LedgerItem[] }
+      setLedger(data.items ?? [])
     } catch {
-      setBatches([])
+      setLedger([])
     }
   }, [])
 
   React.useEffect(() => {
     void refreshBalance()
-    void refreshBatches()
-  }, [refreshBalance, refreshBatches])
+    void refreshLedger()
+  }, [refreshBalance, refreshLedger])
 
   const redeem = async () => {
     const trimmed = code.trim()
@@ -91,6 +105,7 @@ export function CreditRechargeView() {
       toast.success(`兑换成功，已充值 ${formatPoints(amount)} 积分`)
       setCode("")
       await refreshBalance()
+      await refreshLedger()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "兑换失败")
     } finally {
@@ -188,28 +203,33 @@ export function CreditRechargeView() {
 
         <Card className="rounded-2xl">
           <CardHeader>
-            <CardTitle>兑换码批次登记</CardTitle>
-            <CardDescription>查看系统中已生成批次的激活与已兑换数量。</CardDescription>
+            <CardTitle>最近积分流水</CardTitle>
+            <CardDescription>展示最近 20 条充值、赠送与消费记录。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-hidden rounded-xl border">
               <div className="grid grid-cols-5 bg-muted px-4 py-3 text-xs font-medium text-muted-foreground">
-                <span>批次</span>
-                <span>额度</span>
-                <span>总数</span>
-                <span>已兑换 / 可用</span>
-                <span>创建时间</span>
+                <span>时间</span>
+                <span>类型</span>
+                <span>变动</span>
+                <span>余额</span>
+                <span>备注</span>
               </div>
-              {batches.length === 0 ? (
-                <div className="px-4 py-8 text-center text-sm text-muted-foreground">暂无兑换码批次</div>
+              {ledger.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-muted-foreground">暂无流水记录</div>
               ) : (
-                batches.map((batch) => (
-                  <div key={`${batch.batch_id}-${batch.amount}`} className="grid grid-cols-5 border-t px-4 py-3 text-sm">
-                    <span className="truncate font-mono text-xs">{batch.batch_id}</span>
-                    <span>{formatPoints(batch.amount)}</span>
-                    <span>{batch.total}</span>
-                    <span>{batch.redeemed_count} / {batch.active_count}</span>
-                    <span className="text-muted-foreground">{formatTime(batch.created_at)}</span>
+                ledger.map((item) => (
+                  <div key={item.id} className="grid grid-cols-5 border-t px-4 py-3 text-sm">
+                    <span className="text-muted-foreground">{formatTime(item.created_at)}</span>
+                    <span>{formatLedgerType(item.type)}</span>
+                    <span className={item.delta >= 0 ? "text-emerald-600 tabular-nums" : "text-rose-600 tabular-nums"}>
+                      {item.delta >= 0 ? "+" : ""}
+                      {formatPoints(item.delta)}
+                    </span>
+                    <span className="tabular-nums">{formatPoints(item.balance_after)}</span>
+                    <span className="truncate text-muted-foreground" title={item.note}>
+                      {item.note || item.ref_id || "--"}
+                    </span>
                   </div>
                 ))
               )}

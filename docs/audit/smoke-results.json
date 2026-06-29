@@ -1,0 +1,425 @@
+{
+  "passed": 25,
+  "failed": 0,
+  "total": 25,
+  "durationMs": 3823,
+  "results": [
+    {
+      "probe": {
+        "name": "health_proxy",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/health",
+        "expectStatus": [
+          200,
+          503
+        ],
+        "note": "503 if ffmpeg missing; proxy chain OK if JSON returned"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "{\"status\":\"ok\",\"checks\":{\"api\":\"ok\",\"ffmpeg\":\"ok\",\"ffprobe\":\"ok\",\"data_dir_writable\":\"ok\"}}"
+    },
+    {
+      "probe": {
+        "name": "auth_me_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/auth/me",
+        "expectStatus": [
+          401
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"未登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "credit_balance_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/credit/balance",
+        "expectStatus": [
+          401
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"未登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "video_status_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/status?taskId=smoke_test",
+        "expectStatus": [
+          401,
+          404
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "iv_status_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/image-to-video/status?taskId=smoke_test",
+        "expectStatus": [
+          401,
+          404
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "mv_status_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/mashup/status?taskId=smoke_test",
+        "expectStatus": [
+          401,
+          404
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "video_generate_bad_body",
+        "method": "POST",
+        "url": "http://127.0.0.1:3000/api/video/generate",
+        "expectStatus": [
+          401,
+          400,
+          422
+        ],
+        "body": {},
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      "status": 422,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"image_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc\":[\"body\",\"audio_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc\""
+    },
+    {
+      "probe": {
+        "name": "iv_submit_bad_body",
+        "method": "POST",
+        "url": "http://127.0.0.1:3000/api/video/image-to-video",
+        "expectStatus": [
+          401,
+          400,
+          422
+        ],
+        "body": {},
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      "status": 422,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"images_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc\":[\"body\",\"audio_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc"
+    },
+    {
+      "probe": {
+        "name": "mv_submit_bad_body",
+        "method": "POST",
+        "url": "http://127.0.0.1:3000/api/video/mashup",
+        "expectStatus": [
+          401,
+          400,
+          422
+        ],
+        "body": {},
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      "status": 422,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"videos_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc\":[\"body\",\"audio_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc"
+    },
+    {
+      "probe": {
+        "name": "trends_fetch_all",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/trends/fetch-all",
+        "expectNot": [
+          502,
+          503
+        ],
+        "note": "200 or 4xx if key missing"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "[{\"name\":\"百度风云榜\",\"status\":\"error\",\"message\":\"上游接口异常: code=230, msg=API密钥无效\",\"items\":[]},{\"name\":\"腾讯热搜榜\",\"status\":\"error\",\"message\":\"上游接口异常: code=230, msg=API密钥无效\",\"items\":[]},{\"name\":\"头条热搜榜\",\"status\":"
+    },
+    {
+      "probe": {
+        "name": "credit_redeem_codes_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/credit/redeem-codes",
+        "expectStatus": [
+          401,
+          403
+        ]
+      },
+      "status": 403,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"FORBIDDEN\",\"message\":\"未授权的后台访问\"}}"
+    },
+    {
+      "probe": {
+        "name": "fastapi_health",
+        "method": "GET",
+        "url": "http://127.0.0.1:8000/health",
+        "expectStatus": [
+          200,
+          503
+        ],
+        "note": "503 degraded when ffmpeg not on PATH"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "{\"status\":\"ok\",\"checks\":{\"api\":\"ok\",\"ffmpeg\":\"ok\",\"ffprobe\":\"ok\",\"data_dir_writable\":\"ok\"}}"
+    },
+    {
+      "probe": {
+        "name": "promo_storyboard_status",
+        "method": "GET",
+        "url": "http://127.0.0.1:8000/api/promo-video/storyboard-status?taskId=smoke",
+        "expectStatus": [
+          404
+        ],
+        "note": "route registered; 404 = task not found"
+      },
+      "status": 404,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"not_found\",\"path\":\"/api/promo-video/storyboard-status\"}"
+    },
+    {
+      "probe": {
+        "name": "douyin_qrcode_missing",
+        "method": "GET",
+        "url": "http://127.0.0.1:8000/api/accounts/douyin/qrcode",
+        "expectStatus": [
+          404
+        ],
+        "note": "intentionally disabled backend"
+      },
+      "status": 404,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"not_found\",\"path\":\"/api/accounts/douyin/qrcode\"}"
+    },
+    {
+      "probe": {
+        "name": "accounts_list_unauth",
+        "method": "GET",
+        "url": "http://127.0.0.1:8000/api/accounts/list",
+        "expectStatus": [
+          401
+        ]
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "clone_voice_snake_case",
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/video/clone-voice",
+        "expectStatus": [
+          401,
+          503
+        ],
+        "body": {
+          "audio_base64": "dGVzdA==",
+          "script": "test"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "note": "correct field names"
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "clone_voice_next_proxy",
+        "method": "POST",
+        "url": "http://127.0.0.1:3000/api/video/clone-voice",
+        "expectStatus": [
+          401,
+          422
+        ],
+        "body": {
+          "audio_base64": "dGVzdA==",
+          "script": "test"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "note": "Next proxy route"
+      },
+      "status": 401,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":{\"code\":\"NOT_LOGGED_IN\",\"message\":\"请先登录\"}}"
+    },
+    {
+      "probe": {
+        "name": "auth_me",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/auth/me",
+        "expectStatus": [
+          200
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "{\"user\":{\"id\":15,\"email_masked\":\"smoke_1782703202549@example.com\",\"login_name\":\"smoke_1782703202549@example.com\",\"nickname\":null},\"balance\":100}"
+    },
+    {
+      "probe": {
+        "name": "credit_balance",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/credit/balance",
+        "expectStatus": [
+          200
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "{\"balance\":100,\"total_recharged\":0,\"total_bonus\":100,\"total_consumed\":0}"
+    },
+    {
+      "probe": {
+        "name": "credit_ledger_user",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/credit/ledger?limit=5",
+        "expectStatus": [
+          200
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 200,
+      "ok": true,
+      "pass": true,
+      "bodyPreview": "{\"items\":[{\"id\":27,\"type\":\"register_bonus\",\"delta\":100,\"balance_after\":100,\"ref_id\":null,\"note\":\"账号注册赠送\",\"created_at\":1782703202742}],\"count\":1}"
+    },
+    {
+      "probe": {
+        "name": "promo_submit_authed_bad",
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/promo-video/submit",
+        "expectStatus": [
+          400,
+          401
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA",
+        "body": {},
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "note": "promo route registered"
+      },
+      "status": 400,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"Upload product image\"}"
+    },
+    {
+      "probe": {
+        "name": "video_status_authed",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/status?taskId=smoke_missing",
+        "expectStatus": [
+          404
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 404,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"not_found\",\"path\":\"/api/video/status\"}"
+    },
+    {
+      "probe": {
+        "name": "iv_status_authed",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/image-to-video/status?taskId=smoke_missing",
+        "expectStatus": [
+          404
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 404,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"not_found\",\"path\":\"/api/video/image-to-video/status\"}"
+    },
+    {
+      "probe": {
+        "name": "mv_status_authed",
+        "method": "GET",
+        "url": "http://127.0.0.1:3000/api/video/mashup/status?taskId=smoke_missing",
+        "expectStatus": [
+          404
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA"
+      },
+      "status": 404,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":\"not_found\",\"path\":\"/api/video/mashup/status\"}"
+    },
+    {
+      "probe": {
+        "name": "iv_submit_authed_bad",
+        "method": "POST",
+        "url": "http://127.0.0.1:3000/api/video/image-to-video",
+        "expectStatus": [
+          400,
+          422
+        ],
+        "cookie": "session_id=iEB_OC0v07AoDBdeyRgOKWTT40j6u8JtCu7Quw-kUvA",
+        "body": {},
+        "headers": {
+          "Content-Type": "application/json"
+        }
+      },
+      "status": 422,
+      "ok": false,
+      "pass": true,
+      "bodyPreview": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"images_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc\":[\"body\",\"audio_base64\"],\"msg\":\"Field required\",\"input\":{}},{\"type\":\"missing\",\"loc"
+    }
+  ]
+}

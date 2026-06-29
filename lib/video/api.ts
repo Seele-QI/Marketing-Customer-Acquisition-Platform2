@@ -94,7 +94,8 @@ export async function applyEdit(req: VideoEditRequest): Promise<VideoEditRespons
 }
 
 export async function cloneVoice(req: VoiceCloneRequest): Promise<VoiceCloneResponse> {
-  const res = await fastapiFetch("/api/video/clone-voice", {
+  const res = await fetch("/api/video/clone-voice", {
+    ...FETCH_INIT,
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(req),
