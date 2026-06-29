@@ -84,6 +84,8 @@ pnpm dist:win           # 产出 release/AI营销获客中台-Setup-*.exe
 | FastAPI ImportError | `resources/routes/` 与 `PYTHONPATH` |
 | 激活验签失败 | 构建公钥与中央私钥是否配对 |
 | dist:win 缺 icon | `build/icon.ico` 是否在 Git 中 |
+| dist:win `ENOENT` 路径乱码 | 将仓库移到 ASCII 路径，如 `C:\build\zhongtai-main` |
+| dist:win 下载 `winCodeSign` 超时 | 已在 `electron-builder.yml` 设置 `signAndEditExecutable: false`；或设 `$env:CSC_IDENTITY_AUTO_DISCOVERY="false"` |
 
 ## 相关文档
 

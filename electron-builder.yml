@@ -40,6 +40,8 @@ win:
         - x64
   icon: build/icon.ico
   artifactName: ${productName}-Setup-${version}.${ext}
+  # 跳过 rcedit/winCodeSign 下载（内网/无法访问 GitHub 时 dist:win 会超时失败）
+  signAndEditExecutable: false
 
 nsis:
   oneClick: false
