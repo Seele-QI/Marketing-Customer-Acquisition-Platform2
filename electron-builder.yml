@@ -27,6 +27,7 @@ extraResources:
       - "next-standalone/**"
       - "bgm/**"
       - "main.py"
+      - "routes/**"
 
 extraMetadata:
   main: electron/dist-electron/main.js

@@ -198,9 +198,16 @@ async function startChildren(nextPort: number, uvicornPort: number) {
     });
   } else {
     const exeExt = process.platform === "win32" ? ".exe" : "";
+    const fastApiBase = `http://127.0.0.1:${uvicornPort}`;
+    const pythonPath = [
+      path.join(pythonRoot(), "site-packages"),
+      path.join(pythonRoot(), "lib"),
+    ].join(path.delimiter);
     const baseEnv: Record<string, string> = {
       NODE_ENV: "production",
       PYTHONUNBUFFERED: "1",
+      FASTAPI_URL: fastApiBase,
+      NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
       FFMPEG_EXE: path.join(ffmpegBinDir(), `ffmpeg${exeExt}`),
       FFPROBE_EXE: path.join(ffmpegBinDir(), `ffprobe${exeExt}`),
       CREDIT_DB_OVERRIDE: accountsDbPath(),
@@ -214,7 +221,14 @@ async function startChildren(nextPort: number, uvicornPort: number) {
       command: process.execPath,
       args: [path.join(nextStandaloneRoot(), "server.js")],
       cwd: nextStandaloneRoot(),
-      env: { ...prodEnv, NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: String(nextPort) },
+      env: {
+        ...prodEnv,
+        NODE_ENV: "production",
+        HOSTNAME: "127.0.0.1",
+        PORT: String(nextPort),
+        FASTAPI_URL: fastApiBase,
+        NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
+      },
       port: nextPort,
       startupTimeoutMs: 60_000,
     });
@@ -223,7 +237,14 @@ async function startChildren(nextPort: number, uvicornPort: number) {
       command: path.join(pythonRoot(), `python${exeExt}`),
       args: ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(uvicornPort), "--no-access-log"],
       cwd: resourcesRoot(),
-      env: { ...prodEnv, NODE_ENV: "production", PORT: String(uvicornPort) },
+      env: {
+        ...prodEnv,
+        NODE_ENV: "production",
+        PORT: String(uvicornPort),
+        FASTAPI_URL: fastApiBase,
+        NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
+        PYTHONPATH: pythonPath,
+      },
       port: uvicornPort,
       healthUrl: `http://127.0.0.1:${uvicornPort}/api/auth/me`,
       startupTimeoutMs: 30_000,

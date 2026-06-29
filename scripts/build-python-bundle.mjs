@@ -193,7 +193,20 @@ function step6_copyLib() {
   }
   console.log('[build-python] copying lib/ -> ' + libDst);
   if (existsSync(libDst)) rmSync(libDst, { recursive: true, force: true });
-  cpSync(libSrc, libDst, { recursive: true });
+  // Node fs.cpSync can crash (STATUS_STACK_BUFFER_OVERRUN) on some Windows paths; use shell copy.
+  if (process.platform === 'win32') {
+    mkdirSync(libDst, { recursive: true });
+    const result = spawnSync(
+      'powershell',
+      ['-NoProfile', '-Command', `Copy-Item -Path '${libSrc.replace(/'/g, "''")}' -Destination '${libDst.replace(/'/g, "''")}' -Recurse -Force`],
+      { stdio: 'inherit' },
+    );
+    if (result.status !== 0) {
+      throw new Error('Copy-Item lib/ failed: exit ' + result.status);
+    }
+  } else {
+    cpSync(libSrc, libDst, { recursive: true });
+  }
 }
 
 /* ============ Step 7: smoke test ============ */

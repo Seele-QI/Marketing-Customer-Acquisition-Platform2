@@ -115,6 +115,44 @@ if (existsSync(mainPy)) {
   check('main.py size > 50KB', size > 50_000, `${(size / 1024).toFixed(1)}KB`);
 }
 
+/* ============ routes/ ============ */
+
+console.log('\n[preflight] === routes/ ===');
+const routesDir = path.join(resources, 'routes');
+const promoRoutes = path.join(routesDir, 'promo_video_routes.py');
+check('routes/ exists', existsSync(routesDir));
+check('promo_video_routes.py exists', existsSync(promoRoutes));
+
+/* ============ Python smoke import (optional) ============ */
+
+if (existsSync(pythonExe) && existsSync(mainPy) && existsSync(libDst)) {
+  console.log('\n[preflight] === python smoke import ===');
+  const pythonPath = [resources, sitePackages, libDst].join(path.delimiter);
+  const testDb = path.join(resources, '_preflight_smoke.db');
+  const smoke = spawnSync(
+    pythonExe,
+    [
+      '-c',
+      "import sys; sys.path.insert(0, '.'); from routes import promo_video_routes; print('routes import ok')",
+    ],
+    {
+      cwd: resources,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonPath,
+        CREDIT_DB_OVERRIDE: testDb,
+      },
+    },
+  );
+  const smokeOk = smoke.status === 0;
+  check(
+    'import routes in resources cwd',
+    smokeOk,
+    smokeOk ? smoke.stdout.trim() : smoke.stderr.trim().slice(0, 200),
+  );
+}
+
 /* ============ BGM ============ */
 
 console.log('\n[preflight] === bgm ===');

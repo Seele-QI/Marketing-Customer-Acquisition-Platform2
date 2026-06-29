@@ -53,7 +53,17 @@ import {
   type WorkflowStepId as StepId,
   type WorkflowStepStatus as StepStatus,
 } from "@/lib/video-task-runtime"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 import { getFastapiBase } from "@/lib/fastapi-base"
+
+const VIDEO_FETCH: RequestInit = { credentials: "include" }
+
+/** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
+function resolveFastapiMediaUrl(url: string): string {
+  if (!url || url.startsWith("http") || url.startsWith("blob:")) return url
+  const base = getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
+  return `${base.replace(/\/$/, "")}${url.startsWith("/") ? url : `/${url}`}`
+}
 import { startAutoSubtitle, queryAutoSubtitleStatus } from "@/lib/video/api"
 import type { AutoSubtitleResponse } from "@/lib/video/api"
 import { getCoverUiState } from "@/lib/video-cover-ui"
@@ -532,16 +542,17 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     })
     try {
       setManualUploadBusy(true)
-      const base = getFastapiBase()
-      if (!base) throw new Error("请配置 NEXT_PUBLIC_FASTAPI_URL")
       const formData = new FormData()
       formData.append("file", file)
-      const uploadResp = await fetch(`${base}/api/video/manual-upload`, {
+      const uploadResp = await fetch("/api/video/manual-upload", {
+        ...VIDEO_FETCH,
         method: "POST",
         body: formData,
       })
-      const uploadData = (await uploadResp.json()) as ManualUploadResponse & { detail?: string }
-      if (!uploadResp.ok || !uploadData.upload_id) throw new Error(uploadData.detail || "手动上传失败")
+      const uploadData = (await uploadResp.json()) as ManualUploadResponse & { detail?: unknown }
+      if (!uploadResp.ok || !uploadData.upload_id) {
+        throw new Error(parseApiErrorResponse(uploadResp.status, uploadData, "手动上传失败"))
+      }
       setManualUploadId(uploadData.upload_id)
       toast({ title: "视频上传成功", description: "已保存到后端，可继续应用剪辑效果" })
     } catch (error) {
@@ -713,10 +724,10 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     if (!snapshot.isProcessing) return
 
     const taskIdToCancel = snapshot.taskId
-    const base = getFastapiBase()
-    if (base && taskIdToCancel) {
+    if (taskIdToCancel) {
       try {
-        await fetch(`${base}/api/video/cancel`, {
+        await fetch("/api/video/cancel", {
+          ...VIDEO_FETCH,
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ task_id: taskIdToCancel }),
@@ -787,32 +798,27 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
 
       pollInFlightRef.current = true
       let shouldScheduleNext = true
-      const base = getFastapiBase()
-      if (!base) {
-        shouldScheduleNext = false
-        failTask("缺少后端配置，无法继续同步任务状态。", { taskId: tid, recordHistory: true })
-      } else {
-        try {
-          const sr = await fetch(`${base}/api/video/status?taskId=${encodeURIComponent(tid)}`)
-          const sd = await sr.json()
-          if (pollSessionRef.current !== sessionId || taskIdRef.current !== tid) {
-            shouldScheduleNext = false
-            return
-          }
-          if (!sr.ok) {
-            const pollError =
-              typeof sd?.detail === "string"
-                ? sd.detail
-                : typeof sd?.error === "string"
-                  ? sd.error
-                  : "查询任务状态失败"
-            const prev = taskStateRef.current
-            updateTask({
-              pollErrorCount: prev.pollErrorCount + 1,
-              lastPollError: pollError,
-            })
-            return
-          }
+      try {
+        const sr = await fetch(
+          `/api/video/status?taskId=${encodeURIComponent(tid)}`,
+          VIDEO_FETCH,
+        )
+        const sd = await sr.json()
+        if (pollSessionRef.current !== sessionId || taskIdRef.current !== tid) {
+          shouldScheduleNext = false
+          return
+        }
+        if (!sr.ok) {
+          const pollError =
+            parseApiErrorResponse(sr.status, sd, "查询任务状态失败") ||
+            (typeof sd?.error === "string" ? sd.error : "查询任务状态失败")
+          const prev = taskStateRef.current
+          updateTask({
+            pollErrorCount: prev.pollErrorCount + 1,
+            lastPollError: pollError,
+          })
+          return
+        }
 
           const now = Date.now()
           updateTask({ lastStatusAt: now, resumeGraceUntil: 0, pollErrorCount: 0, lastPollError: "" })
@@ -1036,7 +1042,6 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
             }, pollInterval)
           }
         }
-      }
     }
 
     void pollOnce()
@@ -1045,11 +1050,6 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   const handleGenerate = React.useCallback(async () => {
     if (!canGenerate || isProcessing) return
     if (!imageBase64 || !audioBase64) return
-    const base = getFastapiBase()
-    if (!base) {
-      toast({ title: "缺少后端配置", description: "请配置 NEXT_PUBLIC_FASTAPI_URL", variant: "destructive" })
-      return
-    }
     const submittedAt = Date.now()
     updateTask({
       ...createGenerateSubmissionPatch(submittedAt),
@@ -1060,7 +1060,8 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     })
 
     try {
-      const res = await fetch(`${base}/api/video/generate`, {
+      const res = await fetch("/api/video/generate", {
+        ...VIDEO_FETCH,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1074,7 +1075,9 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       })
 
       const data = await res.json()
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "提交任务失败")
+      if (!res.ok) {
+        throw new Error(parseApiErrorResponse(res.status, data, "提交任务失败"))
+      }
 
       const tid = data.task_id || data.taskId
       if (!tid) throw new Error("未返回 taskId")
@@ -1118,39 +1121,35 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
 
     // 先发一次即时状态查询，防止上次心跳时间戳过旧被误判超时
-    const base = getFastapiBase()
-    if (base) {
-      let cancelled = false
-      const immediateFetch = async () => {
-        try {
-          const sr = await fetch(`${base}/api/video/status?taskId=${encodeURIComponent(taskId)}`)
-          if (cancelled) return
-          const sd = await sr.json()
-          if (!sr.ok) return
-          const s = sd.status?.toLowerCase()
-          if (s === "success" || s === "failed") {
-            // 后端已完成，直接落地最终状态
-            updateTask({ lastStatusAt: Date.now(), resumeGraceUntil: 0 })
-          } else {
-            // 重置时间戳，给接下来的后台轮询一个干净的起点
-            updateTask({
-              lastStatusAt: Date.now(),
-              lastHeartbeat: Date.now(),
-              pollErrorCount: 0,
-              lastPollError: "",
-            })
-          }
-        } catch {
-          // 即时查询失败不影响恢复流程，后台轮询会兜底
+    let cancelled = false
+    const immediateFetch = async () => {
+      try {
+        const sr = await fetch(
+          `/api/video/status?taskId=${encodeURIComponent(taskId)}`,
+          VIDEO_FETCH,
+        )
+        if (cancelled) return
+        const sd = await sr.json()
+        if (!sr.ok) return
+        const s = sd.status?.toLowerCase()
+        if (s === "success" || s === "failed") {
+          updateTask({ lastStatusAt: Date.now(), resumeGraceUntil: 0 })
+        } else {
+          updateTask({
+            lastStatusAt: Date.now(),
+            lastHeartbeat: Date.now(),
+            pollErrorCount: 0,
+            lastPollError: "",
+          })
         }
+      } catch {
+        // 即时查询失败不影响恢复流程，后台轮询会兜底
       }
-      void immediateFetch().then(() => {
-        if (!cancelled) startBackgroundPoll(taskId)
-      })
-      return () => { cancelled = true }
     }
-
-    startBackgroundPoll(taskId)
+    void immediateFetch().then(() => {
+      if (!cancelled) startBackgroundPoll(taskId)
+    })
+    return () => { cancelled = true }
   }, [startBackgroundPoll, stopBackgroundPoll, taskId, taskState.resumeGraceUntil, updateTask, workflowUi.shouldResumePolling])
 
   // 重新挂载时恢复自动字幕轮询
@@ -1242,35 +1241,28 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
 
       editPollInFlightRef.current = true
       let scheduleNext = true
-      const base = getFastapiBase()
+      try {
+        const statusResp = await fetch(
+          `/api/video/edit/status?editJobId=${encodeURIComponent(jobId)}`,
+          VIDEO_FETCH,
+        )
+        const statusData = (await statusResp.json()) as EditTaskResponse & { detail?: unknown }
 
-      if (!base) {
-        scheduleNext = false
-        updateTask({
-          editingErrorMessage: "缺少后端配置，无法继续同步剪辑状态。",
-          isEditing: false,
-          editJobId: "",
-          editPollStartedAt: 0,
-        })
-      } else {
-        try {
-          const statusResp = await fetch(`${base}/api/video/edit/status?editJobId=${encodeURIComponent(jobId)}`)
-          const statusData = (await statusResp.json()) as EditTaskResponse & { detail?: string }
+        if (editPollSessionRef.current !== sessionId) return
 
-          if (editPollSessionRef.current !== sessionId) return
-
-          if (!statusResp.ok) {
-            updateTask({
-              editingErrorMessage: typeof statusData.detail === "string" ? statusData.detail : "查询剪辑状态失败",
-            })
-            // keep polling — transient errors resolve themselves
-          } else if (statusData.status === "success" && statusData.output_video_url) {
-            scheduleNext = false
-            stopEditPoll()
-            const completedStageProgress = { ...taskStateRef.current.stageProgress, editing: 100 }
-            const finalUrl = statusData.output_video_url.startsWith("http")
-              ? statusData.output_video_url
-              : `${base.replace(/\/$/, "")}${statusData.output_video_url}`
+        if (!statusResp.ok) {
+          updateTask({
+            editingErrorMessage: parseApiErrorResponse(
+              statusResp.status,
+              statusData,
+              "查询剪辑状态失败",
+            ),
+          })
+        } else if (statusData.status === "success" && statusData.output_video_url) {
+          scheduleNext = false
+          stopEditPoll()
+          const completedStageProgress = { ...taskStateRef.current.stageProgress, editing: 100 }
+          const finalUrl = resolveFastapiMediaUrl(statusData.output_video_url)
             setVideoUrl(finalUrl)
             updateTask({
               currentStage: "done",
@@ -1308,14 +1300,12 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           }
         } catch {
           if (editPollSessionRef.current !== sessionId) return
-          // Network errors are transient — keep polling
         } finally {
           editPollInFlightRef.current = false
           if (scheduleNext && editPollSessionRef.current === sessionId) {
             editPollRef.current = setTimeout(() => { void pollOnce() }, 1500)
           }
         }
-      }
     }
 
     void pollOnce()
@@ -1356,12 +1346,8 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
 
     try {
-      const base = getFastapiBase()
-      if (!base) {
-        handleEditingSubmitFailure("请配置 NEXT_PUBLIC_FASTAPI_URL", "缺少后端配置")
-        return
-      }
-      const res = await fetch(`${base}/api/video/edit`, {
+      const res = await fetch("/api/video/edit", {
+        ...VIDEO_FETCH,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1377,9 +1363,11 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           slide_images_base64: slideImages.map((img) => img.base64),
         }),
       })
-      const data = (await res.json()) as EditTaskResponse & { detail?: string }
+      const data = (await res.json()) as EditTaskResponse & { detail?: unknown }
       if (!res.ok) {
-        handleEditingSubmitFailure(typeof data.detail === "string" ? data.detail : "剪辑失败，请重试")
+        handleEditingSubmitFailure(
+          parseApiErrorResponse(res.status, data, "剪辑失败，请重试"),
+        )
         return
       }
       const jobId = data.edit_job_id
@@ -1464,12 +1452,6 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   const handleRetryCover = React.useCallback(async () => {
     if (!taskId || coverRetryBusy) return
 
-    const base = getFastapiBase()
-    if (!base) {
-      toast({ title: "缺少后端配置", description: "请配置 NEXT_PUBLIC_FASTAPI_URL", variant: "destructive" })
-      return
-    }
-
     setCoverRetryBusy(true)
     updateTask({
       coverUrl: "",
@@ -1479,13 +1461,16 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     })
 
     try {
-      const res = await fetch(`${base}/api/video/cover`, {
+      const res = await fetch("/api/video/cover", {
+        ...VIDEO_FETCH,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id: taskId }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "封面重试失败")
+      if (!res.ok) {
+        throw new Error(parseApiErrorResponse(res.status, data, "封面重试失败"))
+      }
 
       updateTask({
         coverUrl: typeof data.cover_url === "string" ? data.cover_url : "",

@@ -8,6 +8,7 @@
 
 import { getMachineId } from './machine-id';
 import logger from './logger';
+import { verifyActivateResponse } from '../utils/activate-verify';
 
 const BASE_URL = process.env.CENTRAL_SERVICE_URL || 'https://your-server.example.com';
 const APP_VERSION = '0.1.0';
@@ -41,6 +42,26 @@ export async function activate(code: string): Promise<ActivationResult> {
         server_time: 0,
         error: body?.detail?.message || body?.message || `HTTP ${res.status}`,
         code: body?.detail?.code || body?.code,
+      };
+    }
+    const verify = verifyActivateResponse({
+      plan: body.plan,
+      expires_at: body.expires_at,
+      keys: body.keys || {},
+      server_time: body.server_time,
+      signature: body.signature,
+      key_id: body.key_id,
+    });
+    if (!verify.ok) {
+      logger.error('activate verify failed:', verify.code, verify.message);
+      return {
+        ok: false,
+        plan: '',
+        expires_at: 0,
+        keys: {},
+        server_time: 0,
+        error: verify.message || '激活响应验签失败',
+        code: verify.code,
       };
     }
     return { ok: true, ...body };

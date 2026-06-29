@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lib.ffmpeg_runner import run_ffmpeg, run_ffprobe
 from lib.video_postprocess import (
     PostProcessResult,
     split_script_segments,
@@ -57,14 +58,7 @@ VOICE_VOLUME = 1.0
 
 def _run_ffmpeg(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
     """执行 ffmpeg 命令，返回 CompletedProcess。"""
-    return subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    return run_ffmpeg(args, timeout=timeout)
 
 
 def _probe_image_resolution(image_path: str) -> tuple[int, int]:
@@ -76,7 +70,7 @@ def _probe_image_resolution(image_path: str) -> tuple[int, int]:
         "-of", "csv=s=x:p=0",
         image_path,
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    res = run_ffprobe(cmd, timeout=30)
     if res.returncode == 0 and "x" in res.stdout:
         w, h = res.stdout.strip().split("x", 1)
         return int(w), int(h)

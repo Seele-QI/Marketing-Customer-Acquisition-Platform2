@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ── 3) 项目代码 ──
 COPY main.py                     ./
 COPY lib/                        lib/
+COPY routes/                     routes/
 COPY assets/                     assets/
 
 # ── 4) 数据目录（Volume mount 会覆盖）──

@@ -45,7 +45,11 @@ public/video-cache/
 tools/ffmpeg/ffmpeg.zip
 
 # Electron 打包产物（不入 git，由 scripts/ 产出）
-build/
+build/*
+!build/icon.ico
+!build/icon.png
+!build/tray-icon.png
+!build/installer.nsh
 electron/dist-electron/
 release/
 .electron-cache/
@@ -56,6 +60,7 @@ resources/ffmpeg/
 resources/next-standalone/
 resources/bgm/
 resources/main.py
+resources/routes/
 
 # pnpm-electron-builder 缓存
 app-builder-cache/

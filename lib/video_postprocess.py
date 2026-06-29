@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from lib.ffmpeg_runner import run_ffmpeg, run_ffprobe
+
 
 # ── 模板常量（单模板，未来扩展在此添加分支） ──────────────────────────────────────────
 
@@ -150,7 +152,7 @@ def _auto_wrap(text: str, max_chars: int = 24) -> str:
 
 def probe_duration(media_path: str) -> float:
     cmd = [_FFPROBE_EXE, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", media_path]
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    res = run_ffprobe(cmd, timeout=30)
     if res.returncode == 0 and res.stdout.strip():
         return max(0.1, float(res.stdout.strip()))
     return 30.0
@@ -158,7 +160,7 @@ def probe_duration(media_path: str) -> float:
 
 def probe_audio_duration(media_path: str) -> float:
     cmd = [_FFPROBE_EXE, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "default=noprint_wrappers=1:nokey=1", media_path]
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    res = run_ffprobe(cmd, timeout=30)
     if res.returncode == 0 and res.stdout.strip() and res.stdout.strip() != "N/A":
         return max(0.1, float(res.stdout.strip().splitlines()[0]))
     return probe_duration(media_path)
@@ -176,7 +178,7 @@ def resolve_target_duration(input_video_path: str) -> float:
 
 def probe_resolution(video_path: str) -> tuple[int, int]:
     cmd = [_FFPROBE_EXE, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", video_path]
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    res = run_ffprobe(cmd, timeout=30)
     if res.returncode == 0 and "x" in res.stdout:
         w, h = res.stdout.strip().split("x", 1)
         return int(w), int(h)
@@ -185,7 +187,7 @@ def probe_resolution(video_path: str) -> tuple[int, int]:
 
 def has_audio_stream(video_path: str) -> bool:
     cmd = [_FFPROBE_EXE, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", video_path]
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    res = run_ffprobe(cmd, timeout=30)
     return res.returncode == 0 and bool(res.stdout.strip())
 
 
@@ -277,7 +279,7 @@ def build_ass_subtitles(script: str, output_path: str, duration: float, width: i
 
 
 def _run_ffmpeg(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    return run_ffmpeg(args, timeout=timeout)
 
 
 def _escape_filter_path(path_value: str) -> str:

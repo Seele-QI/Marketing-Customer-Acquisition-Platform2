@@ -24,6 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from lib.ffmpeg_runner import run_ffmpeg, run_ffprobe
 from lib.video_postprocess import (
     PostProcessResult,
     split_script_segments,
@@ -62,9 +63,7 @@ VOICE_VOLUME = 1.0
 
 
 def _run_ffmpeg(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-    )
+    return run_ffmpeg(args, timeout=timeout)
 
 
 def _build_segment_plan(

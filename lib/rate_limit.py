@@ -30,6 +30,9 @@ IP_LIMITS = [
     (3600, 10),
     (86400, 50),
 ]
+CENTRAL_ACTIVATE_IP_LIMITS = [
+    (60, 10),
+]
 
 
 def _ensure_schema() -> None:
@@ -105,4 +108,16 @@ def check_ip(ip: str) -> Tuple[bool, str]:
         if _count_since("ip", ip, since) >= limit:
             mins = max(1, window_s // 60)
             return False, f"该 IP 请求过于频繁，请 {mins} 分钟后再试"
+    return True, ""
+
+
+def check_scoped(scope: str, key: str, limits: list[tuple[int, int]]) -> Tuple[bool, str]:
+    if not key:
+        return True, ""
+    now = int(time.time() * 1000)
+    for window_s, limit in limits:
+        since = now - window_s * 1000
+        if _count_since(scope, key, since) >= limit:
+            mins = max(1, window_s // 60)
+            return False, f"请求过于频繁，请 {mins} 分钟后再试"
     return True, ""

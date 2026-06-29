@@ -3,7 +3,6 @@ import { proxyToFastapi } from "@/lib/fastapi-base"
 export const runtime = "nodejs"
 export const maxDuration = 600
 
-/** FastAPI ffmpeg 模板剪辑（数字人口播 Step 4）。Remotion 见 /api/video/remotion-edit。 */
 export async function POST(req: Request) {
-  return proxyToFastapi(req, "/api/video/edit")
+  return proxyToFastapi(req, "/api/video/auto-subtitle")
 }

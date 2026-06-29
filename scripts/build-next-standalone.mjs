@@ -8,7 +8,8 @@
  * 3. 复制 .next/static → resources/next-standalone/.next/static
  * 4. 复制 public/ → resources/next-standalone/public
  * 5. 复制项目根 main.py → resources/main.py
- * 6. 复制 assets/bgm → resources/bgm
+ * 6. 复制 routes/ → resources/routes/
+ * 7. 复制 assets/bgm → resources/bgm
  *
  * 触发：`pnpm resources:build`
  */
@@ -26,12 +27,14 @@ const staticSrc = path.join(projectRoot, '.next', 'static');
 const publicSrc = path.join(projectRoot, 'public');
 const bgmSrc = path.join(projectRoot, 'assets', 'bgm');
 const mainPySrc = path.join(projectRoot, 'main.py');
+const routesSrc = path.join(projectRoot, 'routes');
 
 const target = path.join(projectRoot, 'resources', 'next-standalone');
 const targetStatic = path.join(target, '.next', 'static');
 const targetPublic = path.join(target, 'public');
 const targetBgm = path.join(projectRoot, 'resources', 'bgm');
 const targetMainPy = path.join(projectRoot, 'resources', 'main.py');
+const targetRoutes = path.join(projectRoot, 'resources', 'routes');
 
 console.log('[build-next-standalone] starting...');
 
@@ -92,7 +95,17 @@ if (existsSync(mainPySrc)) {
   console.error(`[build-next-standalone] WARN: ${mainPySrc} not found`);
 }
 
-/* ============ Step 6: BGM 复制 ============ */
+/* ============ Step 6: routes/ 复制 ============ */
+
+console.log(`[build-next-standalone] copying routes/ → ${targetRoutes}`);
+if (existsSync(routesSrc)) {
+  if (existsSync(targetRoutes)) rmSync(targetRoutes, { recursive: true, force: true });
+  cpSync(routesSrc, targetRoutes, { recursive: true });
+} else {
+  console.error(`[build-next-standalone] WARN: ${routesSrc} not found`);
+}
+
+/* ============ Step 7: BGM 复制 ============ */
 
 console.log(`[build-next-standalone] copying bgm → ${targetBgm}`);
 if (existsSync(bgmSrc)) {
