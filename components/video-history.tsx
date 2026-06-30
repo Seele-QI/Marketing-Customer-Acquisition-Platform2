@@ -9,8 +9,10 @@ import * as React from "react"
 import { Trash2, Eye, Clock, Film, Download, Image as ImageIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
-import type { HistoryRecord } from "@/lib/video/types"
+import type { HistoryRecord, HistoryVideoSource } from "@/lib/video/types"
+import { HISTORY_STORAGE_KEY } from "@/lib/video/types"
 import { getHistoryRecords, removeHistoryRecord, clearAllHistory } from "@/lib/video/storage"
+import { resolveMediaUrl } from "@/lib/video/utils"
 
 export type { ShareVideo } from "@/lib/video/types"
 export { addHistoryRecord, addShareVideo, getShareVideos as loadShareVideos } from "@/lib/video/storage"
@@ -29,6 +31,22 @@ function getExcerpt(text: string, max = 50): string {
   return text.length > max ? text.slice(0, max) + "…" : text
 }
 
+const SOURCE_LABELS: Record<HistoryVideoSource, string> = {
+  "digital-human": "数字人口播",
+  "image-video": "图文视频",
+  mashup: "视频混剪",
+}
+
+function getRecordSource(record: HistoryRecord): HistoryVideoSource {
+  return record.source ?? "digital-human"
+}
+
+function getCoverSrc(record: HistoryRecord): string | null {
+  if (record.coverUrl) return resolveMediaUrl(record.coverUrl)
+  if (record.coverThumbnail) return record.coverThumbnail
+  return null
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -37,7 +55,13 @@ export function VideoHistory() {
   const [records, setRecords] = React.useState<HistoryRecord[]>([])
 
   React.useEffect(() => {
-    setRecords(getHistoryRecords())
+    const refresh = () => setRecords(getHistoryRecords())
+    refresh()
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === HISTORY_STORAGE_KEY || e.key === null) refresh()
+    }
+    window.addEventListener("storage", onStorage)
+    return () => window.removeEventListener("storage", onStorage)
   }, [])
 
   const handleDelete = (id: string) => {
@@ -80,7 +104,14 @@ export function VideoHistory() {
         )}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {records.map((record) => (
+          {records.map((record) => {
+            const coverSrc = getCoverSrc(record)
+            const source = getRecordSource(record)
+            const resolvedVideoUrl = record.videoUrl ? resolveMediaUrl(record.videoUrl) : ""
+            const resolvedCoverUrl = record.coverUrl ? resolveMediaUrl(record.coverUrl) : ""
+            const showGender = source === "digital-human" && record.gender != null
+
+            return (
             <div key={record.id}
               className={cn(
                 "group relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-all hover:shadow-md dark:border-white/10 dark:bg-white/5",
@@ -88,8 +119,8 @@ export function VideoHistory() {
               )}
             >
               <div className="aspect-[3/4] w-full overflow-hidden bg-slate-100 dark:bg-white/5">
-                {record.coverUrl ? (
-                  <img src={record.coverUrl} alt="封面图" className="h-full w-full object-cover" loading="lazy" />
+                {coverSrc ? (
+                  <img src={coverSrc} alt="封面图" className="h-full w-full object-cover" loading="lazy" />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center">
                     <ImageIcon className="h-10 w-10 text-slate-300 dark:text-slate-600" />
@@ -98,7 +129,7 @@ export function VideoHistory() {
               </div>
 
               <div className="p-4">
-                <div className="mb-2 flex items-center gap-2">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
                   <span className={cn(
                     "rounded-md px-2 py-0.5 text-[11px] font-medium",
                     record.status === "success"
@@ -108,8 +139,13 @@ export function VideoHistory() {
                     {record.status === "success" ? "已完成" : "失败"}
                   </span>
                   <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500 dark:bg-white/10 dark:text-slate-400">
-                    {record.gender === "male" ? "男" : "女"}
+                    {SOURCE_LABELS[source]}
                   </span>
+                  {showGender && (
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500 dark:bg-white/10 dark:text-slate-400">
+                      {record.gender === "male" ? "男" : "女"}
+                    </span>
+                  )}
                 </div>
 
                 <p className="mb-1 line-clamp-2 text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
@@ -121,14 +157,14 @@ export function VideoHistory() {
                 </p>
 
                 <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3 dark:border-white/5">
-                  {record.videoUrl && (
-                    <a href={record.videoUrl} target="_blank" rel="noopener noreferrer"
+                  {resolvedVideoUrl && (
+                    <a href={resolvedVideoUrl} target="_blank" rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-1.5 text-[12px] font-medium text-slate-600 transition-colors hover:bg-slate-200 dark:bg-white/10 dark:text-slate-400 dark:hover:bg-white/20">
                       <Eye className="h-3.5 w-3.5" />查看视频
                     </a>
                   )}
-                  {record.coverUrl && (
-                    <a href={record.coverUrl} target="_blank" rel="noopener noreferrer" download
+                  {resolvedCoverUrl && (
+                    <a href={resolvedCoverUrl} target="_blank" rel="noopener noreferrer" download
                       className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-3 py-1.5 text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-100 dark:bg-rose-500/10 dark:text-rose-400 dark:hover:bg-rose-500/20">
                       <Download className="h-3.5 w-3.5" />下载封面
                     </a>
@@ -140,7 +176,8 @@ export function VideoHistory() {
                 </div>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

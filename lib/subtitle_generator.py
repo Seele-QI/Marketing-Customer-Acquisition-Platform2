@@ -32,12 +32,27 @@ ASS_FONT_SIZE = 43
 ASS_MARGIN_V_RATIO = 0.22
 ASS_OUTLINE = 2
 ASS_SHADOW = 0
+ASS_PRIMARY_COLOUR = "&H00FFFFFF"
+ASS_BOLD = 0
 
 _SENTENCE_END = {"。", "？", "！", "……", "…", ".", "?", "!"}
 _CLAUSE_MARKERS = {"，", "、", "：", "；", ",", ":", ";"}
 
 
 # ── 句子格式化工具 ────────────────────────────────────────────────
+
+def max_chars_for_video_width(
+    video_width: int,
+    font_size: int,
+    margin_l: int = 10,
+    margin_r: int = 10,
+) -> int:
+    """按视频宽度与字号估算每行最大字符数（中文等宽近似）。"""
+    if font_size <= 0:
+        return MAX_CHARS_PER_LINE
+    usable = max(video_width - margin_l - margin_r, font_size)
+    return max(1, usable // font_size)
+
 
 def _auto_wrap_subtitle(text: str, max_chars: int = MAX_CHARS_PER_LINE) -> str:
     """长句子自动换行。优先在标点处换行，否则硬切。"""
@@ -197,9 +212,16 @@ def generate_ass(
     video_height: int = 1920,
     font_name: str = ASS_FONT_NAME,
     font_size: int = ASS_FONT_SIZE,
+    *,
+    bold: int = ASS_BOLD,
+    primary_colour: str = ASS_PRIMARY_COLOUR,
+    outline: int = ASS_OUTLINE,
+    margin_v_ratio: float = ASS_MARGIN_V_RATIO,
+    max_chars: int | None = None,
 ) -> str:
     """从句子时间轴生成 ASS 字幕文件（匹配项目现有风格）。返回输出路径"""
-    margin_v = int(video_height * ASS_MARGIN_V_RATIO) if video_height else 220
+    wrap_chars = max_chars if max_chars is not None else max_chars_for_video_width(video_width, font_size)
+    margin_v = int(video_height * margin_v_ratio) if video_height else 220
 
     header = [
         "[Script Info]",
@@ -216,9 +238,9 @@ def generate_ass(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,"
-        f"&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,"
-        f"{ASS_OUTLINE},{ASS_SHADOW},2,10,10,{margin_v},1",
+        f"Style: Default,{font_name},{font_size},{primary_colour},&H000000FF,"
+        f"&H00000000,&H00000000,{bold},0,0,0,100,100,0,0,1,"
+        f"{outline},{ASS_SHADOW},2,10,10,{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -228,7 +250,7 @@ def generate_ass(
     for sent in sentences:
         start_ass = _ms_to_ass_time(sent["start_ms"])
         end_ass = _ms_to_ass_time(sent["end_ms"])
-        text = _auto_wrap_subtitle(sent["text"])
+        text = _auto_wrap_subtitle(sent["text"], wrap_chars)
         text = _escape_ass_text(text).replace("\n", "\\N")
         events.append(
             f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{text}"
@@ -250,6 +272,13 @@ def timed_sentences_to_subtitle(
     format: str = "ass",
     video_width: int = 1080,
     video_height: int = 1920,
+    font_name: str = ASS_FONT_NAME,
+    font_size: int = ASS_FONT_SIZE,
+    bold: int = ASS_BOLD,
+    primary_colour: str = ASS_PRIMARY_COLOUR,
+    outline: int = ASS_OUTLINE,
+    margin_v_ratio: float = ASS_MARGIN_V_RATIO,
+    max_chars: int | None = None,
 ) -> str:
     """
     一站式：FlashRecognizer 句子 → 字幕文件（推荐路径）。
@@ -273,7 +302,19 @@ def timed_sentences_to_subtitle(
     output_path = os.path.join(output_dir, f"{filename_prefix}{ext}")
 
     if format == "ass":
-        return generate_ass(sentence_dicts, output_path, video_width, video_height)
+        return generate_ass(
+            sentence_dicts,
+            output_path,
+            video_width,
+            video_height,
+            font_name,
+            font_size,
+            bold=bold,
+            primary_colour=primary_colour,
+            outline=outline,
+            margin_v_ratio=margin_v_ratio,
+            max_chars=max_chars,
+        )
     else:
         return generate_srt(sentence_dicts, output_path)
 

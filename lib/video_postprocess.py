@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from lib.ffmpeg_runner import run_ffmpeg, run_ffprobe
+from lib.subtitle_generator import max_chars_for_video_width
 
 
 # ── 模板常量（单模板，未来扩展在此添加分支） ──────────────────────────────────────────
@@ -25,7 +26,14 @@ TEMPLATE_CONFIG = {
     "video_preset": "fast",
     "audio_codec": "aac",
     "threads": "4",
-    "subtitle_fontsize": 43,
+    "subtitle_fontsize": 80,
+    "subtitle_bold": 1,
+    "subtitle_fontname": "宋体",
+    "subtitle_primary_colour": "&H0000C8FF",
+    "subtitle_outline": 4,
+    "subtitle_scale_x": 100,
+    "subtitle_scale_y": 100,
+    "subtitle_margin_v_ratio": 0.22,
     "card_fontsize": 17,
     "card_line_height": 21,
     "card_padding": 20,
@@ -254,7 +262,15 @@ def build_ass_subtitles(script: str, output_path: str, duration: float, width: i
     timeline = create_timeline_by_chars(script, duration)
     if not timeline:
         raise ValueError("脚本内容为空，无法生成字幕时间轴")
-    margin_v = int(height * 0.22) if height else 220
+    cfg = TEMPLATE_CONFIG
+    margin_v = int(height * cfg["subtitle_margin_v_ratio"]) if height else 220
+    wrap_max_chars = max_chars_for_video_width(width, cfg["subtitle_fontsize"])
+    style_line = (
+        f"Style: Default,{cfg['subtitle_fontname']},{cfg['subtitle_fontsize']},"
+        f"{cfg['subtitle_primary_colour']},&H000000FF,&H00000000,&H00000000,"
+        f"{cfg['subtitle_bold']},0,0,0,{cfg['subtitle_scale_x']},{cfg['subtitle_scale_y']},0,0,1,"
+        f"{cfg['subtitle_outline']},0,2,10,10,{margin_v},1"
+    )
     ass = [
         "[Script Info]",
         "Title: Generated Subtitle",
@@ -267,13 +283,13 @@ def build_ass_subtitles(script: str, output_path: str, duration: float, width: i
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,宋体,43,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,{margin_v},1",
+        style_line,
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for row in timeline:
-        text = _escape_ass_text(_auto_wrap(str(row["text"])))
+        text = _escape_ass_text(_auto_wrap(str(row["text"]), wrap_max_chars))
         ass.append(f"Dialogue: 0,{_format_time(float(row['start']))},{_format_time(float(row['end']))},Default,,0,0,0,,{text}")
     Path(output_path).write_text("\n".join(ass), encoding="utf-8-sig")
 

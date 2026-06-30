@@ -273,6 +273,7 @@ def mashup_video_render(
     transition_dur: float = TRANSITION_DUR,
     attempt: int = 0,
     max_retry: int = 2,
+    subtitle_file_path: str = "",
 ) -> PostProcessResult:
     """
     视频混剪端到端渲染入口。
@@ -307,9 +308,15 @@ def mashup_video_render(
     except ValueError as e:
         return PostProcessResult(False, "failed", error=str(e))
 
-    # 4. 生成 ASS 字幕
-    ass_path = os.path.join(output_dir, f"{task_id}.ass")
-    build_ass_subtitles(script, ass_path, voice_duration, width, height)
+    # 4. 生成 ASS 字幕（优先使用预生成 ASR 字幕）
+    generated_ass_path = os.path.join(output_dir, f"{task_id}.ass")
+    if subtitle_file_path and os.path.isfile(subtitle_file_path):
+        ass_path = subtitle_file_path
+        ass_is_generated = False
+    else:
+        ass_path = generated_ass_path
+        build_ass_subtitles(script, ass_path, voice_duration, width, height)
+        ass_is_generated = True
 
     # 5. 选取 BGM
     bgm_path = _pick_bgm(bgm_dir)
@@ -343,10 +350,11 @@ def mashup_video_render(
         return PostProcessResult(False, "failed", error="ffmpeg 执行超时（900s）")
 
     if res.returncode == 0 and os.path.exists(output_path):
-        try:
-            os.remove(ass_path)
-        except Exception:
-            pass
+        if ass_is_generated:
+            try:
+                os.remove(ass_path)
+            except Exception:
+                pass
         return PostProcessResult(True, "published", output_path)
 
     err = (res.stderr or "ffmpeg 视频混剪失败")[-3000:]
@@ -358,6 +366,7 @@ def mashup_video_render(
             script=script, voice_audio_path=voice_audio_path, bgm_dir=bgm_dir,
             bgm_volume=bgm_volume, width=width, height=height, fps=fps,
             transition_dur=transition_dur, attempt=attempt + 1, max_retry=max_retry,
+            subtitle_file_path=subtitle_file_path,
         )
 
     return PostProcessResult(False, "failed", error=err)

@@ -48,7 +48,7 @@
 ├── assets/                 # 静态资源
 │   └── bgm/                # 视频剪辑 BGM 素材库（mp3）
 ├── tools/ffmpeg/bin/       # 本地 ffmpeg / ffprobe（可选）
-├── docs/superpowers/       # 设计文档与实施计划
+├── docs/deploy/              # 部署与打包文档
 ├── .env / .env.local       # 运行时配置（git 忽略）
 ├── .env.example            # 配置模板（git 跟踪）
 └── CLAUDE.md               # 本文件
@@ -272,10 +272,6 @@
 | [scripts/dev-fix.mjs](scripts/dev-fix.mjs) | 开发环境修复 |
 | [scripts/init_credit_db.py](scripts/init_credit_db.py) | 初始化积分数据库表 |
 | [scripts/reconcile.py](scripts/reconcile.py) | 数据协调/修复工具 |
-| [scripts/fix-byte.py](scripts/fix-byte.py) | 编码修复（一次性工具） |
-| [scripts/fix-chars.py](scripts/fix-chars.py) | 字符修复（一次性工具） |
-| [scripts/fix-encoding.py](scripts/fix-encoding.py) | 编码修复（一次性工具） |
-| [scripts/fix-final.py](scripts/fix-final.py) | 最终修复（一次性工具） |
 
 #### 测试工具与 E2E
 
@@ -310,8 +306,6 @@
 | [public/placeholder-*](public/) | 占位图 |
 | [public/icon-*](public/) | 网站图标 |
 | [public/preview-images.html](public/preview-images.html) | 图片预览 HTML |
-| [tupian/](tupian/) | 中文命名的 Agent 头像（与 `public/agents/` 重复） |
-| [data/test.png](data/test.png) | 测试用图片 |
 | [build/icon.ico](build/icon.ico) | Windows 安装程序图标 |
 | [build/icon.png](build/icon.png) | 应用图标 |
 | [build/installer.nsh](build/installer.nsh) | NSIS 安装程序自定义脚本 |
@@ -321,12 +315,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| [dummy_work.py](dummy_work.py) | 测试/模拟工作占位脚本 |
-| [\_write_file.py](_write_file.py) | 小型文件写入辅助 |
 | [logger.js](logger.js) | JavaScript 日志工具 |
-| [安装启动.bat](安装启动.bat) | Windows 安装/启动批处理 |
-| [setup.ps1](setup.ps1) | Windows 安装 PowerShell 脚本 |
-| [deploy.sh](deploy.sh) | 部署脚本 |
 
 #### Claude Code Superpowers 插件（`superpowers-main/`）
 
@@ -641,8 +630,7 @@ TEMPLATE_CONFIG = {
 
 ## 桌面打包（Electron 33）
 
-> 详见 [docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md](docs/superpowers/specs/2026-06-24-electron-desktop-packaging-design.md) 和 [docs/superpowers/specs/2026-06-24-central-activation-design.md](docs/superpowers/specs/2026-06-24-central-activation-design.md)。
-> 实施计划见 [docs/superpowers/plans/2026-06-24-electron-desktop-packaging-implementation.md](docs/superpowers/plans/2026-06-24-electron-desktop-packaging-implementation.md)。
+> 详见 [docs/deploy/ELECTRON-BUILD.md](docs/deploy/ELECTRON-BUILD.md) 与 [docs/deploy/CENTRAL-ACTIVATION.md](docs/deploy/CENTRAL-ACTIVATION.md)。
 
 ### 形态
 
@@ -718,9 +706,9 @@ pnpm dist:win                           # 出 NSIS 安装包到 release/
 
 ## 关键文档与计划
 
-- [docs/superpowers/specs/](docs/superpowers/specs/) — 每次重大改动的设计文档
-- [docs/superpowers/plans/](docs/superpowers/plans/) — 实施计划（task-by-task）
-- [docs/superpowers/specs/2026-06-19-video-prompt-panel-design.md](docs/superpowers/specs/2026-06-19-video-prompt-panel-design.md) — 视频提示词面板设计
+- [docs/deploy/PAAS.md](docs/deploy/PAAS.md) — PaaS / Docker 部署
+- [docs/deploy/ELECTRON-BUILD.md](docs/deploy/ELECTRON-BUILD.md) — Electron 桌面打包
+- [docs/deploy/CENTRAL-ACTIVATION.md](docs/deploy/CENTRAL-ACTIVATION.md) — 中央激活服务
 
 ## 开发常用命令
 

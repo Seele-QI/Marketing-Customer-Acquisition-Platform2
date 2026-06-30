@@ -65,6 +65,7 @@ from lib.video_extract import (
     transcribe_audio_with_timestamps,
 )
 from lib.subtitle_generator import timed_sentences_to_subtitle
+from lib.subtitle_asr import build_asr_ass_from_audio
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +309,7 @@ STAGE_IV_UPLOADING_AUDIO = "iv_uploading_audio"
 STAGE_IV_SUBMITTING_CLONE = "iv_submitting_clone"
 STAGE_IV_WAITING_CLONE = "iv_waiting_clone"
 STAGE_IV_DOWNLOADING_CLONE = "iv_downloading_clone"
+STAGE_IV_ASR_SUBTITLE = "iv_asr_subtitle"
 STAGE_IV_RENDERING = "iv_rendering"
 STAGE_IV_COMPLETED = "iv_completed"
 STAGE_IV_FAILED = "iv_failed"
@@ -320,6 +322,7 @@ IV_STAGE_LABELS = {
     STAGE_IV_SUBMITTING_CLONE: "提交音频克隆",
     STAGE_IV_WAITING_CLONE: "等待配音生成",
     STAGE_IV_DOWNLOADING_CLONE: "下载克隆配音",
+    STAGE_IV_ASR_SUBTITLE: "ASR 字幕识别中",
     STAGE_IV_RENDERING: "ffmpeg 视频合成中",
     STAGE_IV_COMPLETED: "生成完成",
     STAGE_IV_FAILED: "生成失败",
@@ -333,6 +336,7 @@ STAGE_MV_UPLOADING_AUDIO = "mv_uploading_audio"
 STAGE_MV_SUBMITTING_CLONE = "mv_submitting_clone"
 STAGE_MV_WAITING_CLONE = "mv_waiting_clone"
 STAGE_MV_DOWNLOADING_CLONE = "mv_downloading_clone"
+STAGE_MV_ASR_SUBTITLE = "mv_asr_subtitle"
 STAGE_MV_RENDERING = "mv_rendering"
 STAGE_MV_COMPLETED = "mv_completed"
 STAGE_MV_FAILED = "mv_failed"
@@ -345,6 +349,7 @@ MV_STAGE_LABELS = {
     STAGE_MV_SUBMITTING_CLONE: "提交音频克隆",
     STAGE_MV_WAITING_CLONE: "等待配音生成",
     STAGE_MV_DOWNLOADING_CLONE: "下载克隆配音",
+    STAGE_MV_ASR_SUBTITLE: "ASR 字幕识别中",
     STAGE_MV_RENDERING: "ffmpeg 混剪合成中",
     STAGE_MV_COMPLETED: "混剪完成",
     STAGE_MV_FAILED: "混剪失败",
@@ -1772,6 +1777,20 @@ async def _run_iv_pipeline(task_id: str) -> None:
         await asyncio.to_thread(_validate_cloned_audio, voice_local_path)
         if _is_iv_cancelled(task_id):
             return
+        subtitle_file_path = ""
+        _set_iv_stage(task_id, STAGE_IV_ASR_SUBTITLE, progress=58)
+        try:
+            subtitle_file_path = await build_asr_ass_from_audio(
+                voice_local_path,
+                output_dir,
+                f"asr_{task_id}",
+                video_width=1080,
+                video_height=1440,
+            )
+        except Exception as asr_err:
+            logging.warning(f"[iv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
+        if _is_iv_cancelled(task_id):
+            return
         render_started = time.time()
         _set_iv_stage(task_id, STAGE_IV_RENDERING, progress=60)
         progress_task = asyncio.create_task(_tick_iv_render_progress(task_id, render_started))
@@ -1785,6 +1804,7 @@ async def _run_iv_pipeline(task_id: str) -> None:
                 voice_audio_path=voice_local_path,
                 bgm_dir=_resolve_bgm_dir(""),
                 bgm_volume=bgm_volume,
+                subtitle_file_path=subtitle_file_path,
             )
         finally:
             progress_task.cancel()
@@ -1847,6 +1867,20 @@ async def _run_mv_pipeline(task_id: str) -> None:
         await asyncio.to_thread(_validate_cloned_audio, voice_local_path)
         if _is_mv_cancelled(task_id):
             return
+        subtitle_file_path = ""
+        _set_mv_stage(task_id, STAGE_MV_ASR_SUBTITLE, progress=58)
+        try:
+            subtitle_file_path = await build_asr_ass_from_audio(
+                voice_local_path,
+                output_dir,
+                f"asr_{task_id}",
+                video_width=1080,
+                video_height=1440,
+            )
+        except Exception as asr_err:
+            logging.warning(f"[mv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
+        if _is_mv_cancelled(task_id):
+            return
         render_started = time.time()
         _set_mv_stage(task_id, STAGE_MV_RENDERING, progress=60)
         progress_task = asyncio.create_task(_tick_mv_render_progress(task_id, render_started))
@@ -1860,6 +1894,7 @@ async def _run_mv_pipeline(task_id: str) -> None:
                 voice_audio_path=voice_local_path,
                 bgm_dir=_resolve_bgm_dir(""),
                 bgm_volume=bgm_volume,
+                subtitle_file_path=subtitle_file_path,
             )
         finally:
             progress_task.cancel()

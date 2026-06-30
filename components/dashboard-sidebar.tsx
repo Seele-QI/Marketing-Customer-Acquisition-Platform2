@@ -15,10 +15,8 @@ import {
   Link,
   FileText,
   Bot,
-  MapPinned,
   Clapperboard,
   Clock,
-  Layers,
   Share2,
   TicketPercent,
   Image,
@@ -58,15 +56,13 @@ const mainNav: NavItem[] = [
       { label: "数字人口播", view: "视频创作", icon: Clapperboard, iconColor: "text-rose-500" },
       { label: "图文视频", icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", icon: Scissors, iconColor: "text-violet-500" },
-      { label: "批量混剪", icon: Layers, iconColor: "text-violet-500" },
       { label: "宣传视频", icon: Video, iconColor: "text-sky-500" },
       { label: "历史记录", icon: Clock, iconColor: "text-amber-500" },
     ],
   },
-  { label: "一键分发", icon: Share2, badge: "NEW", iconColor: "text-sky-500", iconBg: "bg-sky-500/10" },
+  { label: "一键分发", icon: Share2, badge: "开发中", iconColor: "text-sky-500", iconBg: "bg-sky-500/10" },
   { label: "充值兑换", icon: TicketPercent, iconColor: "text-amber-500", iconBg: "bg-amber-500/10" },
   { label: "智能体中心", icon: Bot, iconColor: "text-indigo-500", iconBg: "bg-indigo-500/10" },
-  { label: "规划路线", icon: MapPinned, iconColor: "text-orange-500", iconBg: "bg-orange-500/10" },
 ]
 
 const bottomNav: NavItem[] = [

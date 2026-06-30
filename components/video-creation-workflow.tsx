@@ -54,16 +54,15 @@ import {
   type WorkflowStepStatus as StepStatus,
 } from "@/lib/video-task-runtime"
 import { parseApiErrorResponse } from "@/lib/api/parse-detail"
-import { getFastapiBase } from "@/lib/fastapi-base"
+import { resolveMediaUrl, createImageThumbnail } from "@/lib/video/utils"
+import {
+  VideoWorkflowPage,
+  WorkflowHero,
+  WorkflowStepIndicator,
+  UploadZone,
+} from "@/components/video-workflow-shell"
 
 const VIDEO_FETCH: RequestInit = { credentials: "include" }
-
-/** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
-function resolveFastapiMediaUrl(url: string): string {
-  if (!url || url.startsWith("http") || url.startsWith("blob:")) return url
-  const base = getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
-  return `${base.replace(/\/$/, "")}${url.startsWith("/") ? url : `/${url}`}`
-}
 import { startAutoSubtitle, queryAutoSubtitleStatus } from "@/lib/video/api"
 import type { AutoSubtitleResponse } from "@/lib/video/api"
 import { getCoverUiState } from "@/lib/video-cover-ui"
@@ -161,115 +160,6 @@ function fileToBase64(file: File): Promise<string> {
 
 function normalizeCoverStatus(value: unknown): VideoTaskState["coverStatus"] {
   return value === "running" || value === "success" || value === "failed" ? value : "idle"
-}
-
-/* ------------------------------------------------------------------ */
-/*  Sub-components                                                     */
-/* ------------------------------------------------------------------ */
-
-function StepIndicator({ steps }: { steps: { id: StepId; label: string; status: StepStatus }[] }) {
-  return (
-    <div className="flex items-center gap-2">
-      {steps.map((step, i) => (
-        <React.Fragment key={step.id}>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold transition-all",
-                step.status === "done"
-                  ? "bg-emerald-500 text-white"
-                  : step.status === "loading"
-                    ? "bg-rose-500 text-white"
-                    : step.status === "active"
-                      ? "bg-rose-100 text-rose-600 ring-2 ring-rose-500/30 dark:bg-rose-500/20 dark:text-rose-400"
-                      : "bg-slate-100 text-slate-400 dark:bg-white/5",
-              )}
-            >
-              {step.status === "loading" ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : step.status === "done" ? (
-                <CheckCircle2 className="h-3.5 w-3.5" />
-              ) : (
-                step.id
-              )}
-            </span>
-            <span
-              className={cn(
-                "text-[12px] font-medium",
-                step.status === "active" ? "text-rose-600 dark:text-rose-400" : "text-slate-500",
-              )}
-            >
-              {step.label}
-            </span>
-          </div>
-          {i < steps.length - 1 && (
-            <div
-              className={cn(
-                "h-px w-6",
-                step.status === "done" ? "bg-emerald-300" : "bg-slate-200 dark:bg-white/10",
-              )}
-            />
-          )}
-        </React.Fragment>
-      ))}
-    </div>
-  )
-}
-
-function UploadZone({
-  accept,
-  label,
-  icon: Icon,
-  hint,
-  disabled,
-  onFile,
-}: {
-  accept: string
-  label: string
-  icon: React.ComponentType<{ className?: string }>
-  hint: string
-  disabled?: boolean
-  onFile: (file: File) => void
-}) {
-  const inputRef = React.useRef<HTMLInputElement>(null)
-  const [dragOver, setDragOver] = React.useState(false)
-
-  return (
-    <div
-      className={cn(
-        "relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-6 transition-all",
-        dragOver
-          ? "border-rose-400 bg-rose-50/50 dark:border-rose-500/40 dark:bg-rose-500/5"
-          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20",
-        disabled && "pointer-events-none opacity-40",
-      )}
-      onClick={() => inputRef.current?.click()}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragOver(false)
-        const f = e.dataTransfer.files[0]
-        if (f) onFile(f)
-      }}
-    >
-      <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-500/10">
-        <Icon className="h-5 w-5 text-rose-400" />
-      </span>
-      <p className="text-[13px] font-medium text-slate-700 dark:text-slate-300">{label}</p>
-      <p className="text-[11px] text-slate-400">{hint}</p>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) onFile(f)
-        }}
-      />
-    </div>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -563,6 +453,8 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   }, [setVideoUrl, toast, updateTask])
 
   const imagePreviewSrc = image?.previewUrl || taskState.imagePreview
+  const imagePreviewRef = React.useRef(imagePreviewSrc)
+  imagePreviewRef.current = imagePreviewSrc
   const editableVideoUrl = videoUrl || manualVideoPreview
   React.useEffect(() => { updateTask({ businessCardText }) }, [businessCardText, updateTask])
   const cardInfo: CardInfo = React.useMemo(() => ({
@@ -692,6 +584,36 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
   }, [])
 
+  const persistDigitalHumanHistory = React.useCallback(
+    (record: {
+      id: string
+      createdAt: number
+      script: string
+      videoUrl: string
+      coverUrl: string
+      gender: "male" | "female"
+      status: "success" | "failed"
+      errorMessage?: string
+    }) => {
+      void (async () => {
+        let coverThumbnail: string | undefined
+        if (!record.coverUrl && imagePreviewRef.current) {
+          try {
+            coverThumbnail = await createImageThumbnail(imagePreviewRef.current)
+          } catch {
+            /* ignore thumbnail errors */
+          }
+        }
+        addHistoryRecord({
+          ...record,
+          source: "digital-human",
+          coverThumbnail,
+        })
+      })()
+    },
+    [],
+  )
+
   const failTask = React.useCallback((message: string, options?: { taskId?: string; recordHistory?: boolean }) => {
     stopBackgroundPoll()
     stopEditPoll()
@@ -706,7 +628,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       resumeGraceUntil: 0,
     })
     if (options?.recordHistory && failedTaskId) {
-      addHistoryRecord({
+      persistDigitalHumanHistory({
         id: failedTaskId,
         createdAt: Date.now(),
         script: scriptRef.current.trim(),
@@ -717,7 +639,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         errorMessage: message,
       })
     }
-  }, [stopBackgroundPoll, updateTask])
+  }, [stopBackgroundPoll, stopEditPoll, stopAutoSubtitlePoll, updateTask, persistDigitalHumanHistory])
 
   const handleStopGeneration = React.useCallback(async () => {
     const snapshot = taskStateRef.current
@@ -887,7 +809,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
                 stageProgress: nextStageProgress,
                 lastStatusAt: now,
               })
-              addHistoryRecord({
+              persistDigitalHumanHistory({
                 id: tid, createdAt: Date.now(), script: scriptRef.current.trim(),
                 videoUrl: postUrl || vUrl, coverUrl: cUrl, gender: genderRef.current, status: "success",
               })
@@ -919,6 +841,15 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
                 stageProgress: nextStageProgress,
                 lastStatusAt: now,
               })
+              persistDigitalHumanHistory({
+                id: tid,
+                createdAt: Date.now(),
+                script: scriptRef.current.trim(),
+                videoUrl: postUrl || vUrl,
+                coverUrl: "",
+                gender: genderRef.current,
+                status: "success",
+              })
               return
             }
 
@@ -945,6 +876,15 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
                   progress: 100,
                   stageProgress: nextStageProgress,
                   lastStatusAt: now,
+                })
+                persistDigitalHumanHistory({
+                  id: tid,
+                  createdAt: Date.now(),
+                  script: scriptRef.current.trim(),
+                  videoUrl: vUrl,
+                  coverUrl: "",
+                  gender: genderRef.current,
+                  status: "success",
                 })
               } else {
                 updateTask({
@@ -1262,7 +1202,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           scheduleNext = false
           stopEditPoll()
           const completedStageProgress = { ...taskStateRef.current.stageProgress, editing: 100 }
-          const finalUrl = resolveFastapiMediaUrl(statusData.output_video_url)
+          const finalUrl = resolveMediaUrl(statusData.output_video_url)
             setVideoUrl(finalUrl)
             updateTask({
               currentStage: "done",
@@ -1499,28 +1439,19 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
   ]
 
   return (
-    <div className="h-full overflow-y-auto bg-[#fafaf8] dark:bg-slate-950">
-      <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8 sm:py-10">
+    <VideoWorkflowPage>
+        <WorkflowHero
+          accentColor="rose"
+          title="AI"
+          accentWord="数字人口播"
+          description="上传形象照片与参考音色，输入口播文案，AI 自动完成音色克隆、数字人口播生成与智能剪辑"
+        />
 
-        {/* ================================================================ */}
-        {/*  Hero                                                             */}
-        {/* ================================================================ */}
-        <header className="mb-8">
-          <div className="mb-4 h-1 w-12 rounded-full bg-rose-500/60" />
-          <h1 className="text-[28px] font-bold leading-tight tracking-tight text-slate-900 sm:text-[34px] dark:text-slate-50">
-            AI
-            <span className="text-rose-500 dark:text-rose-400"> 数字人口播</span>
-          </h1>
-          <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
-            上传形象照片与参考音色，输入口播文案，AI 自动完成音色克隆、数字人口播生成与智能剪辑
-          </p>
-        </header>
-
-        {/* ================================================================ */}
-        {/*  Step Indicator                                                   */}
-        {/* ================================================================ */}
         <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-          <StepIndicator steps={steps} />
+          <WorkflowStepIndicator
+            accentColor="rose"
+            steps={steps}
+          />
           {taskId && (
             <span className="text-[11px] text-slate-400">
               任务 ID：{taskId}
@@ -2293,7 +2224,6 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
           </section>
         )}
 
-      </div>
-    </div>
+    </VideoWorkflowPage>
   )
 }

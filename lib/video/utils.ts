@@ -30,6 +30,90 @@ export function isHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url)
 }
 
+/** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
+export function resolveMediaUrl(url: string): string {
+  if (!url || url.startsWith("http") || url.startsWith("blob:") || url.startsWith("data:")) return url
+  const base = getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
+  return `${base.replace(/\/$/, "")}${url.startsWith("/") ? url : `/${url}`}`
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error("failed to load image"))
+    img.src = src
+  })
+}
+
+function drawToJpegThumbnail(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  maxEdge: number,
+): string {
+  const scale = Math.min(maxEdge / width, maxEdge / height, 1)
+  const w = Math.max(1, Math.round(width * scale))
+  const h = Math.max(1, Math.round(height * scale))
+  const canvas = document.createElement("canvas")
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext("2d")
+  if (!ctx) throw new Error("canvas context unavailable")
+  ctx.drawImage(source, 0, 0, w, h)
+  return canvas.toDataURL("image/jpeg", 0.75)
+}
+
+/** Canvas 压缩为 JPEG data URL，控制 localStorage 体积 */
+export function createImageThumbnail(dataUrlOrBase64: string, maxEdge = 240): Promise<string> {
+  const src = dataUrlOrBase64.startsWith("data:")
+    ? dataUrlOrBase64
+    : `data:image/jpeg;base64,${dataUrlOrBase64}`
+  return loadImageElement(src).then((img) =>
+    drawToJpegThumbnail(img, img.naturalWidth, img.naturalHeight, maxEdge),
+  )
+}
+
+/** 从视频首帧截图为 JPEG data URL */
+export function createVideoThumbnail(file: File, maxEdge = 240): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video")
+    video.muted = true
+    video.playsInline = true
+    const objectUrl = URL.createObjectURL(file)
+
+    const cleanup = () => URL.revokeObjectURL(objectUrl)
+
+    video.onloadeddata = () => {
+      video.currentTime = 0
+    }
+
+    video.onseeked = () => {
+      try {
+        const { videoWidth, videoHeight } = video
+        if (!videoWidth || !videoHeight) {
+          cleanup()
+          reject(new Error("invalid video dimensions"))
+          return
+        }
+        const dataUrl = drawToJpegThumbnail(video, videoWidth, videoHeight, maxEdge)
+        cleanup()
+        resolve(dataUrl)
+      } catch (err) {
+        cleanup()
+        reject(err)
+      }
+    }
+
+    video.onerror = () => {
+      cleanup()
+      reject(new Error("failed to load video"))
+    }
+
+    video.src = objectUrl
+  })
+}
+
 /* ------------------------------------------------------------------ */
 /*  排列组合（批量混剪用）                                                */
 /* ------------------------------------------------------------------ */

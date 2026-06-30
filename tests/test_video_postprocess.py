@@ -15,6 +15,7 @@ import lib.video_postprocess as video_postprocess  # noqa: E402
 from lib.auth import CurrentUser  # noqa: E402
 from lib.video_postprocess import (  # noqa: E402
     _clean_subtitle_text,
+    build_ass_subtitles,
     burn_subtitle_ffmpeg,
     create_timeline_by_chars,
     resolve_target_duration,
@@ -225,6 +226,19 @@ def test_auto_wrap_prefers_punctuation_then_hardcut():
     # 折行后每段长度不超过 24 字
     for part in wrapped.split("\\N"):
         assert len(part) <= 24
+
+
+def test_build_ass_subtitles_uses_template_config_style(tmp_path):
+    ass_path = tmp_path / "demo.ass"
+    build_ass_subtitles("第一句。\n第二句。", str(ass_path), 10.0, 576, 1024)
+    content = ass_path.read_text(encoding="utf-8-sig")
+    style_lines = [line for line in content.splitlines() if line.startswith("Style: Default,")]
+    assert len(style_lines) == 1
+    parts = style_lines[0].split(",")
+    assert parts[2] == "80"
+    assert parts[7] == "1"
+    assert "&H0000C8FF" in content
+    assert ",43,&H00FFFFFF" not in content
 
 
 def test_timeline_total_duration_matches_target():

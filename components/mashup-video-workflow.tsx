@@ -13,10 +13,18 @@ import {
   Shuffle,
   Video,
   Clock,
+  FileText,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
+import { addHistoryRecord } from "@/components/video-history"
+import {
+  VideoWorkflowPage,
+  WorkflowHero,
+  WorkflowStepIndicator,
+  UploadZone,
+  buildClipSteps,
+} from "@/components/video-workflow-shell"
 import { submitMashup, queryMashupStatus, cancelMashup } from "@/lib/video/api"
 import {
   CLIP_POLL_INTERVAL_MS,
@@ -27,7 +35,7 @@ import {
   isClipSuccess,
   isClipTerminal,
 } from "@/lib/mashup-video-task-runtime"
-import { fileToBase64 } from "@/lib/video/utils"
+import { fileToBase64, createVideoThumbnail, resolveMediaUrl } from "@/lib/video/utils"
 import type { MashupVideoResponse } from "@/lib/video/types"
 
 /* ================================================================== */
@@ -96,49 +104,33 @@ function uid(): string {
   return `vid_${Date.now()}_${++_idCounter}`
 }
 
-/* ================================================================== */
-/*  Step Indicator                                                     */
-/* ================================================================== */
-
-const STEPS: { id: StepId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 1, label: "素材准备", icon: Video },
-  { id: 2, label: "配音生成", icon: Mic },
-  { id: 3, label: "混剪合成", icon: Play },
-]
-
-function StepIndicator({ current }: { current: StepId }) {
-  return (
-    <div className="flex items-center justify-center gap-2 mb-8">
-      {STEPS.map((step, i) => {
-        const isDone = step.id < current
-        const isActive = step.id === current
-        const Icon = step.icon
-        return (
-          <React.Fragment key={step.id}>
-            <div
-              className={cn(
-                "flex items-center gap-2 rounded-full px-4 py-1.5 text-[13px] font-medium transition-colors",
-                isDone && "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
-                isActive && "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400",
-                !isDone && !isActive && "bg-slate-100 text-slate-400 dark:bg-white/5 dark:text-slate-500",
-              )}
-            >
-              {isDone ? <CheckCircle2 className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
-              <span className="hidden sm:inline">{step.label}</span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <div
-                className={cn(
-                  "h-px w-8",
-                  step.id < current ? "bg-emerald-300 dark:bg-emerald-600" : "bg-slate-200 dark:bg-white/10",
-                )}
-              />
-            )}
-          </React.Fragment>
-        )
-      })}
-    </div>
-  )
+async function recordMashupHistory(
+  taskId: string,
+  script: string,
+  videoUrl: string,
+  status: "success" | "failed",
+  firstVideoFile: File | undefined,
+  errorMessage?: string,
+) {
+  let coverThumbnail: string | undefined
+  if (firstVideoFile) {
+    try {
+      coverThumbnail = await createVideoThumbnail(firstVideoFile)
+    } catch {
+      /* ignore */
+    }
+  }
+  addHistoryRecord({
+    id: taskId,
+    createdAt: Date.now(),
+    script: script.trim(),
+    videoUrl: videoUrl || "",
+    coverUrl: "",
+    coverThumbnail,
+    source: "mashup",
+    status,
+    errorMessage,
+  })
 }
 
 /* ================================================================== */
@@ -165,7 +157,6 @@ function StepMaterialPrep({
   isProcessing: boolean
 }) {
   const videoInputRef = React.useRef<HTMLInputElement>(null)
-  const audioInputRef = React.useRef<HTMLInputElement>(null)
 
   const handleAddVideos = async (files: FileList | null) => {
     if (!files) return
@@ -209,188 +200,109 @@ function StepMaterialPrep({
   const canSubmit = videos.length >= MIN_VIDEOS && script.trim().length > 0 && audioSample !== null && !isProcessing
 
   return (
-    <div className="space-y-8">
-      {/* --- 视频素材上传 --- */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-            🎬 上传视频素材 <span className="text-violet-500">*</span>
-            <span className="ml-2 text-[12px] font-normal text-slate-400">
-              至少 {MIN_VIDEOS} 段（已选 {videos.length} 段）
-            </span>
-          </h3>
-          <div className="flex gap-2">
-            <button
-              onClick={shuffleVideos}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-              title="随机打乱顺序"
-            >
-              <Shuffle className="h-3 w-3" />
-              打乱
-            </button>
-            <button
-              onClick={() => videoInputRef.current?.click()}
-              className="inline-flex items-center gap-1 rounded-lg bg-violet-50 px-3 py-1.5 text-[12px] font-medium text-violet-600 hover:bg-violet-100 dark:bg-violet-500/10 dark:text-violet-400"
-            >
-              <Upload className="h-3.5 w-3.5" />
-              添加视频
-            </button>
-          </div>
-          <input
-            ref={videoInputRef}
-            type="file"
-            accept={ACCEPTED_VIDEO}
-            multiple
-            className="hidden"
-            onChange={(e) => handleAddVideos(e.target.files)}
-          />
-        </div>
+    <section className="space-y-5">
+      <div className="flex items-center gap-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-[11px] font-bold text-violet-600 dark:bg-violet-500/20 dark:text-violet-400">1</span>
+        <h2 className="text-[16px] font-semibold text-slate-800 dark:text-slate-200">素材准备</h2>
+      </div>
 
-        {videos.length === 0 ? (
-          <div
-            className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-10 transition-all hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20"
-            onClick={() => videoInputRef.current?.click()}
-          >
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-500/10">
-              <Video className="h-6 w-6 text-violet-400" />
-            </span>
-            <p className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
-              点击或拖拽上传视频素材（支持 MP4 / MOV / WebM）
-            </p>
-            <p className="text-[11px] text-slate-400">每段不超过 100MB，时长 2~30 秒，至少 {MIN_VIDEOS} 段</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {videos.map((vid, idx) => (
-              <div
-                key={vid.id}
-                className="group flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-white/5"
-              >
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-[12px] font-bold text-violet-500 dark:bg-violet-500/10">
-                  {idx + 1}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                上传视频素材 <span className="text-violet-500">*</span>
+                <span className="ml-2 text-[12px] font-normal text-slate-400">
+                  至少 {MIN_VIDEOS} 段（已选 {videos.length} 段）
                 </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                    {vid.name}
-                  </p>
-                  <p className="flex items-center gap-1 text-[11px] text-slate-400">
-                    <Clock className="h-3 w-3" />
-                    {vid.duration > 0 ? `${vid.duration.toFixed(1)} 秒` : "时长未知"}
-                    {vid.duration > 5 && (
-                      <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] text-amber-600 dark:bg-amber-500/10">
-                        将自动分段（≤5s）
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <button
-                  onClick={() => removeVideo(vid.id)}
-                  className="rounded-lg p-1 text-slate-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
-                >
-                  <X className="h-4 w-4" />
+              </p>
+              <div className="flex gap-2">
+                <button type="button" onClick={shuffleVideos} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5">
+                  <Shuffle className="h-3 w-3" />打乱
+                </button>
+                <button type="button" onClick={() => videoInputRef.current?.click()} className="inline-flex items-center gap-1 rounded-lg bg-violet-50 px-3 py-1.5 text-[12px] font-medium text-violet-600 hover:bg-violet-100 dark:bg-violet-500/10 dark:text-violet-400">
+                  <Upload className="h-3.5 w-3.5" />添加视频
                 </button>
               </div>
-            ))}
-            <button
-              onClick={() => videoInputRef.current?.click()}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 py-3 text-[13px] text-slate-400 transition-colors hover:border-violet-300 hover:text-violet-400 dark:border-white/15 dark:hover:border-violet-500/30"
-            >
-              <Upload className="h-4 w-4" />
-              添加更多视频
-            </button>
+              <input ref={videoInputRef} type="file" accept={ACCEPTED_VIDEO} multiple className="hidden" onChange={(e) => handleAddVideos(e.target.files)} />
+            </div>
+
+            {videos.length === 0 ? (
+              <div className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-10 transition-all hover:border-slate-300 dark:border-white/10 dark:bg-white/5" onClick={() => videoInputRef.current?.click()}>
+                <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-500/10">
+                  <Video className="h-6 w-6 text-violet-400" />
+                </span>
+                <p className="text-[13px] font-medium text-slate-600 dark:text-slate-400">点击上传视频（MP4 / MOV / WebM）</p>
+                <p className="text-[11px] text-slate-400">每段不超过 100MB，至少 {MIN_VIDEOS} 段</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {videos.map((vid, idx) => (
+                  <div key={vid.id} className="group flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 dark:border-white/10 dark:bg-white/5">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-[12px] font-bold text-violet-500 dark:bg-violet-500/10">{idx + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-medium text-slate-700 dark:text-slate-300">{vid.name}</p>
+                      <p className="flex items-center gap-1 text-[11px] text-slate-400">
+                        <Clock className="h-3 w-3" />
+                        {vid.duration > 0 ? `${vid.duration.toFixed(1)} 秒` : "时长未知"}
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => removeVideo(vid.id)} className="rounded-lg p-1 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-red-500">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => videoInputRef.current?.click()} className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 py-3 text-[13px] text-slate-400 hover:border-violet-300 hover:text-violet-400">
+                  <Upload className="h-4 w-4" />添加更多视频
+                </button>
+              </div>
+            )}
           </div>
-        )}
-      </section>
 
-      {/* --- 文案输入 --- */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">
-          📝 文案内容 <span className="text-violet-500">*</span>
-          <span className="ml-2 text-[12px] font-normal text-slate-400">
-            {script.length} 字（按 。！？换行断句）
-          </span>
-        </h3>
-        <textarea
-          value={script}
-          onChange={(e) => onScriptChange(e.target.value)}
-          placeholder="在此输入文案全文，系统将自动按句号、感叹号、问号、换行进行断句。每句话将匹配一个或多个视频片段。"
-          rows={8}
-          className="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-[14px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:placeholder:text-slate-500 dark:focus:border-violet-500/30 dark:focus:ring-violet-500/10"
-        />
-      </section>
+          <div>
+            <p className="mb-3 text-[13px] font-medium text-slate-700 dark:text-slate-300">
+              上传参考音色 <span className="text-violet-500">*</span>
+            </p>
+            {audioSample ? (
+              <div className="flex items-center gap-3 rounded-2xl border border-slate-200/60 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-500/10">
+                  <Mic className="h-5 w-5 text-violet-400" />
+                </span>
+                <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-slate-700 dark:text-slate-300">{audioSample.name}</p>
+                <button type="button" onClick={() => onAudioChange(null)} className="rounded-lg bg-slate-100 px-3 py-1 text-[11px] text-slate-500">更换</button>
+              </div>
+            ) : (
+              <UploadZone accentColor="violet" accept={ACCEPTED_AUDIO} label="上传参考音色" icon={Mic} hint="MP3 / WAV / M4A" onFile={(f) => { void handleAudioFile(f) }} />
+            )}
+          </div>
+        </div>
 
-      {/* --- 音色样本 --- */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">
-          🎙️ 上传个人音色 <span className="text-violet-500">*</span>
-          <span className="ml-2 text-[12px] font-normal text-slate-400">
-            10~30 秒录音，支持 MP3 / WAV / M4A
-          </span>
-        </h3>
-        {audioSample ? (
-          <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
-            <Mic className="h-5 w-5 text-emerald-500" />
-            <span className="flex-1 text-[13px] font-medium text-slate-700 dark:text-slate-300">
-              {audioSample.name}
+        <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/60 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-500/10">
+              <FileText className="h-4 w-4 text-violet-400" />
             </span>
-            <button
-              onClick={() => {
-                onAudioChange(null)
-                if (audioInputRef.current) audioInputRef.current.value = ""
-              }}
-              className="rounded-lg p-1 text-slate-400 hover:bg-red-50 hover:text-red-500"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">口播文案</span>
+            <span className="ml-auto text-[11px] text-slate-400">{script.length} 字</span>
           </div>
-        ) : (
-          <div
-            className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 transition-all hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20"
-            onClick={() => audioInputRef.current?.click()}
-          >
-            <Mic className="h-8 w-8 text-slate-300 dark:text-slate-600" />
-            <p className="text-[13px] text-slate-500 dark:text-slate-400">点击上传音色样本</p>
-          </div>
-        )}
-        <input
-          ref={audioInputRef}
-          type="file"
-          accept={ACCEPTED_AUDIO}
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) handleAudioFile(f)
-          }}
-        />
-      </section>
-
-      {/* --- 提交 --- */}
-      <div className="flex justify-center pt-4">
-        <Button
-          size="lg"
-          disabled={!canSubmit}
-          onClick={onSubmit}
-          className="min-w-[240px] rounded-full bg-violet-600 hover:bg-violet-700"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              处理中...
-            </>
-          ) : (
-            <>
-              <Play className="mr-2 h-4 w-4" />
-              一键混剪视频
-            </>
-          )}
-        </Button>
+          <textarea
+            value={script}
+            onChange={(e) => onScriptChange(e.target.value)}
+            placeholder="输入文案全文，系统将按句号、感叹号、问号与换行自动断句…"
+            className="min-h-[280px] flex-1 resize-none rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 text-[13px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-500/15 dark:border-white/5 dark:bg-white/5 dark:text-slate-200"
+          />
+        </div>
       </div>
-      {videos.length > 0 && videos.length < MIN_VIDEOS && (
-        <p className="text-center text-[12px] text-amber-500">
-          还需上传至少 {MIN_VIDEOS - videos.length} 段视频素材
-        </p>
-      )}
-    </div>
+
+      <div className="flex flex-col items-center gap-2 pt-2">
+        <Button size="lg" disabled={!canSubmit} onClick={onSubmit} className="min-w-[240px] rounded-full bg-violet-600 hover:bg-violet-700">
+          {isProcessing ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />处理中...</>) : (<><Play className="mr-2 h-4 w-4" />一键混剪视频</>)}
+        </Button>
+        {videos.length > 0 && videos.length < MIN_VIDEOS && (
+          <p className="text-[12px] text-amber-500">还需上传至少 {MIN_VIDEOS - videos.length} 段视频素材</p>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -443,6 +355,8 @@ function StepVideoResult({
     )
   }
 
+  const videoSrc = result?.video_url ? resolveMediaUrl(result.video_url) : ""
+
   if (!result?.video_url) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
@@ -467,15 +381,11 @@ function StepVideoResult({
         混剪完成
       </h3>
       <div className="mb-6 w-full max-w-sm overflow-hidden rounded-2xl bg-black">
-        <video
-          src={result.video_url}
-          controls
-          className="w-full"
-        >
+        <video src={videoSrc} controls className="w-full">
           您的浏览器不支持视频播放
         </video>
       </div>
-      <a href={result.video_url} download={`video-${result.task_id || "mashup"}.mp4`} target="_blank" rel="noopener noreferrer">
+      <a href={videoSrc} download={`video-${result.task_id || "mashup"}.mp4`} target="_blank" rel="noopener noreferrer">
         <Button variant="outline" size="lg" className="rounded-full">
           <Download className="mr-2 h-4 w-4" />
           下载视频
@@ -578,6 +488,7 @@ export function MashupVideoWorkflow() {
           const stageLabel = status.stage_label || status.stage || ""
 
           if (isClipTerminal(status)) {
+            const firstVideoFile = videos[0]?.file
             if (isClipSuccess(status) && status.video_url) {
               const result: MashupVideoResponse = {
                 task_id: taskId,
@@ -594,6 +505,7 @@ export function MashupVideoWorkflow() {
                 stageLabel,
                 progress: status.progress ?? 100,
               }))
+              void recordMashupHistory(taskId, script.trim(), status.video_url, "success", firstVideoFile)
               toast({ title: "视频混剪生成成功！" })
             } else {
               const err = status.error || "混剪失败"
@@ -606,6 +518,7 @@ export function MashupVideoWorkflow() {
                 stageLabel,
                 progress: status.progress ?? 0,
               }))
+              void recordMashupHistory(taskId, script.trim(), "", "failed", firstVideoFile, err)
               toast({ title: "混剪失败", description: err, variant: "destructive" })
             }
             return
@@ -665,18 +578,25 @@ export function MashupVideoWorkflow() {
     })
   }
 
-  return (
-    <div className="mx-auto max-w-3xl px-4 py-8">
-      <div className="mb-8 text-center">
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-          🎬 视频混剪
-        </h2>
-        <p className="mt-2 text-[14px] text-slate-500 dark:text-slate-400">
-          上传多段视频素材 + 文案 + 音色 → AI 生成配音 → ffmpeg 混剪合成带字幕和BGM的视频
-        </p>
-      </div>
+  const clipSteps = buildClipSteps(
+    state.currentStep,
+    state.isProcessing,
+    !!state.result?.video_url,
+    !!state.errorMessage,
+  )
 
-      <StepIndicator current={state.currentStep} />
+  return (
+    <VideoWorkflowPage>
+      <WorkflowHero
+        accentColor="violet"
+        title="AI"
+        accentWord="视频混剪"
+        description="上传多段视频素材、文案与参考音色，AI 生成配音后由 ffmpeg 混剪合成（字幕 + BGM + 转场）"
+      />
+
+      <div className="mb-6">
+        <WorkflowStepIndicator accentColor="violet" steps={clipSteps} />
+      </div>
 
       {state.currentStep === 1 && (
         <StepMaterialPrep
@@ -719,6 +639,6 @@ export function MashupVideoWorkflow() {
           )}
         </>
       )}
-    </div>
+    </VideoWorkflowPage>
   )
 }

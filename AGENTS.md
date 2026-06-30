@@ -28,7 +28,7 @@
 ├── assets/                 # 静态资源
 │   └── bgm/                # 视频剪辑 BGM 素材库（mp3）
 ├── tools/ffmpeg/bin/       # 本地 ffmpeg / ffprobe（可选）
-├── docs/superpowers/       # 设计文档与实施计划
+├── docs/deploy/              # 部署与打包文档
 ├── .env / .env.local       # 运行时配置（git 忽略）
 ├── .env.example            # 配置模板（git 跟踪）
 └── AGENTS.md               # 本文件
@@ -192,9 +192,9 @@ TEMPLATE_CONFIG = {
 
 ## 关键文档与计划
 
-- [docs/superpowers/specs/](docs/superpowers/specs/) — 每次重大改动的设计文档
-- [docs/superpowers/plans/](docs/superpowers/plans/) — 实施计划（task-by-task）
-- [docs/superpowers/specs/2026-06-19-video-prompt-panel-design.md](docs/superpowers/specs/2026-06-19-video-prompt-panel-design.md) — 视频提示词面板设计
+- [docs/deploy/PAAS.md](docs/deploy/PAAS.md) — PaaS / Docker 部署
+- [docs/deploy/ELECTRON-BUILD.md](docs/deploy/ELECTRON-BUILD.md) — Electron 桌面打包
+- [docs/deploy/CENTRAL-ACTIVATION.md](docs/deploy/CENTRAL-ACTIVATION.md) — 中央激活服务
 
 ## 开发常用命令
 

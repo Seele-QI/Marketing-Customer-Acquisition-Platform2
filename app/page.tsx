@@ -15,13 +15,11 @@ import { MashupVideoWorkflow } from "@/components/mashup-video-workflow"
 import { VideoHistory } from "@/components/video-history"
 import PromoVideoWorkflow from "@/components/promo-video-workflow"
 import { ShareDistribute } from "@/components/share-distribute"
-import { BatchEdit } from "@/components/batch-edit"
 import { AccountBinding } from "@/components/account-binding"
 import { AgentCenter } from "@/components/agent-center"
 import { AccountPositioning } from "@/components/account-positioning"
 import { SettingsView } from "@/components/settings-view"
 import { HelpCenterView } from "@/components/help-center-view"
-import { PlanRouteView } from "@/components/plan-route-view"
 import { CreditRechargeView } from "@/components/credit-recharge-view"
 import { AdminCreditView } from "@/components/admin-credit-view"
 import { BackToTop } from "@/components/back-to-top"
@@ -100,7 +98,6 @@ const videoSubMenus = [
   "视频创作",
   "图文视频",
   "视频混剪",
-  "批量混剪",
   "宣传视频",
   "历史记录",
 ] as const
@@ -125,8 +122,6 @@ function getBreadcrumb(view: MainView): { parent: string; current: string } {
       return { parent: "更多", current: "自动保存图片" }
     case "帮助中心":
       return { parent: "更多", current: "帮助中心" }
-    case "规划路线":
-      return { parent: "工作台", current: "规划路线" }
     case "充值兑换":
       return { parent: "积分系统", current: "充值兑换" }
     default:
@@ -186,11 +181,6 @@ function ContentArea({
   // 历史记录
   if (activeView === "历史记录") {
     return <VideoHistory />
-  }
-
-  // 批量混剪
-  if (activeView === "批量混剪") {
-    return <BatchEdit />
   }
 
   // 宣传视频
@@ -255,10 +245,6 @@ function ContentArea({
   // 身份定位 — account positioning
   if (activeView === "身份定位") {
     return <AccountPositioning />
-  }
-
-  if (activeView === "规划路线") {
-    return <PlanRouteView />
   }
 
   if (activeView === "自动保存图片") {

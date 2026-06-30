@@ -208,14 +208,6 @@ function buildItems(): GlobalSearchItem[] {
       action: { type: "goView", view: "智能体中心" },
     },
     {
-      id: "nav-plan-route",
-      kind: "导航",
-      title: "规划路线",
-      subtitle: "行程与路线规划",
-      searchBlob: "规划路线 路线 行程 地图 导航 出行",
-      action: { type: "goView", view: "规划路线" },
-    },
-    {
       id: "nav-copywriting",
       kind: "模板",
       title: "文案创作",

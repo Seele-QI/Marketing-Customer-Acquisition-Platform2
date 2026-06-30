@@ -52,13 +52,20 @@ export type ClipItem = {
 /*  创作历史记录（VideoHistory）                                          */
 /* ================================================================== */
 
+export type HistoryVideoSource = "digital-human" | "image-video" | "mashup"
+
 export type HistoryRecord = {
   id: string
   createdAt: number
   script: string
   videoUrl: string
   coverUrl: string
-  gender: VideoGender
+  /** 本地持久化缩略图（JPEG data URL，约 5–15KB），coverUrl 为空时用于卡片展示 */
+  coverThumbnail?: string
+  /** 仅数字人口播必填 */
+  gender?: VideoGender
+  /** 创作来源，用于标签展示；旧记录无此字段时 UI 默认当作 digital-human */
+  source?: HistoryVideoSource
   status: "success" | "failed"
   errorMessage?: string
 }

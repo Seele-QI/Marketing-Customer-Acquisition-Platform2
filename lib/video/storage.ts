@@ -1,7 +1,7 @@
 /**
  * 视频创作历史记录 + 共享视频库的 localStorage 存储
  *
- * 被 VideoHistory / VideoCreationWorkflow / BatchEdit / ShareDistribute 共用，
+ * 被 VideoHistory / VideoCreationWorkflow / ShareDistribute 及各视频工作流共用，
  * 集中管理可避免多个组件各自实现重复的读写逻辑。
  */
 import type { HistoryRecord, ShareVideo } from "./types"

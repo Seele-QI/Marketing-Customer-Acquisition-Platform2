@@ -12,12 +12,19 @@ import {
   Download,
   X,
   Upload,
-  GripVertical,
   Shuffle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
+import { addHistoryRecord } from "@/components/video-history"
+import {
+  VideoWorkflowPage,
+  WorkflowHero,
+  WorkflowStepIndicator,
+  UploadZone,
+  buildClipSteps,
+} from "@/components/video-workflow-shell"
 import { submitImageToVideo, queryImageToVideoStatus, cancelImageToVideo } from "@/lib/video/api"
 import {
   CLIP_POLL_INTERVAL_MS,
@@ -28,7 +35,7 @@ import {
   isClipSuccess,
   isClipTerminal,
 } from "@/lib/image-video-task-runtime"
-import { fileToBase64 } from "@/lib/video/utils"
+import { fileToBase64, createImageThumbnail, resolveMediaUrl } from "@/lib/video/utils"
 import type { ImageToVideoResponse } from "@/lib/video/types"
 
 /* ================================================================== */
@@ -83,49 +90,33 @@ function uid(): string {
   return `img_${Date.now()}_${++_idCounter}`
 }
 
-/* ================================================================== */
-/*  Step Indicator                                                     */
-/* ================================================================== */
-
-const STEPS: { id: StepId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 1, label: "素材准备", icon: ImageIcon },
-  { id: 2, label: "配音生成", icon: Mic },
-  { id: 3, label: "视频合成", icon: Play },
-]
-
-function StepIndicator({ current }: { current: StepId }) {
-  return (
-    <div className="flex items-center justify-center gap-2 mb-8">
-      {STEPS.map((step, i) => {
-        const isDone = step.id < current
-        const isActive = step.id === current
-        const Icon = step.icon
-        return (
-          <React.Fragment key={step.id}>
-            <div
-              className={cn(
-                "flex items-center gap-2 rounded-full px-4 py-1.5 text-[13px] font-medium transition-colors",
-                isDone && "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
-                isActive && "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400",
-                !isDone && !isActive && "bg-slate-100 text-slate-400 dark:bg-white/5 dark:text-slate-500",
-              )}
-            >
-              {isDone ? <CheckCircle2 className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
-              <span className="hidden sm:inline">{step.label}</span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <div
-                className={cn(
-                  "h-px w-8",
-                  step.id < current ? "bg-emerald-300 dark:bg-emerald-600" : "bg-slate-200 dark:bg-white/10",
-                )}
-              />
-            )}
-          </React.Fragment>
-        )
-      })}
-    </div>
-  )
+async function recordImageVideoHistory(
+  taskId: string,
+  script: string,
+  videoUrl: string,
+  status: "success" | "failed",
+  firstImagePreview: string | undefined,
+  errorMessage?: string,
+) {
+  let coverThumbnail: string | undefined
+  if (firstImagePreview) {
+    try {
+      coverThumbnail = await createImageThumbnail(firstImagePreview)
+    } catch {
+      /* ignore */
+    }
+  }
+  addHistoryRecord({
+    id: taskId,
+    createdAt: Date.now(),
+    script: script.trim(),
+    videoUrl: videoUrl || "",
+    coverUrl: "",
+    coverThumbnail,
+    source: "image-video",
+    status,
+    errorMessage,
+  })
 }
 
 /* ================================================================== */
@@ -152,7 +143,6 @@ function StepMaterialPrep({
   isProcessing: boolean
 }) {
   const imageInputRef = React.useRef<HTMLInputElement>(null)
-  const audioInputRef = React.useRef<HTMLInputElement>(null)
 
   const handleAddImages = async (files: FileList | null) => {
     if (!files) return
@@ -203,160 +193,155 @@ function StepMaterialPrep({
   const canSubmit = images.length >= MIN_IMAGES && script.trim().length > 0 && audioSample !== null && !isProcessing
 
   return (
-    <div className="space-y-8">
-      {/* --- 图片上传 --- */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-            📷 上传图片 <span className="text-rose-500">*</span>
-            <span className="ml-2 text-[12px] font-normal text-slate-400">
-              至少 {MIN_IMAGES} 张（已选 {images.length} 张）
-            </span>
-          </h3>
-          <div className="flex gap-2">
-            <button
-              onClick={shuffleImages}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-              title="随机打乱顺序"
-            >
-              <Shuffle className="h-3 w-3" />
-              打乱
-            </button>
-            <button
-              onClick={() => imageInputRef.current?.click()}
-              className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-3 py-1.5 text-[12px] font-medium text-rose-600 hover:bg-rose-100 dark:bg-rose-500/10 dark:text-rose-400"
-            >
-              <Upload className="h-3.5 w-3.5" />
-              添加图片
-            </button>
-          </div>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept={ACCEPTED_IMAGES}
-            multiple
-            className="hidden"
-            onChange={(e) => handleAddImages(e.target.files)}
-          />
-        </div>
+    <section className="space-y-5">
+      <div className="flex items-center gap-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-[11px] font-bold text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400">1</span>
+        <h2 className="text-[16px] font-semibold text-slate-800 dark:text-slate-200">素材准备</h2>
+      </div>
 
-        {images.length === 0 ? (
-          <div
-            className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-10 transition-all hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20"
-            onClick={() => imageInputRef.current?.click()}
-          >
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-500/10">
-              <ImageIcon className="h-6 w-6 text-rose-400" />
-            </span>
-            <p className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
-              点击或拖拽上传图片（支持 JPG / PNG / WebP）
-            </p>
-            <p className="text-[11px] text-slate-400">每张不超过 10MB，至少 {MIN_IMAGES} 张</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-            {images.map((img, idx) => (
-              <div
-                key={img.id}
-                className="group relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-white/10 dark:bg-white/5"
-              >
-                <img
-                  src={img.previewUrl}
-                  alt={`图片 ${idx + 1}`}
-                  className="h-full w-full object-cover"
-                />
-                <span className="absolute top-1.5 left-1.5 rounded-md bg-black/50 px-1.5 py-0.5 text-[10px] text-white">
-                  {idx + 1}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                上传图片 <span className="text-emerald-500">*</span>
+                <span className="ml-2 text-[12px] font-normal text-slate-400">
+                  至少 {MIN_IMAGES} 张（已选 {images.length} 张）
                 </span>
+              </p>
+              <div className="flex gap-2">
                 <button
-                  onClick={() => removeImage(img.id)}
-                  className="absolute top-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500"
+                  type="button"
+                  onClick={shuffleImages}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+                  title="随机打乱顺序"
                 >
-                  <X className="h-3 w-3" />
+                  <Shuffle className="h-3 w-3" />
+                  打乱
+                </button>
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-3 py-1.5 text-[12px] font-medium text-emerald-600 hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  添加图片
                 </button>
               </div>
-            ))}
-            {/* 添加按钮 */}
-            <button
-              onClick={() => imageInputRef.current?.click()}
-              className="flex aspect-[3/4] flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-slate-300 text-slate-400 transition-colors hover:border-rose-300 hover:text-rose-400 dark:border-white/15 dark:hover:border-rose-500/30"
-            >
-              <Upload className="h-5 w-5" />
-              <span className="text-[11px]">添加</span>
-            </button>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept={ACCEPTED_IMAGES}
+                multiple
+                className="hidden"
+                onChange={(e) => handleAddImages(e.target.files)}
+              />
+            </div>
+
+            {images.length === 0 ? (
+              <div
+                className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-10 transition-all hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20"
+                onClick={() => imageInputRef.current?.click()}
+              >
+                <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-500/10">
+                  <ImageIcon className="h-6 w-6 text-emerald-400" />
+                </span>
+                <p className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
+                  点击或拖拽上传图片（JPG / PNG / WebP）
+                </p>
+                <p className="text-[11px] text-slate-400">每张不超过 10MB，至少 {MIN_IMAGES} 张</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+                {images.map((img, idx) => (
+                  <div
+                    key={img.id}
+                    className="group relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-white/10 dark:bg-white/5"
+                  >
+                    <img src={img.previewUrl} alt={`图片 ${idx + 1}`} className="h-full w-full object-cover" />
+                    <span className="absolute left-1.5 top-1.5 rounded-md bg-black/50 px-1.5 py-0.5 text-[10px] text-white">
+                      {idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeImage(img.id)}
+                      className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="flex aspect-[3/4] flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-slate-300 text-slate-400 transition-colors hover:border-emerald-300 hover:text-emerald-400 dark:border-white/15"
+                >
+                  <Upload className="h-5 w-5" />
+                  <span className="text-[11px]">添加</span>
+                </button>
+              </div>
+            )}
           </div>
-        )}
-      </section>
 
-      {/* --- 文案输入 --- */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">
-          📝 文案内容 <span className="text-rose-500">*</span>
-          <span className="ml-2 text-[12px] font-normal text-slate-400">
-            {script.length} 字（按 。！？换行断句）
-          </span>
-        </h3>
-        <textarea
-          value={script}
-          onChange={(e) => onScriptChange(e.target.value)}
-          placeholder="在此输入文案全文，系统将自动按句号、感叹号、问号、换行进行断句。&#10;&#10;例如：&#10;大家好，欢迎来到我的频道。今天我们来聊聊短视频创作的那些事。怎样让你的视频更有吸引力？掌握这三点就够了。"
-          rows={8}
-          className="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-[14px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:placeholder:text-slate-500 dark:focus:border-rose-500/30 dark:focus:ring-rose-500/10"
-        />
-      </section>
+          <div>
+            <p className="mb-3 text-[13px] font-medium text-slate-700 dark:text-slate-300">
+              上传参考音色 <span className="text-emerald-500">*</span>
+              <span className="ml-2 text-[12px] font-normal text-slate-400">10~30 秒 · MP3 / WAV / M4A</span>
+            </p>
+            {audioSample ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/60 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-500/10">
+                    <Mic className="h-5 w-5 text-emerald-400" />
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                    {audioSample.name}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onAudioChange(null)}
+                    className="rounded-lg bg-slate-100 px-3 py-1 text-[11px] text-slate-500 hover:bg-slate-200 dark:bg-white/5"
+                  >
+                    更换
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <UploadZone
+                accentColor="emerald"
+                accept={ACCEPTED_AUDIO}
+                label="上传参考音色"
+                icon={Mic}
+                hint="MP3 / WAV / M4A"
+                onFile={(f) => { void handleAudioFile(f) }}
+              />
+            )}
+          </div>
+        </div>
 
-      {/* --- 音色样本上传 --- */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">
-          🎙️ 上传个人音色 <span className="text-rose-500">*</span>
-          <span className="ml-2 text-[12px] font-normal text-slate-400">
-            10~30 秒录音，支持 MP3 / WAV / M4A
-          </span>
-        </h3>
-        {audioSample ? (
-          <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
-            <Mic className="h-5 w-5 text-emerald-500" />
-            <span className="flex-1 text-[13px] font-medium text-slate-700 dark:text-slate-300">
-              {audioSample.name}
+        <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/60 bg-white p-5 dark:border-white/10 dark:bg-white/5">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 dark:bg-emerald-500/10">
+              <FileText className="h-4 w-4 text-emerald-400" />
             </span>
-            <button
-              onClick={() => {
-                onAudioChange(null)
-                if (audioInputRef.current) audioInputRef.current.value = ""
-              }}
-              className="rounded-lg p-1 text-slate-400 hover:bg-red-50 hover:text-red-500"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">口播文案</span>
+            <span className="ml-auto text-[11px] text-slate-400">{script.length} 字</span>
           </div>
-        ) : (
-          <div
-            className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 transition-all hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20"
-            onClick={() => audioInputRef.current?.click()}
-          >
-            <Mic className="h-8 w-8 text-slate-300 dark:text-slate-600" />
-            <p className="text-[13px] text-slate-500 dark:text-slate-400">点击上传音色样本</p>
-          </div>
-        )}
-        <input
-          ref={audioInputRef}
-          type="file"
-          accept={ACCEPTED_AUDIO}
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) handleAudioFile(f)
-          }}
-        />
-      </section>
+          <textarea
+            value={script}
+            onChange={(e) => onScriptChange(e.target.value)}
+            placeholder="输入文案全文，系统将按句号、感叹号、问号与换行自动断句…"
+            className="min-h-[280px] flex-1 resize-none rounded-xl border border-slate-200/60 bg-slate-50/50 p-3 text-[13px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/15 dark:border-white/5 dark:bg-white/5 dark:text-slate-200"
+          />
+        </div>
+      </div>
 
-      {/* --- 提交 --- */}
-      <div className="flex justify-center pt-4">
+      <div className="flex flex-col items-center gap-2 pt-2">
         <Button
           size="lg"
           disabled={!canSubmit}
           onClick={onSubmit}
-          className="min-w-[240px] rounded-full"
+          className="min-w-[240px] rounded-full bg-emerald-600 hover:bg-emerald-700"
         >
           {isProcessing ? (
             <>
@@ -370,13 +355,11 @@ function StepMaterialPrep({
             </>
           )}
         </Button>
+        {images.length > 0 && images.length < MIN_IMAGES && (
+          <p className="text-[12px] text-amber-500">还需上传至少 {MIN_IMAGES - images.length} 张图片</p>
+        )}
       </div>
-      {images.length > 0 && images.length < MIN_IMAGES && (
-        <p className="text-center text-[12px] text-amber-500">
-          还需上传至少 {MIN_IMAGES - images.length} 张图片
-        </p>
-      )}
-    </div>
+    </section>
   )
 }
 
@@ -387,9 +370,9 @@ function StepMaterialPrep({
 function StepAudioGen({ stageLabel, progress }: { stageLabel: string; progress: number }) {
   return (
     <div className="flex flex-col items-center justify-center py-16">
-      <div className="relative mb-6">
-        <div className="h-20 w-20 animate-spin rounded-full border-4 border-rose-100 border-t-rose-500 dark:border-rose-500/20 dark:border-t-rose-400" />
-        <Mic className="absolute inset-0 m-auto h-8 w-8 text-rose-400" />
+        <div className="relative mb-6">
+        <div className="h-20 w-20 animate-spin rounded-full border-4 border-emerald-100 border-t-emerald-500 dark:border-emerald-500/20 dark:border-t-emerald-400" />
+        <Mic className="absolute inset-0 m-auto h-8 w-8 text-emerald-400" />
       </div>
       <h3 className="mb-2 text-lg font-semibold text-slate-800 dark:text-slate-200">
         正在生成AI配音
@@ -429,10 +412,12 @@ function StepVideoResult({
     )
   }
 
+  const videoSrc = result?.video_url ? resolveMediaUrl(result.video_url) : ""
+
   if (!result?.video_url) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
-        <Loader2 className="mb-4 h-12 w-12 animate-spin text-rose-400" />
+        <Loader2 className="mb-4 h-12 w-12 animate-spin text-emerald-400" />
         <h3 className="mb-2 text-lg font-semibold text-slate-800 dark:text-slate-200">
           视频合成中...
         </h3>
@@ -454,16 +439,15 @@ function StepVideoResult({
       </h3>
       <div className="mb-6 w-full max-w-sm overflow-hidden rounded-2xl bg-black">
         <video
-          src={result.video_url}
+          src={videoSrc}
           controls
           className="w-full"
-          poster="/placeholder-video.png"
         >
           您的浏览器不支持视频播放
         </video>
       </div>
       <a
-        href={result.video_url}
+        href={videoSrc}
         download={`video-${result.task_id || "image-to-video"}.mp4`}
         target="_blank"
         rel="noopener noreferrer"
@@ -570,6 +554,7 @@ export function ImageVideoWorkflow() {
           const stageLabel = status.stage_label || status.stage || ""
 
           if (isClipTerminal(status)) {
+            const firstPreview = images[0]?.previewUrl
             if (isClipSuccess(status) && status.video_url) {
               const result: ImageToVideoResponse = {
                 task_id: taskId,
@@ -586,6 +571,7 @@ export function ImageVideoWorkflow() {
                 stageLabel,
                 progress: status.progress ?? 100,
               }))
+              void recordImageVideoHistory(taskId, script.trim(), status.video_url, "success", firstPreview)
               toast({ title: "图文视频生成成功！" })
             } else {
               const err = status.error || "生成失败"
@@ -598,6 +584,7 @@ export function ImageVideoWorkflow() {
                 stageLabel,
                 progress: status.progress ?? 0,
               }))
+              void recordImageVideoHistory(taskId, script.trim(), "", "failed", firstPreview, err)
               toast({ title: "生成失败", description: err, variant: "destructive" })
             }
             return
@@ -657,19 +644,25 @@ export function ImageVideoWorkflow() {
     })
   }
 
-  return (
-    <div className="mx-auto max-w-3xl px-4 py-8">
-      {/* 标题栏 */}
-      <div className="mb-8 text-center">
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-          🖼️ 图文视频
-        </h2>
-        <p className="mt-2 text-[14px] text-slate-500 dark:text-slate-400">
-          上传图片 + 文案 + 音色 → AI 自动生成配音 → ffmpeg 合成带字幕和BGM的视频
-        </p>
-      </div>
+  const clipSteps = buildClipSteps(
+    state.currentStep,
+    state.isProcessing,
+    !!state.result?.video_url,
+    !!state.errorMessage,
+  )
 
-      <StepIndicator current={state.currentStep} />
+  return (
+    <VideoWorkflowPage>
+      <WorkflowHero
+        accentColor="emerald"
+        title="AI"
+        accentWord="图文视频"
+        description="上传图片、文案与参考音色，AI 自动完成配音克隆与 ffmpeg 合成（字幕 + BGM + 转场）"
+      />
+
+      <div className="mb-6">
+        <WorkflowStepIndicator accentColor="emerald" steps={clipSteps} />
+      </div>
 
       {state.currentStep === 1 && (
         <StepMaterialPrep
@@ -712,6 +705,6 @@ export function ImageVideoWorkflow() {
           )}
         </>
       )}
-    </div>
+    </VideoWorkflowPage>
   )
 }
