@@ -38,6 +38,7 @@ import {
   clearUserMemory,
   buildMemoryContext,
 } from "@/lib/user-memory"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -515,8 +516,21 @@ export function CopywritingChatWorkspace({
       .map((m) => ({ role: m.role, content: m.content }))
 
     try {
+      const meResp = await fetch("/api/auth/me", { credentials: "include", cache: "no-store" })
+      if (!meResp.ok) {
+        toast({
+          title: "请先登录",
+          description: "登录后可使用 AI 文案对话并扣减积分",
+          variant: "destructive",
+        })
+        setMessages((prev) => prev.filter((m) => m.id !== assistantMsg.id))
+        setIsSending(false)
+        return
+      }
+
       const res = await fetch("/api/ai/chat-stream", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userMessage: content,
@@ -527,8 +541,8 @@ export function CopywritingChatWorkspace({
       })
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: "请求失败" }))
-        throw new Error(typeof err.detail === "string" ? err.detail : "请求失败")
+        const err = await res.json().catch(() => ({}))
+        throw new Error(parseApiErrorResponse(res.status, err, "请求失败"))
       }
 
       let fullResponse = ""
@@ -568,10 +582,14 @@ export function CopywritingChatWorkspace({
       extractMemory(finalMessages)
     } catch (e) {
       const errorText = e instanceof Error ? e.message : "发送失败"
+      const suffix =
+        errorText.includes("请先登录") || errorText.includes("积分不足")
+          ? ""
+          : "\n\n若持续失败，请确认已运行 pnpm dev:all 且配置 DEEPSEEK_API_KEY。"
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantMsg.id
-            ? { ...m, content: `**出错了**：${errorText}\n\n请稍后重试或检查 API 配置。` }
+            ? { ...m, content: `**出错了**：${errorText}${suffix}` }
             : m,
         ),
       )

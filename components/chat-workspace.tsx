@@ -55,6 +55,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -949,8 +950,8 @@ export function ChatWorkspace({
       if (!response.ok) {
         let detail = `HTTP ${response.status}`
         try {
-          const j = (await response.json()) as { detail?: string }
-          if (typeof j.detail === "string") detail = j.detail
+          const j = (await response.json()) as { detail?: unknown }
+          detail = parseApiErrorResponse(response.status, j, detail)
         } catch {
           /* ignore */
         }
