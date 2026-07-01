@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import base64
 import tempfile
 import logging
@@ -354,6 +355,31 @@ MV_STAGE_LABELS = {
     STAGE_MV_COMPLETED: "混剪完成",
     STAGE_MV_FAILED: "混剪失败",
     STAGE_MV_CANCELLED: "已停止",
+}
+
+# —— 宣传视频分镜 stage 常量 ——
+STAGE_PV_DECODE = "pv_decode"
+STAGE_PV_UPLOAD_PRODUCT = "pv_upload_product"
+STAGE_PV_RH_SUBMIT = "pv_rh_submit"
+STAGE_PV_RH_POLL = "pv_rh_poll"
+STAGE_PV_DOWNLOAD = "pv_download"
+STAGE_PV_RH_CROP_SUBMIT = "pv_rh_crop_submit"
+STAGE_PV_RH_CROP_POLL = "pv_rh_crop_poll"
+STAGE_PV_CROP_DOWNLOAD = "pv_crop_download"
+STAGE_PV_COMPLETED = "pv_completed"
+STAGE_PV_FAILED = "pv_failed"
+
+PV_STAGE_LABELS = {
+    STAGE_PV_DECODE: "解码本地素材",
+    STAGE_PV_UPLOAD_PRODUCT: "上传产品图到 RunningHub",
+    STAGE_PV_RH_SUBMIT: "提交分镜工作流",
+    STAGE_PV_RH_POLL: "等待 RunningHub 生成",
+    STAGE_PV_DOWNLOAD: "下载分镜图",
+    STAGE_PV_RH_CROP_SUBMIT: "提交多宫格裁切",
+    STAGE_PV_RH_CROP_POLL: "等待裁切完成",
+    STAGE_PV_CROP_DOWNLOAD: "下载分镜帧",
+    STAGE_PV_COMPLETED: "分镜完成",
+    STAGE_PV_FAILED: "分镜失败",
 }
 
 
@@ -1690,9 +1716,22 @@ async def video_clone_voice(req: VoiceCloneRequest, request: Request):
 # ── 图文视频 / 视频混剪 异步管线 ─────────────────────────────────
 
 
+def _normalize_b64_payload(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return s
+    if "," in s and s.lower().startswith("data:"):
+        s = s.split(",", 1)[1]
+    s = s.replace("\n", "").replace("\r", "").replace(" ", "")
+    pad = len(s) % 4
+    if pad:
+        s += "=" * (4 - pad)
+    return s
+
+
 async def _decode_b64_file(b64: str, dest_path: str) -> None:
     try:
-        raw = base64.b64decode(b64)
+        raw = base64.b64decode(_normalize_b64_payload(b64))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Base64 解码失败: {e}")
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -3428,12 +3467,13 @@ from lib.promo_video_service import (
     calculate_promo_video_cost,
     concatenate_videos_ffmpeg,
     crop_storyboard_grid,
+    download_crop_results,
     download_file,
-    generate_storyboard_prompt,
     generate_video_prompt,
     get_grid_dims,
     pick_first_valid_url,
     slice_images_for_segments,
+    submit_grid_crop_to_rh,
     submit_sparkvideo_task,
     submit_storyboard_to_rh,
     upload_to_runninghub,
@@ -3445,14 +3485,21 @@ _PROMO_FRAME_COUNT_RH = {9: "1", 16: "2", 25: "3"}
 
 
 class PromoStoryboardRequest(BaseModel):
+    product_prompt: str = ""
+    promo_script: str = ""
+    audio_base64: str = ""
     product_name: str = ""
     product_image: str = ""
     selling_points: list[str] = []
     target_audience: str = ""
-    style: str = ""
+    style: str = "科技感"
     duration: int = 15
     frame_count: int = 9
     ratio: str = "adaptive"
+    channel: str = "Third-party"
+    resolution: str = "2k"
+    image_mode: str = "2"
+    instance_type: str = "default"
 
 
 class PromoStoryboardStatusResponse(BaseModel):
@@ -3463,6 +3510,34 @@ class PromoStoryboardStatusResponse(BaseModel):
     creative_prompt: str = ""
     progress: int = 0
     error: str = ""
+    stage: str = ""
+    stage_label: str = ""
+    rh_task_id: str = ""
+    rh_crop_task_id: str = ""
+    frame_count: int = 0
+    failed_stage: str = ""
+
+
+def _set_promo_stage(task_id: str, stage: str, **extras) -> None:
+    _set_generic_stage(_promo_video_task_store, PV_STAGE_LABELS, task_id, stage, **extras)
+
+
+def _promo_fail(task_id: str, error: str, failed_stage: str | None = None) -> None:
+    task = _promo_video_task_store.get(task_id)
+    if not task:
+        return
+    stage = failed_stage or task.get("stage") or STAGE_PV_FAILED
+    msg = (error or "").strip()
+    if not msg:
+        msg = f"分镜失败（阶段: {task.get('stage_label') or PV_STAGE_LABELS.get(stage, stage)}）"
+    _set_promo_stage(
+        task_id,
+        STAGE_PV_FAILED,
+        status="storyboard_failed",
+        error=msg,
+        failed_stage=stage,
+        progress=0,
+    )
 
 
 class PromoAutoPromptRequest(BaseModel):
@@ -3490,7 +3565,105 @@ def _new_promo_video_task_id() -> str:
 
 def _promo_public_url(public_base: str, abs_path: str) -> str:
     rel = os.path.relpath(abs_path, POST_PROCESS_ROOT).replace(os.sep, "/")
-    return f"{public_base.rstrip('/')}/static/video-postprocess/{rel}"
+    return f"/static/video-postprocess/{rel}"
+
+
+async def _promo_crop_frames_from_grid(
+    task_id: str,
+    grid_path: str,
+    grid_data: bytes | None,
+    frame_count: int,
+    output_dir: str,
+    public_base: str,
+    rh_key: str,
+    instance_type: str,
+) -> tuple[list[str], list[str]]:
+    """Crop storyboard grid into frames; RH crop by default, Pillow when PROMO_CROP_BACKEND=pillow."""
+    task = _promo_video_task_store.get(task_id) or {}
+    cols, rows = get_grid_dims(frame_count)
+    expected_frames = frame_count
+    frames_dir = os.path.join(output_dir, "frames")
+    crop_backend = (os.getenv("PROMO_CROP_BACKEND") or "rh").strip().lower()
+
+    if crop_backend == "pillow":
+        _set_promo_stage(task_id, STAGE_PV_CROP_DOWNLOAD, progress=75)
+        if grid_data is None:
+            with open(grid_path, "rb") as f:
+                grid_data = f.read()
+        frame_paths = crop_storyboard_grid(grid_data, cols, rows, frames_dir)
+    else:
+        failed_stage = STAGE_PV_RH_CROP_SUBMIT
+        _set_promo_stage(task_id, STAGE_PV_RH_CROP_SUBMIT, progress=70)
+        grid_rh_url = await upload_to_runninghub(rh_key, grid_path)
+        crop_task_id = await submit_grid_crop_to_rh(
+            rh_key,
+            grid_rh_url,
+            rows,
+            cols,
+            save_all=True,
+            instance_type=instance_type,
+            output_dir=output_dir,
+        )
+        task["rh_crop_task_id"] = crop_task_id
+        _set_promo_stage(
+            task_id,
+            STAGE_PV_RH_CROP_SUBMIT,
+            rh_crop_task_id=crop_task_id,
+            progress=72,
+        )
+
+        failed_stage = STAGE_PV_RH_CROP_POLL
+        _set_promo_stage(
+            task_id,
+            STAGE_PV_RH_CROP_POLL,
+            rh_crop_task_id=crop_task_id,
+            progress=75,
+        )
+
+        def _on_crop_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
+            task["rh_crop_status"] = rh_status or (result.get("status") or "")
+            try:
+                with open(
+                    os.path.join(output_dir, "rh_crop_poll_last.json"),
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    json.dump(result, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            task["progress"] = min(90, 75 + int(min(elapsed / 120.0, 1.0) * 15))
+
+        crop_result = await wait_for_runninghub_task(
+            rh_key,
+            crop_task_id,
+            max_wait=600,
+            on_poll=_on_crop_poll,
+        )
+
+        failed_stage = STAGE_PV_CROP_DOWNLOAD
+        _set_promo_stage(
+            task_id,
+            STAGE_PV_CROP_DOWNLOAD,
+            rh_crop_task_id=crop_task_id,
+            progress=92,
+        )
+        frame_paths = await download_crop_results(
+            rh_key,
+            crop_result,
+            output_dir,
+            expected_frames,
+        )
+
+    if len(frame_paths) != expected_frames:
+        raise RuntimeError(
+            f"裁切得到 {len(frame_paths)} 张，期望 {expected_frames} 张"
+        )
+    frame_urls = [_promo_public_url(public_base, fp) for fp in frame_paths]
+    if len(frame_urls) != expected_frames:
+        raise RuntimeError(
+            f"发布 URL 数量 {len(frame_urls)} 不等于期望 {expected_frames}"
+        )
+    return frame_paths, frame_urls
 
 
 async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> None:
@@ -3500,56 +3673,198 @@ async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> No
     public_base = task.get("public_base_url") or ""
     output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
     os.makedirs(output_dir, exist_ok=True)
+    failed_stage = STAGE_PV_DECODE
     try:
-        task["status"] = "storyboard_processing"
-        task["progress"] = 5
-        if not DEEPSEEK_API_KEY:
-            raise RuntimeError("未配置 DEEPSEEK_API_KEY")
-        creative = await generate_storyboard_prompt(
-            DEEPSEEK_API_KEY,
-            req.product_name,
-            req.selling_points,
-            req.target_audience,
-            req.style,
-        )
-        task["creative_prompt"] = creative
-        task["progress"] = 15
+        _set_promo_stage(task_id, STAGE_PV_DECODE, status="storyboard_processing", progress=5)
+
+        product_prompt = (req.product_prompt or "").strip()
+        if not product_prompt:
+            raise RuntimeError("产品提示词不能为空")
+        promo_script = (req.promo_script or "").strip()
+        if not promo_script and req.selling_points:
+            promo_script = "\n".join(req.selling_points)
+        if not promo_script:
+            raise RuntimeError("宣传文案不能为空")
+        task["product_prompt"] = product_prompt
+        task["promo_script"] = promo_script
+        task["creative_prompt"] = product_prompt
+        if (req.audio_base64 or "").strip():
+            task["audio_base64"] = req.audio_base64.strip()
+        task["progress"] = 10
 
         rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
         if not rh_key:
             raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
 
-        product_path = os.path.join(output_dir, "product.png")
-        await _decode_b64_file(req.product_image, product_path)
-        product_url = await upload_to_runninghub(rh_key, product_path)
+        image_mode = (req.image_mode or "2").strip()
+        product_url = None
+        if image_mode == "2":
+            if not (req.product_image or "").strip():
+                raise RuntimeError("图生图模式需要上传产品图片")
+            product_path = os.path.join(output_dir, "product.png")
+            await _decode_b64_file(req.product_image, product_path)
+            failed_stage = STAGE_PV_UPLOAD_PRODUCT
+            _set_promo_stage(task_id, STAGE_PV_UPLOAD_PRODUCT, progress=15)
+            product_url = await upload_to_runninghub(rh_key, product_path)
+            task["progress"] = 20
 
+        failed_stage = STAGE_PV_RH_SUBMIT
+        _set_promo_stage(task_id, STAGE_PV_RH_SUBMIT, progress=25)
         fc_val = _PROMO_FRAME_COUNT_RH.get(req.frame_count, "1")
-        rh_task = await submit_storyboard_to_rh(rh_key, product_url, creative, fc_val)
-        task["progress"] = 30
+        rh_task = await submit_storyboard_to_rh(
+            rh_key,
+            product_prompt,
+            fc_val,
+            resolution=(req.resolution or "2k").strip(),
+            channel=(req.channel or "Third-party").strip(),
+            image_mode=image_mode,
+            product_image_url=product_url,
+            instance_type=(req.instance_type or "default").strip(),
+            output_dir=output_dir,
+        )
+        _set_promo_stage(task_id, STAGE_PV_RH_SUBMIT, rh_task_id=rh_task, progress=30)
 
-        result = await wait_for_runninghub_task(rh_key, rh_task, max_wait=600)
+        if not rh_task:
+            raise RuntimeError("RH 提交未返回 taskId，无法轮询")
+
+        failed_stage = STAGE_PV_RH_POLL
+        _set_promo_stage(task_id, STAGE_PV_RH_POLL, rh_task_id=rh_task, progress=30)
+
+        def _on_rh_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
+            task["rh_status"] = rh_status or (result.get("status") or "")
+            try:
+                with open(os.path.join(output_dir, "rh_poll_last.json"), "w", encoding="utf-8") as f:
+                    json.dump(result, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            task["progress"] = min(55, 30 + int(min(elapsed / 180.0, 1.0) * 25))
+
+        result = await wait_for_runninghub_task(
+            rh_key, rh_task, max_wait=600, on_poll=_on_rh_poll
+        )
         grid_url = pick_first_valid_url(result.get("results"))
         if not grid_url:
             raise RuntimeError("分镜工作流无有效输出 URL")
         task["storyboard_grid_url"] = grid_url
         task["progress"] = 60
 
-        grid_path = await download_file(grid_url, output_dir, "storyboard_grid.png")
+        failed_stage = STAGE_PV_DOWNLOAD
+        _set_promo_stage(task_id, STAGE_PV_DOWNLOAD, progress=60)
+        grid_path = await download_file(
+            grid_url,
+            output_dir,
+            "storyboard_grid",
+            validate_as_image=True,
+            api_key=rh_key,
+        )
         with open(grid_path, "rb") as f:
             grid_data = f.read()
-        cols, rows = get_grid_dims(req.frame_count)
-        frames_dir = os.path.join(output_dir, "frames")
-        frame_paths = crop_storyboard_grid(grid_data, cols, rows, frames_dir)
 
-        frame_urls = [_promo_public_url(public_base, fp) for fp in frame_paths]
+        frame_paths, frame_urls = await _promo_crop_frames_from_grid(
+            task_id,
+            grid_path,
+            grid_data,
+            req.frame_count,
+            output_dir,
+            public_base,
+            rh_key,
+            (req.instance_type or "default").strip(),
+        )
+
+        if len(frame_urls) != req.frame_count:
+            raise RuntimeError(
+                f"分镜帧数量 {len(frame_urls)} 不等于期望 {req.frame_count}"
+            )
         task["frame_paths"] = frame_paths
         task["frame_urls"] = frame_urls
-        task["status"] = "storyboard_ready"
-        task["progress"] = 100
+        task["frame_count"] = req.frame_count
+        _set_promo_stage(
+            task_id,
+            STAGE_PV_COMPLETED,
+            status="storyboard_ready",
+            progress=100,
+            error="",
+            failed_stage="",
+        )
+    except HTTPException as e:
+        detail = e.detail
+        err = detail if isinstance(detail, str) else str(detail)
+        t = _promo_video_task_store.get(task_id) or {}
+        _promo_fail(task_id, err, t.get("stage") or failed_stage)
     except Exception as e:
-        task["status"] = "storyboard_failed"
-        task["error"] = str(e)
-        task["progress"] = 0
+        t = _promo_video_task_store.get(task_id) or {}
+        _promo_fail(task_id, str(e) or "分镜生成失败", t.get("stage") or failed_stage)
+
+
+async def _run_promo_retry_crop(task_id: str) -> None:
+    """Re-download and crop storyboard grid without re-submitting to RH."""
+    task = _promo_video_task_store.get(task_id)
+    if not task:
+        return
+    output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
+    frame_count = int(task.get("frame_count") or 9)
+    expected_frames = frame_count
+    failed_stage = STAGE_PV_DOWNLOAD
+    rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
+    try:
+        _set_promo_stage(task_id, STAGE_PV_DOWNLOAD, status="storyboard_processing", progress=60)
+
+        grid_path: str | None = None
+        for name in os.listdir(output_dir) if os.path.isdir(output_dir) else []:
+            if name.startswith("storyboard_grid."):
+                candidate = os.path.join(output_dir, name)
+                if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                    grid_path = candidate
+                    break
+
+        grid_url = (task.get("storyboard_grid_url") or "").strip()
+        if not grid_path:
+            if not grid_url:
+                raise RuntimeError("无本地九宫格图且无 grid URL，无法重试裁切")
+            grid_path = await download_file(
+                grid_url,
+                output_dir,
+                "storyboard_grid",
+                validate_as_image=True,
+                api_key=rh_key or None,
+            )
+
+        with open(grid_path, "rb") as f:
+            grid_data = f.read()
+
+        if not rh_key:
+            raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
+
+        public_base = task.get("public_base_url") or ""
+        instance_type = (task.get("instance_type") or "default").strip()
+        frame_paths, frame_urls = await _promo_crop_frames_from_grid(
+            task_id,
+            grid_path,
+            grid_data,
+            frame_count,
+            output_dir,
+            public_base,
+            rh_key,
+            instance_type,
+        )
+
+        if len(frame_urls) != expected_frames:
+            raise RuntimeError(
+                f"分镜帧数量 {len(frame_urls)} 不等于期望 {expected_frames}"
+            )
+        task["frame_paths"] = frame_paths
+        task["frame_urls"] = frame_urls
+        _set_promo_stage(
+            task_id,
+            STAGE_PV_COMPLETED,
+            status="storyboard_ready",
+            progress=100,
+            error="",
+            failed_stage="",
+        )
+    except Exception as e:
+        t = _promo_video_task_store.get(task_id) or {}
+        _promo_fail(task_id, str(e) or "裁切重试失败", t.get("stage") or failed_stage)
 
 
 async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> None:
@@ -3584,24 +3899,43 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
 
         duration = int(story.get("duration") or 15)
         ratio = story.get("ratio") or "adaptive"
+        voice_rh_url = (story.get("voice_rh_url") or "").strip()
+        if not voice_rh_url:
+            audio_b64 = (story.get("audio_base64") or "").strip()
+            if audio_b64:
+                voice_path = os.path.join(output_dir, "voice_sample.mp3")
+                await _decode_b64_file(audio_b64, voice_path)
+                voice_rh_url = await upload_to_runninghub(rh_key, voice_path)
+                story["voice_rh_url"] = voice_rh_url
+        audio_urls = [voice_rh_url] if voice_rh_url else None
         segment_count = max(1, (duration + 14) // 15)
         segments = slice_images_for_segments(selected, segment_count)
 
-        segment_paths: list[str] = []
-        rh_ids: list[str] = []
-        for seg_idx, seg_images in enumerate(segments):
+        async def _render_segment(seg_idx: int, seg_images: list[str]) -> tuple[int, str, str]:
             seg_dur = min(15, duration - seg_idx * 15) if segment_count > 1 else duration
             rh_id = await submit_sparkvideo_task(
-                rh_key, gen_req.video_prompt.strip(), seg_images, seg_dur, ratio=ratio
+                rh_key,
+                gen_req.video_prompt.strip(),
+                seg_images,
+                seg_dur,
+                ratio=ratio,
+                audio_urls=audio_urls,
             )
-            rh_ids.append(rh_id)
-            task["progress"] = 10 + int(70 * (seg_idx + 1) / max(1, segment_count))
             result = await wait_for_runninghub_task(rh_key, rh_id, max_wait=900)
             video_url = pick_first_valid_url(result.get("results"))
             if not video_url:
                 raise RuntimeError(f"SparkVideo 段 {seg_idx + 1} 无有效输出")
             seg_path = await download_file(video_url, output_dir, f"segment_{seg_idx}.mp4")
-            segment_paths.append(seg_path)
+            return seg_idx, rh_id, seg_path
+
+        task["progress"] = 15
+        segment_results = await asyncio.gather(
+            *[_render_segment(seg_idx, seg_images) for seg_idx, seg_images in enumerate(segments)]
+        )
+        segment_results.sort(key=lambda x: x[0])
+        rh_ids = [r[1] for r in segment_results]
+        segment_paths = [r[2] for r in segment_results]
+        task["progress"] = 85
 
         final_path = os.path.join(output_dir, "final.mp4")
         concatenate_videos_ffmpeg(segment_paths, final_path, ffmpeg_path=ffmpeg_bin)
