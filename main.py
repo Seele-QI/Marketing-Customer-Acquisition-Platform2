@@ -3471,7 +3471,9 @@ from lib.promo_video_service import (
     download_file,
     generate_video_prompt,
     get_grid_dims,
+    pick_all_urls,
     pick_first_valid_url,
+    query_runninghub_task,
     slice_images_for_segments,
     submit_grid_crop_to_rh,
     submit_sparkvideo_task,
@@ -3520,6 +3522,11 @@ class PromoStoryboardStatusResponse(BaseModel):
 
 def _set_promo_stage(task_id: str, stage: str, **extras) -> None:
     _set_generic_stage(_promo_video_task_store, PV_STAGE_LABELS, task_id, stage, **extras)
+
+
+def _promo_patch_task(task_id: str, **fields) -> None:
+    stored = _promo_video_task_store.get(task_id) or {}
+    _promo_video_task_store[task_id] = {**stored, **fields}
 
 
 def _promo_fail(task_id: str, error: str, failed_stage: str | None = None) -> None:
@@ -3579,7 +3586,6 @@ async def _promo_crop_frames_from_grid(
     instance_type: str,
 ) -> tuple[list[str], list[str]]:
     """Crop storyboard grid into frames; RH crop by default, Pillow when PROMO_CROP_BACKEND=pillow."""
-    task = _promo_video_task_store.get(task_id) or {}
     cols, rows = get_grid_dims(frame_count)
     expected_frames = frame_count
     frames_dir = os.path.join(output_dir, "frames")
@@ -3604,7 +3610,6 @@ async def _promo_crop_frames_from_grid(
             instance_type=instance_type,
             output_dir=output_dir,
         )
-        task["rh_crop_task_id"] = crop_task_id
         _set_promo_stage(
             task_id,
             STAGE_PV_RH_CROP_SUBMIT,
@@ -3621,7 +3626,11 @@ async def _promo_crop_frames_from_grid(
         )
 
         def _on_crop_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
-            task["rh_crop_status"] = rh_status or (result.get("status") or "")
+            _promo_patch_task(
+                task_id,
+                rh_crop_status=rh_status or (result.get("status") or ""),
+                progress=min(90, 75 + int(min(elapsed / 120.0, 1.0) * 15)),
+            )
             try:
                 with open(
                     os.path.join(output_dir, "rh_crop_poll_last.json"),
@@ -3631,13 +3640,14 @@ async def _promo_crop_frames_from_grid(
                     json.dump(result, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
-            task["progress"] = min(90, 75 + int(min(elapsed / 120.0, 1.0) * 15))
 
         crop_result = await wait_for_runninghub_task(
             rh_key,
             crop_task_id,
             max_wait=600,
             on_poll=_on_crop_poll,
+            min_urls=expected_frames,
+            task_label="裁切",
         )
 
         failed_stage = STAGE_PV_CROP_DOWNLOAD
@@ -3775,14 +3785,14 @@ async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> No
             raise RuntimeError(
                 f"分镜帧数量 {len(frame_urls)} 不等于期望 {req.frame_count}"
             )
-        task["frame_paths"] = frame_paths
-        task["frame_urls"] = frame_urls
-        task["frame_count"] = req.frame_count
         _set_promo_stage(
             task_id,
             STAGE_PV_COMPLETED,
             status="storyboard_ready",
             progress=100,
+            frame_paths=frame_paths,
+            frame_urls=frame_urls,
+            frame_count=req.frame_count,
             error="",
             failed_stage="",
         )
@@ -3837,28 +3847,57 @@ async def _run_promo_retry_crop(task_id: str) -> None:
 
         public_base = task.get("public_base_url") or ""
         instance_type = (task.get("instance_type") or "default").strip()
-        frame_paths, frame_urls = await _promo_crop_frames_from_grid(
-            task_id,
-            grid_path,
-            grid_data,
-            frame_count,
-            output_dir,
-            public_base,
-            rh_key,
-            instance_type,
-        )
+
+        existing_crop_id = (task.get("rh_crop_task_id") or "").strip()
+        frame_paths: list[str] = []
+        frame_urls: list[str] = []
+        reused_crop = False
+        if existing_crop_id:
+            crop_result = await query_runninghub_task(rh_key, existing_crop_id)
+            rh_status = (crop_result.get("status") or "").strip()
+            if rh_status == "SUCCESS":
+                urls = pick_all_urls(crop_result.get("results"))
+                if len(urls) >= expected_frames:
+                    failed_stage = STAGE_PV_CROP_DOWNLOAD
+                    _set_promo_stage(
+                        task_id,
+                        STAGE_PV_CROP_DOWNLOAD,
+                        rh_crop_task_id=existing_crop_id,
+                        progress=92,
+                    )
+                    frame_paths = await download_crop_results(
+                        rh_key,
+                        crop_result,
+                        output_dir,
+                        expected_frames,
+                    )
+                    frame_urls = [_promo_public_url(public_base, fp) for fp in frame_paths]
+                    reused_crop = True
+
+        if not reused_crop:
+            frame_paths, frame_urls = await _promo_crop_frames_from_grid(
+                task_id,
+                grid_path,
+                grid_data,
+                frame_count,
+                output_dir,
+                public_base,
+                rh_key,
+                instance_type,
+            )
 
         if len(frame_urls) != expected_frames:
             raise RuntimeError(
                 f"分镜帧数量 {len(frame_urls)} 不等于期望 {expected_frames}"
             )
-        task["frame_paths"] = frame_paths
-        task["frame_urls"] = frame_urls
         _set_promo_stage(
             task_id,
             STAGE_PV_COMPLETED,
             status="storyboard_ready",
             progress=100,
+            frame_paths=frame_paths,
+            frame_urls=frame_urls,
+            frame_count=frame_count,
             error="",
             failed_stage="",
         )
