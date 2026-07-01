@@ -307,6 +307,8 @@ async def wait_for_runninghub_task(
     max_wait=600,
     poll_interval=5,
     on_poll=None,
+    min_urls: int | None = None,
+    task_label: str = "分镜",
 ):
     start = time.time()
     query_failures = 0
@@ -345,12 +347,23 @@ async def wait_for_runninghub_task(
         if rh_status == "SUCCESS":
             valid_url = pick_first_valid_url(result.get("results"))
             if valid_url:
+                if min_urls is not None:
+                    url_count = len(pick_all_urls(result.get("results")))
+                    if url_count < min_urls:
+                        logger.warning(
+                            "RH task %s SUCCESS but only %s/%s URLs, keep polling",
+                            task_id,
+                            url_count,
+                            min_urls,
+                        )
+                        await asyncio.sleep(poll_interval)
+                        continue
                 logger.info(f"RH task {task_id} completed in {elapsed:.0f}s")
                 return result
             logger.warning("RH task %s SUCCESS but no valid URL, keep polling", task_id)
         elif rh_status == "FAILED":
             detail = _format_rh_task_failure(result)
-            raise RuntimeError(f"RunningHub 分镜失败（{detail}）")
+            raise RuntimeError(f"RunningHub {task_label}失败（{detail}）")
         await asyncio.sleep(poll_interval)
 
 
@@ -685,16 +698,39 @@ async def download_crop_results(
         )
         urls = urls[:expected_count]
     frames_dir = os.path.join(output_dir, "frames")
-    paths: list[str] = []
-    for i, frame_url in enumerate(urls, start=1):
-        path = await download_file(
-            frame_url,
-            frames_dir,
-            f"frame_{i:02d}",
-            validate_as_image=True,
-            api_key=api_key,
+    sem = asyncio.Semaphore(4)
+
+    async def _download_frame(i: int, frame_url: str) -> str:
+        async with sem:
+            try:
+                path = await download_file(
+                    frame_url,
+                    frames_dir,
+                    f"frame_{i:02d}",
+                    validate_as_image=True,
+                    api_key=api_key,
+                )
+                logger.info(
+                    "Crop frame %02d downloaded: %s -> %s",
+                    i,
+                    frame_url[:120],
+                    path,
+                )
+                return path
+            except Exception as e:
+                logger.error(
+                    "Crop frame %02d download failed: url=%s error=%s",
+                    i,
+                    frame_url[:120],
+                    e,
+                )
+                raise
+
+    paths = list(
+        await asyncio.gather(
+            *[_download_frame(i, frame_url) for i, frame_url in enumerate(urls, start=1)]
         )
-        paths.append(path)
+    )
     if len(paths) != expected_count:
         raise RuntimeError(
             f"裁切落盘 {len(paths)} 张，期望 {expected_count} 张"
