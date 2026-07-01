@@ -214,7 +214,11 @@ export default function PromoVideoWorkflow() {
           if (frameUrls.length === 0 || (expected > 0 && frameUrls.length !== expected)) {
             setSbStatus("fail")
             setSbFailedStage(sd.failed_stage || "pv_crop_download")
-            setSbErr(formatPromoError("分镜图裁切失败，未生成有效分镜帧，请重试裁切或联系支持"))
+            setSbErr(
+              formatPromoError(
+                sd.error || "分镜图裁切失败，未生成有效分镜帧，请重试裁切或联系支持",
+              ),
+            )
             stopPoll()
             return
           }

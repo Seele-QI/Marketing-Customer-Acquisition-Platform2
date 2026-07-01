@@ -236,13 +236,20 @@ async def promo_video_storyboard_status(taskId: str):
 
         raise HTTPException(status_code=404, detail="Task not found")
 
+    status = task.get("status", "")
+    frame_urls = task.get("frame_urls") or []
+    error = task.get("error", "")
+    if status == "storyboard_ready" and not frame_urls:
+        status = "storyboard_failed"
+        error = error or "分镜图已标记完成但帧 URL 未写入，请重试裁切"
+
     return PromoStoryboardStatusResponse(
 
         task_id=tid,
 
-        status=task.get("status", ""),
+        status=status,
 
-        frame_urls=task.get("frame_urls", []),
+        frame_urls=frame_urls,
 
         storyboard_grid_url=task.get("storyboard_grid_url", ""),
 
@@ -250,7 +257,7 @@ async def promo_video_storyboard_status(taskId: str):
 
         progress=task.get("progress", 0),
 
-        error=task.get("error", ""),
+        error=error,
 
         stage=task.get("stage", ""),
 
