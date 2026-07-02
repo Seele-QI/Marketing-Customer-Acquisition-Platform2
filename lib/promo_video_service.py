@@ -988,9 +988,15 @@ async def download_crop_results(
     return paths
 
 
-PROMO_VIDEO_COST_PER_15S = 800
+PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION = {
+    "480p": 798,
+    "720p": 1528,
+    "1080p": 2289,
+}
 
 
-def calculate_promo_video_cost(duration):
-    segments = max(1, (duration + 14) // 15)
-    return segments * PROMO_VIDEO_COST_PER_15S
+def calculate_promo_video_cost(duration: int, resolution: str = "720p") -> int:
+    segments = max(1, (int(duration) + 14) // 15)
+    res = (resolution or "").strip()
+    per_15s = PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION.get(res, PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION["1080p"])
+    return segments * per_15s

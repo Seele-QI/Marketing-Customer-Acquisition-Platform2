@@ -388,12 +388,17 @@ async def promo_video_generate(req: Request):
 
 
     duration = story_task.get("duration", 15)
-
-    cost = calculate_promo_video_cost(duration)
+    resolution = (gen_req.video_resolution or "").strip()
+    cost = calculate_promo_video_cost(duration, resolution)
 
     try:
 
-        consume(user.id, cost, ref_id=gen_req.storyboard_task_id, note="Promo video " + str(duration) + "s")
+        consume(
+            user.id,
+            cost,
+            ref_id=gen_req.storyboard_task_id,
+            note=f"Promo video {duration}s {resolution or '1080p'}",
+        )
 
     except Exception as e:
 
