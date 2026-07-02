@@ -41,7 +41,7 @@ export function buildClipSteps(
   }))
 }
 
-export type WorkflowAccent = "rose" | "emerald" | "violet"
+export type WorkflowAccent = "rose" | "emerald" | "violet" | "sky"
 
 const ACCENT = {
   rose: {
@@ -73,6 +73,16 @@ const ACCENT = {
     iconBg: "bg-violet-50 dark:bg-violet-500/10",
     icon: "text-violet-400",
     drag: "border-violet-400 bg-violet-50/50 dark:border-violet-500/40 dark:bg-violet-500/5",
+  },
+  sky: {
+    bar: "bg-sky-500/60",
+    title: "text-sky-500 dark:text-sky-400",
+    loading: "bg-sky-500 text-white",
+    active: "bg-sky-100 text-sky-600 ring-2 ring-sky-500/30 dark:bg-sky-500/20 dark:text-sky-400",
+    activeLabel: "text-sky-600 dark:text-sky-400",
+    iconBg: "bg-sky-50 dark:bg-sky-500/10",
+    icon: "text-sky-400",
+    drag: "border-sky-400 bg-sky-50/50 dark:border-sky-500/40 dark:bg-sky-500/5",
   },
 } as const
 

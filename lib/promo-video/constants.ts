@@ -60,6 +60,22 @@ export const PROMO_RH_INSTANCE_TYPES = [
   { value: "plus", label: "Plus（48G）" },
 ] as const
 
+/** RH Seedance 2.0 AI App 2037453629342355457 — node 2/7/8/9/10/11/12/13/14 image */
+export const PROMO_RH_SEEDANCE_APP_ID = "2037453629342355457"
+
+export const PROMO_SEEDANCE_IMAGE_NODES = ["2", "7", "8", "9", "10", "11", "12", "13", "14"] as const
+
+/** RH Seedance node 1 resolution — 与分镜 2k 分离 */
+export const PROMO_VIDEO_RESOLUTIONS = [
+  { value: "480p", label: "480p" },
+  { value: "720p", label: "720p（推荐）" },
+  { value: "1080p", label: "1080p" },
+  { value: "2k", label: "2K" },
+  { value: "4k", label: "4K" },
+] as const
+
+export type PromoVideoResolution = (typeof PROMO_VIDEO_RESOLUTIONS)[number]["value"]
+
 export type PromoRhChannel = (typeof PROMO_RH_CHANNELS)[number]["value"]
 export type PromoRhResolution = (typeof PROMO_RH_RESOLUTIONS)[number]["value"]
 export type PromoRhImageMode = (typeof PROMO_RH_IMAGE_MODES)[number]["value"]

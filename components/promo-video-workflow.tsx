@@ -45,12 +45,14 @@ import {
   PROMO_RH_IMAGE_MODES,
   PROMO_RH_INSTANCE_TYPES,
   PROMO_RH_FRAME_COUNTS,
+  PROMO_VIDEO_RESOLUTIONS,
   promoResolutionsForChannel,
   type PromoFrameCount,
   type PromoRhChannel,
   type PromoRhResolution,
   type PromoRhImageMode,
   type PromoRhInstanceType,
+  type PromoVideoResolution,
 } from "@/lib/promo-video/constants"
 import {
   submitPromoStoryboard,
@@ -157,11 +159,19 @@ export default function PromoVideoWorkflow() {
   const [vidErr, setVidErr] = useState("")
   const [vidPrompt, setVidPrompt] = useState("")
   const [autoPrompting, setAutoPrompting] = useState(false)
+  const [videoResolution, setVideoResolution] = useState<PromoVideoResolution>("720p")
+  const [videoRatio, setVideoRatio] = useState("adaptive")
+  const [realPersonMode, setRealPersonMode] = useState(true)
+  const [videoInstanceType, setVideoInstanceType] = useState<PromoRhInstanceType>("default")
+  const [vidRhTaskIds, setVidRhTaskIds] = useState<string[]>([])
+  const [vidSegmentCount, setVidSegmentCount] = useState(0)
+  const [vidSegmentsCompleted, setVidSegmentsCompleted] = useState(0)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollFailCountRef = useRef(0)
 
   const availableResolutions = promoResolutionsForChannel(formData.channel)
+  const videoSegmentCount = Math.max(1, Math.floor(formData.duration / 15))
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
@@ -373,15 +383,25 @@ export default function PromoVideoWorkflow() {
     try {
       const { task_id: tid } = await submitPromoVideo({
         storyboard_task_id: storyTaskId,
-        selected_indices: Array.from(selected),
+        selected_indices: Array.from(selected).sort((a, b) => a - b),
         video_prompt: vidPrompt,
+        video_resolution: videoResolution,
+        real_person_mode: realPersonMode,
+        instance_type: videoInstanceType,
+        ratio: videoRatio,
       })
       setVideoTaskId(tid)
+      setVidSegmentCount(videoSegmentCount)
+      setVidSegmentsCompleted(0)
+      setVidRhTaskIds([])
       setVidStatus("proc")
       pollRef.current = setInterval(async () => {
         try {
           const vd = await queryPromoVideoStatus(tid)
           setVidProgress(vd.progress || 0)
+          if (vd.rh_video_task_ids?.length) setVidRhTaskIds(vd.rh_video_task_ids)
+          if (vd.segment_count) setVidSegmentCount(vd.segment_count)
+          if (vd.segments_completed != null) setVidSegmentsCompleted(vd.segments_completed)
           if (vd.status === "video_completed") {
             setVidStatus("done")
             const url = vd.video_url || ""
@@ -399,7 +419,7 @@ export default function PromoVideoWorkflow() {
             toast({ title: "宣传视频生成成功！" })
           } else if (vd.status === "video_failed") {
             setVidStatus("fail")
-            setVidErr(vd.error || "视频生成失败")
+            setVidErr(formatPromoError(vd.error || "视频生成失败"))
             stopPoll()
           }
         } catch {
@@ -423,6 +443,13 @@ export default function PromoVideoWorkflow() {
     setVidProgress(0)
     setVidErr("")
     setVidPrompt("")
+    setVideoResolution("720p")
+    setVideoRatio("adaptive")
+    setRealPersonMode(true)
+    setVideoInstanceType("default")
+    setVidRhTaskIds([])
+    setVidSegmentCount(0)
+    setVidSegmentsCompleted(0)
     setStoryTaskId("")
     setVideoTaskId("")
     setAudioSample(null)
@@ -804,6 +831,7 @@ export default function PromoVideoWorkflow() {
                 </Button>
                 <Button
                   onClick={() => {
+                    setVideoRatio(formData.ratio)
                     void autoPrompt()
                     setStep("prompt")
                   }}
@@ -880,12 +908,81 @@ export default function PromoVideoWorkflow() {
             <textarea
               value={vidPrompt}
               onChange={(e) => setVidPrompt(e.target.value)}
-              placeholder="描述镜头运动、氛围、转场节奏…"
+              placeholder="描述镜头运动、氛围、转场节奏… 使用 Image1, Image2 引用分镜"
               className={cn(
                 selectClass,
                 "min-h-[200px] font-mono text-[12px] leading-relaxed",
               )}
             />
+
+            {/* 视频生成设置 */}
+            <div className="mt-6 space-y-4 rounded-xl border border-sky-100/80 bg-sky-50/30 p-4 dark:border-sky-500/10 dark:bg-sky-500/5">
+              <p className="text-[13px] font-semibold text-sky-700 dark:text-sky-300">视频生成设置</p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-2 block text-[12px] font-medium text-slate-500">视频分辨率</label>
+                  <select
+                    value={videoResolution}
+                    onChange={(e) => setVideoResolution(e.target.value as PromoVideoResolution)}
+                    className={selectClass}
+                  >
+                    {PROMO_VIDEO_RESOLUTIONS.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-medium text-slate-500">画面比例</label>
+                  <select
+                    value={videoRatio}
+                    onChange={(e) => setVideoRatio(e.target.value)}
+                    className={selectClass}
+                  >
+                    {PROMO_RATIOS.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-medium text-slate-500">成片时长</label>
+                  <div className={cn(selectClass, "bg-slate-50 text-slate-600 dark:bg-white/5")}>
+                    {formData.duration} 秒
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-medium text-slate-500">算力实例</label>
+                  <select
+                    value={videoInstanceType}
+                    onChange={(e) => setVideoInstanceType(e.target.value as PromoRhInstanceType)}
+                    className={selectClass}
+                  >
+                    {PROMO_RH_INSTANCE_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] text-slate-700 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={realPersonMode}
+                  onChange={(e) => setRealPersonMode(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-500 focus:ring-sky-500"
+                />
+                真人模式（Seedance real_person_mode）
+              </label>
+
+              <p className="text-[12px] text-slate-500">
+                将分为 <span className="font-semibold text-sky-600">{videoSegmentCount}</span> 段 × 15 秒并发生成
+                {selected.size > 0 && (
+                  <span className="ml-1 text-slate-400">
+                    · 已选 {selected.size} 张分镜
+                  </span>
+                )}
+              </p>
+            </div>
 
             <div className="mt-4 flex gap-3">
               <Button
@@ -936,7 +1033,20 @@ export default function PromoVideoWorkflow() {
               <h3 className="mb-2 text-lg font-semibold text-slate-800 dark:text-slate-200">
                 正在生成宣传视频
               </h3>
-              <p className="mb-6 text-[13px] text-slate-500">预计 5–20 分钟，请耐心等待</p>
+              <p className="mb-2 text-[13px] text-slate-500">
+                {vidSegmentCount > 1
+                  ? `正在生成第 ${Math.min(vidSegmentsCompleted + 1, vidSegmentCount)}/${vidSegmentCount} 段视频…`
+                  : "预计 5–20 分钟，请耐心等待"}
+              </p>
+              {vidRhTaskIds.length > 0 && (
+                <div className="mb-4 max-w-md space-y-1 text-center font-mono text-[11px] text-slate-400">
+                  {vidRhTaskIds.map((id, i) => (
+                    <p key={id} className="break-all">
+                      段 {i + 1} taskId: {id}
+                    </p>
+                  ))}
+                </div>
+              )}
               <div className="h-2 w-full max-w-xs overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
                 <div
                   className="h-full rounded-full bg-sky-500 transition-all duration-500"
@@ -987,7 +1097,7 @@ export default function PromoVideoWorkflow() {
             <div className="flex flex-col items-center justify-center rounded-2xl border border-red-200/60 bg-red-50/30 py-16 dark:border-red-500/20 dark:bg-red-500/5">
               <XCircle className="mb-4 h-12 w-12 text-red-400" />
               <h3 className="mb-2 text-lg font-semibold text-red-600 dark:text-red-400">视频生成失败</h3>
-              <p className="mb-6 max-w-sm text-center text-[13px] text-slate-500">{vidErr}</p>
+              <p className="mb-6 max-w-sm text-center text-[13px] text-slate-500">{formatPromoError(vidErr)}</p>
               <Button onClick={reset} className="rounded-full bg-sky-500 hover:bg-sky-600">
                 重新开始
               </Button>

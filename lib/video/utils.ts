@@ -32,8 +32,29 @@ export function isHttpUrl(url: string): boolean {
 
 /** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
 export function resolveMediaUrl(url: string): string {
-  if (!url || url.startsWith("http") || url.startsWith("blob:") || url.startsWith("data:")) return url
-  const base = getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
+  if (!url || url.startsWith("blob:") || url.startsWith("data:")) return url
+
+  const fastapiBase =
+    getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
+  const staticPostprocess = "/static/video-postprocess/"
+
+  if (url.startsWith("http")) {
+    try {
+      const parsed = new URL(url)
+      if (parsed.pathname.includes(staticPostprocess)) {
+        const path = parsed.pathname + parsed.search
+        const base = fastapiBase.replace(/\/$/, "")
+        if (base && !url.startsWith(base)) {
+          return `${base}${path}`
+        }
+      }
+    } catch {
+      /* keep original */
+    }
+    return url
+  }
+
+  const base = fastapiBase
   return `${base.replace(/\/$/, "")}${url.startsWith("/") ? url : `/${url}`}`
 }
 

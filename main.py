@@ -3473,10 +3473,11 @@ from lib.promo_video_service import (
     get_grid_dims,
     pick_all_urls,
     pick_first_valid_url,
+    plan_promo_video_segments,
     query_runninghub_task,
-    slice_images_for_segments,
+    resolve_frame_paths,
     submit_grid_crop_to_rh,
-    submit_sparkvideo_task,
+    submit_seedance_video_to_rh,
     submit_storyboard_to_rh,
     upload_to_runninghub,
     wait_for_runninghub_task,
@@ -3556,6 +3557,10 @@ class PromoVideoGenerateRequest(BaseModel):
     storyboard_task_id: str
     selected_indices: list[int] = []
     video_prompt: str = ""
+    video_resolution: str = "720p"
+    real_person_mode: bool = True
+    instance_type: str = "default"
+    ratio: str = ""
 
 
 class PromoVideoStatusResponse(BaseModel):
@@ -3564,6 +3569,9 @@ class PromoVideoStatusResponse(BaseModel):
     video_url: str = ""
     progress: int = 0
     error: str = ""
+    rh_video_task_ids: list[str] = []
+    segment_count: int = 0
+    segments_completed: int = 0
 
 
 def _new_promo_video_task_id() -> str:
@@ -3912,8 +3920,7 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
         return
     story = _promo_video_task_store.get(gen_req.storyboard_task_id)
     if not story:
-        task["status"] = "video_failed"
-        task["error"] = "分镜任务不存在"
+        _promo_patch_task(task_id, status="video_failed", error="分镜任务不存在")
         return
     public_base = task.get("public_base_url") or story.get("public_base_url") or ""
     output_dir = os.path.join(POST_PROCESS_ROOT, task_id)
@@ -3924,20 +3931,31 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
         and os.path.isfile(_local_ff)
         else "ffmpeg"
     )
+    segments_completed = 0
+    segment_count = 0
+    rh_ids: list[str] = []
+
     try:
-        task["status"] = "video_processing"
-        task["progress"] = 5
+        _promo_patch_task(task_id, status="video_processing", progress=5, error="")
         rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
         if not rh_key:
             raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
 
-        frame_urls = story.get("frame_urls") or []
-        selected = [frame_urls[i] for i in gen_req.selected_indices if 0 <= i < len(frame_urls)]
-        if not selected:
-            raise RuntimeError("未选中有效分镜")
+        selected_paths = resolve_frame_paths(
+            story,
+            gen_req.selected_indices,
+            POST_PROCESS_ROOT,
+        )
+        if not selected_paths:
+            raise RuntimeError("未选中有效分镜（本地帧文件不存在）")
 
         duration = int(story.get("duration") or 15)
-        ratio = story.get("ratio") or "adaptive"
+        ratio = (gen_req.ratio or "").strip() or story.get("ratio") or "adaptive"
+        video_resolution = (gen_req.video_resolution or "720p").strip()
+        real_person_mode = bool(gen_req.real_person_mode)
+        instance_type = (gen_req.instance_type or "default").strip()
+        promo_script = (story.get("promo_script") or "").strip()
+
         voice_rh_url = (story.get("voice_rh_url") or "").strip()
         if not voice_rh_url:
             audio_b64 = (story.get("audio_base64") or "").strip()
@@ -3946,45 +3964,125 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
                 await _decode_b64_file(audio_b64, voice_path)
                 voice_rh_url = await upload_to_runninghub(rh_key, voice_path)
                 story["voice_rh_url"] = voice_rh_url
-        audio_urls = [voice_rh_url] if voice_rh_url else None
-        segment_count = max(1, (duration + 14) // 15)
-        segments = slice_images_for_segments(selected, segment_count)
 
-        async def _render_segment(seg_idx: int, seg_images: list[str]) -> tuple[int, str, str]:
-            seg_dur = min(15, duration - seg_idx * 15) if segment_count > 1 else duration
-            rh_id = await submit_sparkvideo_task(
+        segment_plans = plan_promo_video_segments(
+            selected_paths=selected_paths,
+            total_duration=duration,
+            video_prompt=gen_req.video_prompt.strip(),
+            promo_script=promo_script,
+        )
+        segment_count = len(segment_plans)
+        _promo_patch_task(
+            task_id,
+            segment_count=segment_count,
+            segments_completed=0,
+            rh_video_task_ids=[],
+            progress=10,
+        )
+
+        completed_lock = asyncio.Lock()
+
+        async def _render_segment(plan) -> tuple[int, str, str]:
+            nonlocal segments_completed
+            seg_idx = plan.segment_index
+            seg_output = os.path.join(output_dir, f"segment_{seg_idx}")
+            os.makedirs(seg_output, exist_ok=True)
+
+            rh_image_urls: list[str] = []
+            for fp in plan.frame_paths:
+                rh_image_urls.append(await upload_to_runninghub(rh_key, fp))
+
+            rh_id = await submit_seedance_video_to_rh(
                 rh_key,
-                gen_req.video_prompt.strip(),
-                seg_images,
-                seg_dur,
+                rh_image_urls,
+                plan.prompt,
+                duration=plan.duration_sec,
+                resolution=video_resolution,
                 ratio=ratio,
-                audio_urls=audio_urls,
+                real_person_mode=real_person_mode,
+                audio_rh_url=voice_rh_url or None,
+                instance_type=instance_type,
+                output_dir=seg_output,
             )
-            result = await wait_for_runninghub_task(rh_key, rh_id, max_wait=900)
+            rh_ids.append(rh_id)
+            _promo_patch_task(
+                task_id,
+                rh_video_task_ids=list(rh_ids),
+                progress=15 + int((seg_idx / max(segment_count, 1)) * 10),
+            )
+
+            def _on_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
+                base = 15 + int((segments_completed / max(segment_count, 1)) * 70)
+                seg_part = int(min(elapsed / 600.0, 1.0) * (70 / max(segment_count, 1)))
+                _promo_patch_task(
+                    task_id,
+                    progress=min(84, base + seg_part),
+                    rh_video_task_ids=list(rh_ids),
+                )
+
+            try:
+                result = await wait_for_runninghub_task(
+                    rh_key,
+                    rh_id,
+                    max_wait=900,
+                    on_poll=_on_poll,
+                    task_label="视频",
+                )
+            except Exception as e:
+                raise RuntimeError(f"第 {seg_idx + 1}/{segment_count} 段生成失败：{e}") from e
+
             video_url = pick_first_valid_url(result.get("results"))
             if not video_url:
-                raise RuntimeError(f"SparkVideo 段 {seg_idx + 1} 无有效输出")
-            seg_path = await download_file(video_url, output_dir, f"segment_{seg_idx}.mp4")
+                raise RuntimeError(f"第 {seg_idx + 1}/{segment_count} 段无有效视频输出")
+            seg_path = await download_file(
+                video_url,
+                output_dir,
+                f"segment_{seg_idx}.mp4",
+            )
+
+            async with completed_lock:
+                segments_completed += 1
+                _promo_patch_task(
+                    task_id,
+                    segments_completed=segments_completed,
+                    rh_video_task_ids=list(rh_ids),
+                    progress=15 + int((segments_completed / max(segment_count, 1)) * 70),
+                )
             return seg_idx, rh_id, seg_path
 
-        task["progress"] = 15
         segment_results = await asyncio.gather(
-            *[_render_segment(seg_idx, seg_images) for seg_idx, seg_images in enumerate(segments)]
+            *[_render_segment(plan) for plan in segment_plans]
         )
         segment_results.sort(key=lambda x: x[0])
-        rh_ids = [r[1] for r in segment_results]
         segment_paths = [r[2] for r in segment_results]
-        task["progress"] = 85
+        _promo_patch_task(task_id, progress=85, rh_video_task_ids=[r[1] for r in segment_results])
 
         final_path = os.path.join(output_dir, "final.mp4")
         concatenate_videos_ffmpeg(segment_paths, final_path, ffmpeg_path=ffmpeg_bin)
-        task["video_url"] = _promo_public_url(public_base, final_path)
-        task["rh_task_ids"] = rh_ids
-        task["status"] = "video_completed"
-        task["progress"] = 100
+        _promo_patch_task(
+            task_id,
+            video_url=_promo_public_url(public_base, final_path),
+            rh_video_task_ids=[r[1] for r in segment_results],
+            rh_task_ids=[r[1] for r in segment_results],
+            status="video_completed",
+            progress=100,
+            segments_completed=segment_count,
+            segment_count=segment_count,
+            error="",
+        )
     except Exception as e:
-        task["status"] = "video_failed"
-        task["error"] = str(e)
+        err = str(e) or "视频生成失败"
+        if "1007" in err or "Could not decode image" in err:
+            err = "分镜图未正确上传，请重试生成视频"
+        _promo_patch_task(
+            task_id,
+            status="video_failed",
+            error=err,
+            rh_video_task_ids=rh_ids,
+            segment_count=segment_count,
+            segments_completed=segments_completed,
+            failed_segment=segments_completed + 1 if segment_count else None,
+        )
 
 
 from routes.promo_video_routes import router as promo_video_router

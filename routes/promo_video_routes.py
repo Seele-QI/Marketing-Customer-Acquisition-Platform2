@@ -419,6 +419,12 @@ async def promo_video_generate(req: Request):
 
         "rh_task_ids": [],
 
+        "rh_video_task_ids": [],
+
+        "segment_count": max(1, duration // 15) if duration % 15 == 0 else max(1, (duration + 14) // 15),
+
+        "segments_completed": 0,
+
         "storyboard_task_id": gen_req.storyboard_task_id,
 
         "public_base_url": public_base,
@@ -426,6 +432,14 @@ async def promo_video_generate(req: Request):
         "error": "",
 
         "cost": cost,
+
+        "video_resolution": gen_req.video_resolution,
+
+        "real_person_mode": gen_req.real_person_mode,
+
+        "instance_type": gen_req.instance_type,
+
+        "ratio": gen_req.ratio or story_task.get("ratio", "adaptive"),
 
     }
 
@@ -468,6 +482,12 @@ async def promo_video_video_status(taskId: str):
         progress=task.get("progress", 0),
 
         error=task.get("error", ""),
+
+        rh_video_task_ids=task.get("rh_video_task_ids") or task.get("rh_task_ids") or [],
+
+        segment_count=int(task.get("segment_count") or 0),
+
+        segments_completed=int(task.get("segments_completed") or 0),
 
     )
 

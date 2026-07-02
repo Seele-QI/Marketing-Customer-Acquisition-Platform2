@@ -3,8 +3,10 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 
 import httpx
 from PIL import Image
@@ -52,17 +54,27 @@ async def generate_storyboard_prompt(deepseek_api_key, product_name, selling_poi
     return await call_deepseek(deepseek_api_key, STORYBOARD_SYSTEM_PROMPT, user_prompt)
 
 
-VIDEO_PROMPT_SYSTEM_PROMPT = "你是一位视频导演和AI视频生成提示词专家。请根据用户的产品信息以及选中的分镜图数量，生成一段用于Seedance/SparkVideo 2.0 AI视频生成模型的提示词。\n\n要求：\n1. 使用 @Image 1, @Image 2 等引用对应的参考图片，构建完整视频叙事\n2. 描述画面的运镜、转场、节奏\n3. 结合产品卖点，让视频有叙事性\n4. 注意节奏匹配\n5. 不要超过500字\n6. 直接输出提示词"
+VIDEO_PROMPT_SYSTEM_PROMPT = (
+    "你是一位视频导演和AI视频生成提示词专家。请根据用户的产品信息以及选中的分镜图数量，"
+    "生成一段用于 Seedance 2.0 AI视频生成模型的提示词。\n\n"
+    "要求：\n"
+    "1. 使用 Image1, Image2, Image3 等（无空格、无 @ 符号）引用对应的参考图片，构建完整视频叙事\n"
+    "2. 描述画面的运镜、转场、节奏\n"
+    "3. 结合产品卖点，让视频有叙事性\n"
+    "4. 注意节奏匹配\n"
+    "5. 不要超过500字\n"
+    "6. 直接输出提示词"
+)
 
 
 async def generate_video_prompt(deepseek_api_key, promo_script, style, frame_count, duration):
-    image_refs = ", ".join([f"@Image {i+1}" for i in range(frame_count)])
+    image_refs = ", ".join([f"Image{i + 1}" for i in range(frame_count)])
     user_prompt = (
         f"宣传文案：{promo_script}\n"
         f"视频风格：{style or '科技感'}\n"
         f"视频时长：{duration}秒\n"
         f"参考图片数量：{frame_count}张（分别是 {image_refs}）\n"
-        f"请生成一段可用于AI视频生成的提示词，用 @Image 1~N 引用对应图片。"
+        f"请生成一段可用于AI视频生成的提示词，用 Image1~Image{frame_count} 引用对应图片。"
     )
     return await call_deepseek(deepseek_api_key, VIDEO_PROMPT_SYSTEM_PROMPT, user_prompt)
 
@@ -70,7 +82,22 @@ async def generate_video_prompt(deepseek_api_key, promo_script, style, frame_cou
 RH_BASE_URL = "https://www.runninghub.cn/openapi/v2"
 STORYBOARD_AI_APP_ID = "2004879210508419073"
 CROP_AI_APP_ID = "2037785424789245953"
+SEEDANCE_AI_APP_ID = "2037453629342355457"
+SEEDANCE_IMAGE_NODES = ["2", "7", "8", "9", "10", "11", "12", "13", "14"]
+SEEDANCE_AUDIO_NODE = "27"
 SPARKVIDEO_ENDPOINT = "/rhart-video/sparkvideo-2.0/multimodal-video"
+
+# RH Seedance AI App node 1 fieldData（与 RH 文档一致）
+RH_SEEDANCE_DURATION_FIELD_DATA = (
+    '[["4","5","6","7","8","9","10","11","12","13","14","15"], {"default": "5"}]'
+)
+RH_SEEDANCE_RATIO_FIELD_DATA = (
+    '[["adaptive", "16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], {"default": "adaptive"}]'
+)
+RH_SEEDANCE_RESOLUTION_FIELD_DATA = (
+    '[["480p", "720p", "1080p", "2k", "4k"], {"default": "720p"}]'
+)
+RH_SEEDANCE_REAL_PERSON_FIELD_DATA = '[["true", "false"], {"default": "true"}]'
 
 # RH API 文档 node 5 fieldData（完整 JSON 字符串，勿简化为 fieldValue）
 RH_CHANNEL_FIELD_DATA = (
@@ -272,6 +299,7 @@ async def submit_sparkvideo_task(
     real_person_mode=False,
     audio_urls: list[str] | None = None,
 ):
+    """Deprecated: use submit_seedance_video_to_rh with RH-uploaded image URLs."""
     url = f"{RH_BASE_URL}{SPARKVIDEO_ENDPOINT}"
     voice_urls = [u for u in (audio_urls or []) if u]
     payload = {
@@ -293,6 +321,107 @@ async def submit_sparkvideo_task(
     if not task_id:
         raise ValueError(f"SparkVideo 返回无 taskId: {str(data)[:500]}")
     logger.info(f"SparkVideo task submitted: taskId={task_id}")
+    return task_id
+
+
+async def submit_seedance_video_to_rh(
+    api_key: str,
+    image_rh_urls: list[str],
+    prompt: str,
+    *,
+    duration: int = 15,
+    resolution: str = "720p",
+    ratio: str = "adaptive",
+    real_person_mode: bool = True,
+    audio_rh_url: str | None = None,
+    instance_type: str = "default",
+    output_dir: str | None = None,
+) -> str:
+    """Submit Seedance 2.0 AI App; image_rh_urls must be RH download_url (max 9)."""
+    if not image_rh_urls:
+        raise ValueError("至少需一张参考图")
+    if len(image_rh_urls) > len(SEEDANCE_IMAGE_NODES):
+        raise ValueError(f"每段最多 {len(SEEDANCE_IMAGE_NODES)} 张参考图")
+
+    url = f"{RH_BASE_URL}/run/ai-app/{SEEDANCE_AI_APP_ID}"
+    dur_str = str(min(15, max(4, int(duration))))
+    node_info_list: list[dict] = [
+        {
+            "nodeId": "1",
+            "fieldName": "duration",
+            "fieldValue": dur_str,
+            "fieldData": RH_SEEDANCE_DURATION_FIELD_DATA,
+            "description": "视频时长（秒）",
+        },
+        {
+            "nodeId": "1",
+            "fieldName": "ratio",
+            "fieldValue": ratio or "adaptive",
+            "fieldData": RH_SEEDANCE_RATIO_FIELD_DATA,
+            "description": "画面比例",
+        },
+        {
+            "nodeId": "1",
+            "fieldName": "resolution",
+            "fieldValue": resolution or "720p",
+            "fieldData": RH_SEEDANCE_RESOLUTION_FIELD_DATA,
+            "description": "视频分辨率",
+        },
+        {
+            "nodeId": "1",
+            "fieldName": "prompt",
+            "fieldValue": (prompt or "").strip(),
+            "description": "视频提示词",
+        },
+        {
+            "nodeId": "1",
+            "fieldName": "real_person_mode",
+            "fieldValue": "true" if real_person_mode else "false",
+            "fieldData": RH_SEEDANCE_REAL_PERSON_FIELD_DATA,
+            "description": "真人模式",
+        },
+    ]
+
+    padded_urls = list(image_rh_urls) + ["None"] * (len(SEEDANCE_IMAGE_NODES) - len(image_rh_urls))
+    for node_id, img_url in zip(SEEDANCE_IMAGE_NODES, padded_urls):
+        node_info_list.append(
+            {
+                "nodeId": node_id,
+                "fieldName": "image",
+                "fieldValue": img_url,
+                "description": "参考图",
+            }
+        )
+
+    if audio_rh_url:
+        node_info_list.append(
+            {
+                "nodeId": SEEDANCE_AUDIO_NODE,
+                "fieldName": "audio",
+                "fieldValue": audio_rh_url,
+                "description": "参考音色",
+            }
+        )
+
+    payload = {
+        "nodeInfoList": node_info_list,
+        "instanceType": instance_type or "default",
+        "usePersonalQueue": "false",
+    }
+    _write_debug_json(output_dir, "rh_seedance_submit_payload.json", {
+        "url": url,
+        "payload": payload,
+        "api_key": "***redacted***",
+    })
+    try:
+        data = await _rh_post_json(api_key, url, payload)
+    except Exception as e:
+        raise RuntimeError(f"Seedance 视频工作流提交失败: {e}") from e
+    _write_debug_json(output_dir, "rh_seedance_submit_response.json", data)
+    task_id = (data.get("taskId") or "").strip()
+    if not task_id:
+        raise ValueError(f"Seedance 工作流返回无 taskId: {str(data)[:500]}")
+    logger.info("Seedance video task submitted: taskId=%s images=%s", task_id, len(image_rh_urls))
     return task_id
 
 
@@ -566,6 +695,123 @@ def slice_images_for_segments(image_urls, segment_count):
         result.append(image_urls[start:end])
         start = end
     return result
+
+
+def resolve_frame_paths(
+    story: dict,
+    selected_indices: list[int],
+    post_process_root: str,
+) -> list[str]:
+    """Resolve selected storyboard frames to local absolute paths."""
+    frame_paths: list[str] = story.get("frame_paths") or []
+    frame_urls: list[str] = story.get("frame_urls") or []
+    resolved: list[str] = []
+    prefix = "/static/video-postprocess/"
+
+    for idx in selected_indices:
+        if idx < 0:
+            continue
+        local: str | None = None
+        if idx < len(frame_paths):
+            candidate = (frame_paths[idx] or "").strip()
+            if candidate and os.path.isfile(candidate):
+                local = os.path.abspath(candidate)
+        if not local and idx < len(frame_urls):
+            url = (frame_urls[idx] or "").strip()
+            if url.startswith(prefix):
+                rel = url[len(prefix):].lstrip("/").replace("/", os.sep)
+                candidate = os.path.join(post_process_root, rel)
+                if os.path.isfile(candidate):
+                    local = os.path.abspath(candidate)
+        if local:
+            resolved.append(local)
+    return resolved
+
+
+_IMAGE_REF_RE = re.compile(
+    r"@?\s*Image\s*(\d+)|@Image\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def build_seedance_segment_prompt(
+    base_prompt: str,
+    image_count: int,
+    seg_idx: int,
+    total_segs: int,
+    promo_script: str = "",
+) -> str:
+    """Normalize image refs to Image1..ImageK (segment-local) and append segment context."""
+    prompt = (base_prompt or "").strip()
+    if not prompt:
+        prompt = "产品宣传视频，流畅运镜与转场。"
+
+    def _repl(m: re.Match) -> str:
+        old_num = int(m.group(1) or m.group(2) or "1")
+        new_num = min(max(old_num, 1), image_count)
+        return f"Image{new_num}"
+
+    prompt = _IMAGE_REF_RE.sub(_repl, prompt)
+    prompt = re.sub(
+        r"@Image\s*(\d+)",
+        lambda m: f"Image{min(int(m.group(1)), image_count)}",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+
+    if total_segs > 1:
+        prompt += f"（第 {seg_idx + 1}/{total_segs} 段，15 秒，承接前段叙事）"
+
+    script_snippet = (promo_script or "").strip().replace("\n", " ")[:80]
+    if script_snippet:
+        prompt += f" 叙事锚点：{script_snippet}"
+
+    return prompt
+
+
+@dataclass
+class VideoSegmentPlan:
+    segment_index: int
+    frame_paths: list[str]
+    duration_sec: int
+    prompt: str
+
+
+def plan_promo_video_segments(
+    *,
+    selected_paths: list[str],
+    total_duration: int,
+    video_prompt: str,
+    promo_script: str,
+) -> list[VideoSegmentPlan]:
+    if not selected_paths:
+        raise ValueError("未选中有效分镜")
+    segment_count = max(1, total_duration // 15)
+    if total_duration % 15 != 0:
+        segment_count = max(1, (total_duration + 14) // 15)
+    path_slices = slice_images_for_segments(selected_paths, segment_count)
+    plans: list[VideoSegmentPlan] = []
+    for seg_idx, paths in enumerate(path_slices):
+        if not paths:
+            raise ValueError(f"第 {seg_idx + 1} 段无分镜图")
+        if len(paths) > len(SEEDANCE_IMAGE_NODES):
+            raise ValueError("请减少选中分镜或缩短时长（每段最多 9 张参考图）")
+        seg_prompt = build_seedance_segment_prompt(
+            video_prompt,
+            len(paths),
+            seg_idx,
+            segment_count,
+            promo_script,
+        )
+        plans.append(
+            VideoSegmentPlan(
+                segment_index=seg_idx,
+                frame_paths=paths,
+                duration_sec=15,
+                prompt=seg_prompt,
+            )
+        )
+    return plans
 
 
 def concatenate_videos_ffmpeg(video_paths, output_path, ffmpeg_path="ffmpeg"):

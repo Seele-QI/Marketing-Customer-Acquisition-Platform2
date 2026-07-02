@@ -47,6 +47,9 @@ export function formatPromoError(raw: string): string {
   if (/下载校验失败/i.test(s)) {
     return s
   }
+  if (/1007|Could not decode image/i.test(s)) {
+    return "分镜图未正确上传，请重试生成视频"
+  }
   return s
 }
 
@@ -88,6 +91,9 @@ export type PromoVideoStatus = {
   progress?: number
   video_url?: string
   error?: string
+  rh_video_task_ids?: string[]
+  segment_count?: number
+  segments_completed?: number
 }
 
 export async function submitPromoStoryboard(payload: PromoStoryboardPayload) {
@@ -130,6 +136,10 @@ export async function submitPromoVideo(payload: {
   storyboard_task_id: string
   selected_indices: number[]
   video_prompt: string
+  video_resolution?: string
+  real_person_mode?: boolean
+  instance_type?: string
+  ratio?: string
 }) {
   const r = await promoFetch("/api/promo-video/generate-video", {
     method: "POST",

@@ -35,6 +35,7 @@ const SOURCE_LABELS: Record<HistoryVideoSource, string> = {
   "digital-human": "数字人口播",
   "image-video": "图文视频",
   mashup: "视频混剪",
+  "promo-video": "宣传视频",
 }
 
 function getRecordSource(record: HistoryRecord): HistoryVideoSource {
