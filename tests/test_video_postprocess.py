@@ -590,7 +590,7 @@ def test_video_generate_submits_video_once_per_audio_segment(
     stored = main._task_store[resp.task_id]
     assert stored["segment_count"] == 3
     assert stored["rh_video_task_ids"] == ["rh-seg-0", "rh-seg-1", "rh-seg-2"]
-    assert stored["credit_clone_cost"] == 50
+    assert stored["credit_clone_cost"] == 10
     assert stored["credit_video_cost"] == 750
     mock_consume_clone.assert_called_once_with(
         user_id=_FAKE_USER.id,
