@@ -22,6 +22,7 @@
 | F05 | medium | dh-v2 返回上一步 `abandon` 丢跟踪 | auto | `dh-video-v2-workflow.tsx` |
 | F06 | medium | 图文/混剪失败仅 step3 + 全清 reset | auto | `image-video-workflow.tsx`, `mashup-video-workflow.tsx` |
 | F07 | medium | 文案提取 URL 输入未持久化 | auto | `copywriting-extract-view.tsx` |
+| F10 | high | 身份定位无缓存（向导/资料/报告） | auto | `ip-positioning-store.ts`, `account-positioning.tsx` |
 | F08 | low | runtime `sanitizeTask` 将非终态一律复活为 running | manual | `lib/task-runtime/store.ts` |
 | F09 | low | 数字人口播双写（task-store + runtime）易漂移 | manual | 后续收敛 |
 
@@ -65,3 +66,6 @@
 | 2 | F02, F06, F07 | done |
 | 3 | F03 | done |
 | 4 | F04 + 历史加固 | done |
+| 5 | F10 身份定位缓存 | done |
+
+详见 [cache-full-AUDIT.md](./cache-full-AUDIT.md) 全站缓存矩阵。
