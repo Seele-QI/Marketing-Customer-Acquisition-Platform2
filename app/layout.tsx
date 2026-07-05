@@ -3,6 +3,7 @@ import { Inter } from "next/font/google"
 import Script from "next/script"
 import { Analytics } from "@vercel/analytics/next"
 import { ThemeProvider } from "@/components/theme-provider"
+import { GeoSwitchFlash } from "@/components/geo/geo-switch-flash"
 import { THEME_INIT_SCRIPT } from "@/lib/theme-init-script"
 import "./globals.css"
 
@@ -30,6 +31,8 @@ export default function RootLayout({
         </Script>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           {children}
+          <GeoSwitchFlash />
+          <EditableContextMenu />
         </ThemeProvider>
         {process.env.NODE_ENV === "production" && <Analytics />}
       </body>

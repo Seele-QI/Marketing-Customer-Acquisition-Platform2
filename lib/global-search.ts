@@ -223,6 +223,38 @@ function buildItems(): GlobalSearchItem[] {
       searchBlob: "文案提取 视频 提取 字幕 语音转文字 文案 口播",
       action: { type: "goView", view: "文案提取" },
     },
+    {
+      id: "nav-geo-kb",
+      kind: "导航",
+      title: "企业知识库搭建",
+      subtitle: "GEO优化 · 实体建模与 JSON-LD",
+      searchBlob: "GEO 生成式引擎优化 知识库 实体 Schema JSON-LD 企业知识库搭建",
+      action: { type: "goView", view: "企业知识库搭建" },
+    },
+    {
+      id: "nav-geo-matrix",
+      kind: "导航",
+      title: "内容矩阵规划",
+      subtitle: "GEO优化 · 主题集群与提示词库",
+      searchBlob: "GEO 生成式引擎优化 内容矩阵 主题集群 提示词 矩阵规划",
+      action: { type: "goView", view: "内容矩阵规划" },
+    },
+    {
+      id: "nav-geo-article",
+      kind: "导航",
+      title: "深度优化文章创作",
+      subtitle: "GEO优化 · 语义清晰与 FAQ 结构化",
+      searchBlob: "GEO 生成式引擎优化 文章创作 深度优化 FAQ 语义",
+      action: { type: "goView", view: "深度优化文章创作" },
+    },
+    {
+      id: "nav-geo-push",
+      kind: "导航",
+      title: "多平台一键推送",
+      subtitle: "GEO优化 · 跨平台发布队列",
+      searchBlob: "GEO 生成式引擎优化 多平台 推送 发布 一键推送",
+      action: { type: "goView", view: "多平台一键推送" },
+    },
   ]
 
   return [...shortcuts, ...team, ...tpl]

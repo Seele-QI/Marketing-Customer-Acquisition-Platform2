@@ -64,6 +64,9 @@
 | `CREDIT_SESSION_TTL_DAYS` | `lib/auth.py` | ✅ | 登录会话有效期 |
 | `CREDIT_EMAIL_TOKEN_TTL_SECONDS` | `lib/auth.py` | ✅ | Magic Link 有效期 |
 | `CREDIT_ADMIN_ACCESS_KEY` | `main.py:_require_admin_key` | ✅ | 积分后台管理密钥 |
+| `SONETTO_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | Sonetto NewAPI（Claude/GPT），须含 `/v1` |
+| `SONETTO_GPT_API_KEY` / `SONETTO_CLAUDE_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | 分渠道 Key |
+| `CREDIT_METERED_KEY` | `main.py:consume-metered` | Sonetto 启用时必填 | 计量扣费服务端密钥 |
 | `RESEND_API_KEY` | `lib/email.py` | ✅ | 邮件投递服务 |
 | `RESEND_FROM` | `lib/email.py` | ✅ | 发件人地址（需在 Resend 后台验证）|
 | `APP_PUBLIC_BASE` | `lib/email.py` | ✅ | 邮件中拼接的公网回调地址 |

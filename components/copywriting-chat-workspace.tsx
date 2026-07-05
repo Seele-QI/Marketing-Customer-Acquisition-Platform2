@@ -17,11 +17,11 @@ import {
   User,
   Bot,
   Brain,
-  ChevronDown,
   X,
   Pencil,
   Clapperboard,
 } from "lucide-react"
+import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -415,8 +415,10 @@ export function CopywritingChatWorkspace({
   const [inputValue, setInputValue] = React.useState("")
   const [isSending, setIsSending] = React.useState(false)
   const [sidebarSearch, setSidebarSearch] = React.useState("")
-  const [showAgentSwitcher, setShowAgentSwitcher] = React.useState(false)
   const [memoryEditing, setMemoryEditing] = React.useState(false)
+  const { models: aiModels, modelId, setModelId } = useAiModels()
+  const modelIdRef = React.useRef(modelId)
+  modelIdRef.current = modelId
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const scrollAnchorRef = React.useRef<HTMLDivElement>(null)
   const inputValueRef = React.useRef(inputValue)
@@ -535,6 +537,7 @@ export function CopywritingChatWorkspace({
         body: JSON.stringify({
           userMessage: content,
           agentName,
+          modelId: modelIdRef.current,
           conversationHistory: history,
           memoryContext: buildMemoryContext(),
         }),
@@ -644,7 +647,7 @@ export function CopywritingChatWorkspace({
       {/*  Left Sidebar (260px) — hidden on narrow screens                 */}
       {/* ================================================================ */}
       <aside className="hidden w-[260px] shrink-0 flex-col border-r border-border/60 bg-slate-50/50 lg:flex dark:bg-slate-950/50">
-        {/* Back + Agent Switcher */}
+        {/* Back + Agent list (browse, not menu) */}
         <div className="border-b border-border/40 p-3">
           {onBack && (
             <button
@@ -657,45 +660,44 @@ export function CopywritingChatWorkspace({
             </button>
           )}
 
-          {/* Agent selector */}
+          <p className="mb-1.5 px-1 text-[11px] font-medium text-slate-400">创作分身</p>
           {allAgents && onAgentSwitch ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowAgentSwitcher(!showAgentSwitcher)}
-                className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-slate-100 dark:hover:bg-white/5"
-              >
-                <span
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                  style={{ backgroundColor: `${themeColor}15` }}
-                >
-                  <span style={{ color: themeColor }}><AgentIcon className="h-4.5 w-4.5" /></span>
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{agentName}</span>
-                <ChevronDown className={cn("h-4 w-4 shrink-0 text-slate-400 transition-transform", showAgentSwitcher && "rotate-180")} />
-              </button>
-
-              {showAgentSwitcher && (
-                <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-xl border border-border/60 bg-white py-1 shadow-lg dark:bg-card">
-                  {allAgents.map((a) => (
-                    <button
-                      key={a.name}
-                      type="button"
-                      className={cn(
-                        "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-slate-50 dark:hover:bg-white/5",
-                        a.name === agentName && "bg-blue-50 font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400",
-                      )}
-                      onClick={() => {
-                        onAgentSwitch(a.name)
-                        setShowAgentSwitcher(false)
-                      }}
+            <div className="flex max-h-[200px] flex-col gap-0.5 overflow-y-auto">
+              {allAgents.map((a) => {
+                const active = a.name === agentName
+                return (
+                  <button
+                    key={a.name}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left transition-colors",
+                      active
+                        ? "bg-white shadow-sm dark:bg-white/10"
+                        : "hover:bg-slate-100 dark:hover:bg-white/5",
+                    )}
+                    onClick={() => onAgentSwitch(a.name)}
+                  >
+                    <span
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+                      style={{ backgroundColor: `${a.color}15` }}
                     >
-                      <a.icon className="h-4 w-4" />
+                      <span style={{ color: a.color }}>
+                        <a.icon className="h-3.5 w-3.5" />
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-[13px]",
+                        active
+                          ? "font-semibold text-foreground"
+                          : "font-medium text-slate-600 dark:text-slate-400",
+                      )}
+                    >
                       {a.name}
-                    </button>
-                  ))}
-                </div>
-              )}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           ) : (
             <div className="flex items-center gap-2 rounded-xl px-2 py-2">
@@ -942,6 +944,14 @@ export function CopywritingChatWorkspace({
                 }}
               />
             )}
+
+            <AiModelPicker
+              modelId={modelId}
+              onChange={setModelId}
+              models={aiModels}
+              disabled={isSending}
+              className="mb-1"
+            />
 
             {/* Input Row */}
             <div className="flex items-end gap-2">

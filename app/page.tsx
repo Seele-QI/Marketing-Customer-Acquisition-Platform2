@@ -5,16 +5,18 @@ import { cn } from "@/lib/utils"
 import { DashboardSidebar, type MainView } from "@/components/dashboard-sidebar"
 import { TopHeader } from "@/components/top-header"
 import { DashboardView } from "@/components/dashboard-view"
-import { CopywritingView } from "@/components/copywriting-view"
 import { ChatWorkspace } from "@/components/chat-workspace"
 import { CopywritingChatWorkspace } from "@/components/copywriting-chat-workspace"
 import CopywritingExtractView from "@/components/copywriting-extract-view"
-import { VideoCreationWorkflow } from "@/components/video-creation-workflow"
-import { ImageVideoWorkflow } from "@/components/image-video-workflow"
-import { MashupVideoWorkflow } from "@/components/mashup-video-workflow"
-import { VideoHistory } from "@/components/video-history"
-import PromoVideoWorkflow from "@/components/promo-video-workflow"
+import { VideoWorkspace } from "@/components/video/video-workspace"
+import { GeoWorkspace } from "@/components/geo/geo-workspace"
 import { ShareDistribute } from "@/components/share-distribute"
+import {
+  VIDEO_VIEWS,
+  getVideoBreadcrumb,
+  isVideoView,
+} from "@/lib/video/workspace"
+import { getGeoBreadcrumb, isGeoView } from "@/lib/geo/workspace"
 import { AccountBinding } from "@/components/account-binding"
 import { AgentCenter } from "@/components/agent-center"
 import { AccountPositioning } from "@/components/account-positioning"
@@ -23,6 +25,7 @@ import { HelpCenterView } from "@/components/help-center-view"
 import { CreditRechargeView } from "@/components/credit-recharge-view"
 import { AdminCreditView } from "@/components/admin-credit-view"
 import { BackToTop } from "@/components/back-to-top"
+import { TaskRuntimeProvider } from "@/components/task-runtime-provider"
 import { TEAM_AGENTS, getTeamAgentByName } from "@/lib/team-agents"
 import {
   Store,
@@ -91,27 +94,15 @@ const teamAgentOptions = TEAM_AGENTS.map((agent) => ({
 }))
 
 /* ------------------------------------------------------------------ */
-/*  Video sub-menu items                                               */
-/* ------------------------------------------------------------------ */
-
-const videoSubMenus = [
-  "视频创作",
-  "图文视频",
-  "视频混剪",
-  "宣传视频",
-  "历史记录",
-] as const
-
-/** Set for fast lookup */
-const videoSubMenuSet = new Set<string>(videoSubMenus)
-
-/* ------------------------------------------------------------------ */
 /*  Breadcrumb logic                                                   */
 /* ------------------------------------------------------------------ */
 
 function getBreadcrumb(view: MainView): { parent: string; current: string } {
-  if (videoSubMenuSet.has(view)) {
-    return { parent: "视频制作", current: view }
+  if (isVideoView(view)) {
+    return getVideoBreadcrumb(view)
+  }
+  if (isGeoView(view)) {
+    return getGeoBreadcrumb(view)
   }
   switch (view) {
     case "文案创作":
@@ -154,38 +145,19 @@ function ContentArea({
   initialExtractedText: string
   setInitialExtractedText: (text: string) => void
 }) {
-  // Video creation workflow — kept mounted (CSS-hidden) to preserve in-progress task state
-  if (activeView === "视频创作") {
+  // 视频创作工作区（与 GEO 隔离；工作区内切换时保持数字人口播挂载）
+  if (isVideoView(activeView)) {
     return (
-      <>
-        <div style={{ display: "block" }}>
-          <VideoCreationWorkflow key="vcw" initialScript={initialVideoScript} />
-        </div>
-        <div style={{ display: "none" }} aria-hidden="true">
-          <VideoCreationWorkflow key="vcw-preserved" initialScript={initialVideoScript} />
-        </div>
-      </>
+      <VideoWorkspace
+        activeView={activeView}
+        initialScript={initialVideoScript}
+      />
     )
   }
 
-  // 图文视频
-  if (activeView === "图文视频") {
-    return <ImageVideoWorkflow />
-  }
-
-  // 视频混剪
-  if (activeView === "视频混剪") {
-    return <MashupVideoWorkflow />
-  }
-
-  // 历史记录
-  if (activeView === "历史记录") {
-    return <VideoHistory />
-  }
-
-  // 宣传视频
-  if (activeView === "宣传视频") {
-    return <PromoVideoWorkflow />
+  // GEO 优化工作区（与视频创作隔离）
+  if (isGeoView(activeView)) {
+    return <GeoWorkspace activeView={activeView} />
   }
 
   // 一键分发
@@ -199,7 +171,7 @@ function ContentArea({
       <CopywritingExtractView
         onJumpToVideo={(script) => {
           setInitialVideoScript(script)
-          onNavigate("视频创作")
+          onNavigate(VIDEO_VIEWS.DIGITAL_HUMAN)
         }}
         onAiRewrite={(text) => {
           setInlineCopywritingAgent("高效口播脚本")
@@ -222,7 +194,7 @@ function ContentArea({
         onAgentSwitch={(name) => setInlineCopywritingAgent(name)}
         onJumpToVideo={(script) => {
           setInitialVideoScript(script)
-          onNavigate("视频创作")
+          onNavigate(VIDEO_VIEWS.DIGITAL_HUMAN)
         }}
         initialUserMessage={initialExtractedText}
         welcomePrompts={[
@@ -349,7 +321,7 @@ export default function Page() {
               onJumpToVideo={(script) => {
                 setInitialVideoScript(script)
                 setAgentChatOpen(false)
-                setActiveView("视频创作")
+                setActiveView(VIDEO_VIEWS.DIGITAL_HUMAN)
               }}
             />
           ) : (
@@ -380,38 +352,40 @@ export default function Page() {
         </div>
       ) : null}
 
-      <div
-        className={cn(
-          "flex min-h-screen w-full min-w-0 flex-1 bg-background",
-          agentChatOpen && "hidden",
-        )}
-      >
-        <DashboardSidebar active={activeView} onSelect={setActiveView} />
+      <TaskRuntimeProvider activeView={activeView} onNavigate={setActiveView}>
+        <div
+          className={cn(
+            "flex min-h-screen w-full min-w-0 flex-1 bg-background",
+            agentChatOpen && "hidden",
+          )}
+        >
+          <DashboardSidebar active={activeView} onSelect={setActiveView} />
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <TopHeader
-            currentPage={`${breadcrumb.parent} / ${breadcrumb.current}`}
-            onNavigate={setActiveView}
-            onOpenAgent={handleOpenAgent}
-          />
-
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden animate-in fade-in duration-200">
-            <ContentArea
-              activeView={activeView}
-              onOpenAgent={handleOpenAgent}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <TopHeader
+              currentPage={`${breadcrumb.parent} / ${breadcrumb.current}`}
               onNavigate={setActiveView}
-              inlineCopywritingAgent={inlineCopywritingAgent}
-              setInlineCopywritingAgent={setInlineCopywritingAgent}
-              initialVideoScript={initialVideoScript}
-              setInitialVideoScript={setInitialVideoScript}
-              initialExtractedText={initialExtractedText}
-              setInitialExtractedText={setInitialExtractedText}
+              onOpenAgent={handleOpenAgent}
             />
-          </div>
-        </div>
 
-        <BackToTop />
-      </div>
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden animate-in fade-in duration-200">
+              <ContentArea
+                activeView={activeView}
+                onOpenAgent={handleOpenAgent}
+                onNavigate={setActiveView}
+                inlineCopywritingAgent={inlineCopywritingAgent}
+                setInlineCopywritingAgent={setInlineCopywritingAgent}
+                initialVideoScript={initialVideoScript}
+                setInitialVideoScript={setInitialVideoScript}
+                initialExtractedText={initialExtractedText}
+                setInitialExtractedText={setInitialExtractedText}
+              />
+            </div>
+          </div>
+
+          <BackToTop />
+        </div>
+      </TaskRuntimeProvider>
     </div>
   )
 }

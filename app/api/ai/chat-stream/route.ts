@@ -1,15 +1,30 @@
 import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
+import { chargeCredit, chargeErrorResponse, chargeMeteredCredit, getCreditBalance, withAuth } from "@/lib/api/with-auth"
+import {
+  DEFAULT_MAX_TOKENS,
+  isArkChatModelId,
+  isSonettoModelId,
+} from "@/lib/llm/model-registry"
+import { getArkChatModelId, isArkChatConfigured } from "@/lib/geo/llm/router"
+import {
+  estimateMaxCredits,
+  settleCredits,
+  type LlmUsage,
+} from "@/lib/llm/pricing"
+import {
+  buildSonettoStreamRequest,
+  extractUsageFromSseChunk,
+} from "@/lib/llm/sonetto-client"
 import { buildCopywritingEnrichedSystemPrompt } from "@/lib/prompts/copywriting-agent-systems"
 import { getWorkflowKnowledgeForAgent } from "@/lib/prompts/copywriting-workflow-knowledge"
 import { deepseekApiKeyMissingUserMessage, getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
-import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 export const runtime = "nodejs"
 
-/** 允许最大 10 MB 请求体（图片 Base64 较大） */
-export const maxDuration = 120
+/** 允许最大 10 MB 请求体（图片 Base64 较大）；Sonetto 南区最长约 280s */
+export const maxDuration = 300
 
 
 /**
@@ -155,6 +170,71 @@ function pipeUpstreamSse(upstreamBody: ReadableStream<Uint8Array>, clientSignal:
   })
 }
 
+/**
+ * Sonetto SSE：透传内容，解析 usage，结束后计量扣费并追加 billing 事件。
+ * 无 usage 时按 estimateCredits 扣费（防白嫖）。
+ */
+function pipeSonettoSseWithBilling(
+  upstreamBody: ReadableStream<Uint8Array>,
+  clientSignal: AbortSignal,
+  settle: (usage: LlmUsage | null) => Promise<{ costCredits: number; balance: number }>,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = upstreamBody.getReader()
+      let usage: LlmUsage | null = null
+      let sawContent = false
+      const onAbort = () => {
+        reader.cancel().catch(() => {})
+      }
+      clientSignal.addEventListener("abort", onAbort, { once: true })
+      try {
+        while (!clientSignal.aborted) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (value) {
+            sawContent = true
+            const text = decoder.decode(value, { stream: true })
+            usage = extractUsageFromSseChunk(text, usage)
+            controller.enqueue(value)
+          }
+        }
+        const trailing = decoder.decode()
+        if (trailing) {
+          usage = extractUsageFromSseChunk(trailing, usage)
+        }
+        if (sawContent) {
+          try {
+            const billing = await settle(usage)
+            const event =
+              `event: billing\ndata: ${JSON.stringify({
+                costCredits: billing.costCredits,
+                balance: billing.balance,
+              })}\n\n`
+            controller.enqueue(encoder.encode(event))
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "CHARGE_FAILED"
+            const event = `event: billing_error\ndata: ${JSON.stringify({ code: msg })}\n\n`
+            controller.enqueue(encoder.encode(event))
+          }
+        }
+      } catch {
+        /* upstream cancelled or client gone */
+      } finally {
+        clientSignal.removeEventListener("abort", onAbort)
+        reader.cancel().catch(() => {})
+        try {
+          controller.close()
+        } catch {
+          /* already closed */
+        }
+      }
+    },
+  })
+}
+
 export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let body: {
     userMessage?: string
@@ -163,6 +243,8 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     conversationHistory?: unknown
     /** 用户记忆上下文（前端 localStorage 提取后传入） */
     memoryContext?: string
+    /** 模型 ID：缺省 deepseek-chat；Sonetto 模型走独立客户端与计量扣费 */
+    modelId?: string
   }
   try {
     body = await request.json()
@@ -172,6 +254,10 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
 
   const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : ""
   const agentName = typeof body.agentName === "string" ? body.agentName.trim() : ""
+  const modelId =
+    typeof body.modelId === "string" && body.modelId.trim()
+      ? body.modelId.trim()
+      : "deepseek-chat"
   const rawImages = Array.isArray(body.images) ? body.images : []
   const conversationHistory = sanitizeConversationHistory(body.conversationHistory)
 
@@ -219,6 +305,132 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     content: t.content,
   }))
 
+  // ── Sonetto（Claude / ChatGPT）：独立客户端 + 计量扣费 ──
+  if (isSonettoModelId(modelId)) {
+    if (hasImages) {
+      return NextResponse.json(
+        { detail: "当前 GPT/Claude 模型暂不支持图片，请改用 DeepSeek 或去掉图片" },
+        { status: 400 },
+      )
+    }
+
+    const inputForEstimate = [
+      enrichedSystemContent,
+      ...historyMessages.map((m) => m.content),
+      effectiveUserText,
+    ].join("\n")
+    const estimateCredits = estimateMaxCredits(modelId, inputForEstimate, DEFAULT_MAX_TOKENS)
+
+    let balance: number
+    try {
+      balance = await getCreditBalance(cookieHeader)
+    } catch {
+      return NextResponse.json(
+        { detail: { code: "BALANCE_FAILED", message: "无法查询积分余额" } },
+        { status: 500 },
+      )
+    }
+    if (balance < estimateCredits) {
+      return NextResponse.json(
+        {
+          detail: {
+            code: "INSUFFICIENT_CREDIT",
+            message: "积分不足",
+            need: estimateCredits,
+            have: balance,
+          },
+        },
+        { status: 402 },
+      )
+    }
+
+    const built = buildSonettoStreamRequest({
+      modelId,
+      messages: [
+        { role: "system", content: enrichedSystemContent },
+        ...historyMessages.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+        { role: "user", content: effectiveUserText },
+      ],
+      maxTokens: DEFAULT_MAX_TOKENS,
+    })
+    if (!built.ok) {
+      return NextResponse.json({ detail: built.detail }, { status: built.status })
+    }
+
+    const { setup } = built
+    const refId = `llm:${userId}:${crypto.randomBytes(8).toString("hex")}`
+    console.log(
+      `[chat-stream] provider=Sonetto, model=${modelId}, estimate=${estimateCredits}, url=${setup.url}`,
+    )
+
+    const upstreamSignal = AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(setup.timeoutMs),
+    ])
+
+    let upstream: Response
+    try {
+      upstream = await fetch(setup.url, {
+        method: "POST",
+        headers: {
+          Authorization: setup.authorization,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify(setup.requestBody),
+        signal: upstreamSignal,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`[chat-stream] fetch Sonetto error:`, msg)
+      return NextResponse.json({ detail: `请求 Sonetto 失败: ${msg}` }, { status: 502 })
+    }
+
+    if (!upstream.ok) {
+      const errText = await upstream.text()
+      return NextResponse.json(
+        { detail: errText.slice(0, 8000) || `HTTP ${upstream.status}` },
+        {
+          status:
+            upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502,
+        },
+      )
+    }
+    if (!upstream.body) {
+      return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
+    }
+
+    const stream = pipeSonettoSseWithBilling(
+      upstream.body,
+      request.signal,
+      async (usage) => {
+        const costCredits = usage
+          ? settleCredits(modelId, usage)
+          : estimateCredits
+        const result = await chargeMeteredCredit({
+          userId,
+          cost: costCredits,
+          refId,
+          note: `AI 模型 ${modelId}`,
+        })
+        return { costCredits: result.cost, balance: result.balance }
+      },
+    )
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    })
+  }
+
   const deepseekKey = getDeepseekApiKey()
   const rawArkKey = readServerEnv("ARK_API_KEY")
   const arkSecret =
@@ -231,13 +443,36 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   /** 带图对话走 chat/completions，Bearer 用识图/通用 Key，与生图专用 ARK_IMAGE_API_KEY 分离 */
   const arkBearer = (arkSecret || rawArkKey).trim()
   const useArkVisionChat = hasImages && Boolean(arkEndpointId) && Boolean(arkBearer)
+  const useArkTextChat = !hasImages && isArkChatModelId(modelId)
 
   let upstreamUrl: string
   let authorization: string
   let requestBody: Record<string, unknown>
   let providerLabel: string
 
-  if (!hasImages) {
+  if (useArkTextChat) {
+    if (!isArkChatConfigured() || !arkBearer) {
+      return NextResponse.json(
+        { detail: "未配置豆包：请设置 ARK_API_KEY 与 ARK_CHAT_MODEL" },
+        { status: 503 },
+      )
+    }
+    const arkModel = getArkChatModelId() || modelId
+    const base =
+      normalizeArkBaseUrl(readServerEnv("ARK_BASE_URL")) || DEFAULT_ARK_BASE_URL
+    upstreamUrl = `${base}/chat/completions`
+    authorization = `Bearer ${arkBearer}`
+    requestBody = {
+      model: arkModel,
+      stream: true,
+      messages: [
+        { role: "system", content: enrichedSystemContent },
+        ...historyMessages,
+        { role: "user", content: effectiveUserText },
+      ],
+    }
+    providerLabel = "豆包"
+  } else if (!hasImages) {
     if (!deepseekKey) {
       return NextResponse.json(
         {

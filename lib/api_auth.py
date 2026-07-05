@@ -29,10 +29,13 @@ from fastapi import HTTPException, Request
 
 from lib.auth import CurrentUser, get_current_user
 from lib.credit import (
+    AI_LLM_COST_PLACEHOLDER,
     CHAT_COST,
-    VIDEO_CREATION_COST,
+    MAX_LLM_COST,
+    VIDEO_CLONE_VOICE_COST,
     VIDEO_IMAGE_TO_VIDEO_COST,
     VIDEO_MASHUP_COST,
+    VIDEO_SEGMENT_COST,
     consume,
     refund,
 )
@@ -41,15 +44,17 @@ from lib.db import transaction
 logger = logging.getLogger(__name__)
 
 # 服务端固定定价表；客户端不允许覆盖。
+# ai_llm 为计量场景占位：公开 /api/credit/consume 仍走固定表，变价仅 consume-metered。
 SCENE_COST_TABLE: dict[str, int] = {
-    "video_creation": VIDEO_CREATION_COST,
+    "video_creation": VIDEO_SEGMENT_COST,
     "video_image_to_video": VIDEO_IMAGE_TO_VIDEO_COST,
     "video_mashup": VIDEO_MASHUP_COST,
-    "video_clone_voice": 50,
+    "video_clone_voice": VIDEO_CLONE_VOICE_COST,
     "ai_chat": CHAT_COST,
     "ai_rewrite": CHAT_COST,
     "ai_ip_positioning": 20,
     "ai_ark_image": 20,
+    "ai_llm": AI_LLM_COST_PLACEHOLDER,
 }
 
 
@@ -114,12 +119,15 @@ def consume_with_idempotency(
     scene: str,
     ref_id: str,
     note: str = "",
+    cost: int | None = None,
 ) -> int:
     """带幂等保护的扣费。同一 (user_id, ref_id) 只会扣一次。
 
     用于防止：
     1. 网络重试导致客户端重复 POST consume；
     2. 攻击者爆破 ref_id 试图刷扣或刷返。
+
+    cost 仅由服务端 helper 传入（变价场景）；None 时使用 SCENE_COST_TABLE 固定价。
     """
     if scene not in SCENE_COST_TABLE:
         raise HTTPException(
@@ -137,8 +145,77 @@ def consume_with_idempotency(
         logger.info("idempotent consume hit user=%s ref=%s", user_id, ref_id)
         return cached
 
-    cost = SCENE_COST_TABLE[scene]
+    if cost is None:
+        cost = SCENE_COST_TABLE[scene]
+    elif scene == "video_clone_voice":
+        if cost != VIDEO_CLONE_VOICE_COST:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "音色克隆扣费金额无效"},
+            )
+    elif scene == "video_creation":
+        if cost <= 0 or cost % VIDEO_SEGMENT_COST != 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "视频段扣费金额无效"},
+            )
+    elif scene == "ai_llm":
+        if not isinstance(cost, int) or cost < 1 or cost > MAX_LLM_COST:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_COST",
+                    "message": f"ai_llm 扣费须为 1–{MAX_LLM_COST} 的整数",
+                },
+            )
+    elif cost != SCENE_COST_TABLE[scene]:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_COST", "message": f"场景 {scene} 扣费金额无效"},
+        )
+
     return consume(user_id, cost, ref_id=ref_id, note=note or scene)
+
+
+def consume_ai_llm(*, user_id: int, ref_id: str, cost: int, note: str = "") -> int:
+    """Sonetto 计量扣费（幂等）。仅服务端 metered 入口调用。"""
+    return consume_with_idempotency(
+        user_id=user_id,
+        scene="ai_llm",
+        ref_id=ref_id,
+        note=note or "AI 模型计量",
+        cost=cost,
+    )
+
+
+def consume_voice_clone(*, user_id: int, ref_id: str, note: str = "") -> int:
+    """扣 50 积分 / 次音色克隆（幂等）。"""
+    return consume_with_idempotency(
+        user_id=user_id,
+        scene="video_clone_voice",
+        ref_id=ref_id,
+        note=note or "音色克隆",
+        cost=VIDEO_CLONE_VOICE_COST,
+    )
+
+
+def consume_video_creation_segments(
+    *, user_id: int, ref_id: str, segment_count: int, note: str = ""
+) -> int:
+    """扣 250×段数 积分 / 次口播视频生成（幂等）。"""
+    if segment_count < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SEGMENT_COUNT", "message": "段数至少为 1"},
+        )
+    total = VIDEO_SEGMENT_COST * segment_count
+    return consume_with_idempotency(
+        user_id=user_id,
+        scene="video_creation",
+        ref_id=ref_id,
+        note=note or f"口播视频生成 {segment_count} 段",
+        cost=total,
+    )
 
 
 def safe_refund(*, user_id: int, scene: str, ref_id: str, reason: str = "") -> None:

@@ -432,7 +432,14 @@
 | `APP_PUBLIC_BASE` | `lib/email.py` | ✅ | 邮件中拼接的公网回调地址 |
 | `DEV_EMAIL_MODE` | `lib/email.py` | ✅ | `1` = 邮件链接打到日志（开发期），`0` = 真实发送 |
 | **`VIDEO_BGM_DIR`** | **`main.py:_resolve_bgm_dir`** | **✅** | **视频剪辑 BGM 素材目录，存放 mp3 / wav / aac / m4a** |
-| `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` | 可选 | 火山方舟 - 识图/多模态 |
+| `SONETTO_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | Sonetto NewAPI 基址（须含 `/v1`），默认 `https://tok.sonetto.top/v1` |
+| `SONETTO_GPT_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | ChatGPT 渠道 Key（与 Claude 分离） |
+| `SONETTO_CLAUDE_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | Claude 渠道 Key |
+| `SONETTO_GPT_MODEL` | `lib/geo/llm/router.ts` | 可选 | GEO 默认 GPT 模型，默认 `gpt-5.5` |
+| `SONETTO_CLAUDE_MODEL` | `lib/geo/llm/router.ts` | 可选 | GEO 默认 Claude 模型，默认 `[kiro]claude-opus-4-7` |
+| `CREDIT_METERED_KEY` | `main.py:consume-metered` / `lib/api/with-auth.ts` | Sonetto 启用时必填 | 计量扣费服务端密钥（浏览器不可见） |
+| `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` / GEO 豆包 | 可选 | 火山方舟 API Key |
+| `ARK_CHAT_MODEL` | `lib/geo/llm/router.ts` / chat-stream | 可选 | 豆包预置模型，默认 `doubao-seed-2-1-pro-260628` |
 | `ARK_ENDPOINT_ID` | 同上 | 可选 | 多模态接入点 ID |
 | `ARK_BASE_URL` | 同上 | 可选 | 火山方舟 API 地域端点 |
 | `ARK_IMAGE_ENDPOINT_ID` | `app/api/ai/ark-images/route.ts` | 可选 | 生图接入点 ID |
@@ -518,34 +525,51 @@ docker build -f Dockerfile.web -t zhongtai-web . && docker run -p 3000:3000 -e N
 
 ---
 
-## 视频生成架构（2026-06-25 重构）
+## 视频生成架构（2026-06-25 重构，2026-07-02 分段管线）
 
-### 异步管线（P1）
+### 数字人口播分段管线（P2，2026-07-02）
 
-`POST /api/video/generate` **30ms 内返回**，不再同步等待音频克隆（10 min）。全流程在后台 asyncio 中执行：
+`POST /api/video/generate` 在音频克隆完成后：
 
 ```text
-POST /api/video/generate → 200 { task_id:"vg_xxx", status:"queued" }
-                              ↓
-后台 _run_video_pipeline(task_id):
-  1. decoding_base64 → 2. uploading_image → 3. uploading_audio
-  → 4. submitting_audio_clone → 5. waiting_audio_clone (≤10 min)
-  → 6. submitting_video → 7. 衔接 _poll_video_task
-                              ↓
-后台 _poll_video_task(task_id, rh_task_id):
-  轮询 RunningHub (≤50 min) → 完成 → _run_post_process → _run_cover_generation
+下载克隆音频 → ffmpeg 按 20s 切段（上限 30 段）
+  → 扣费：50（克隆）+ 250×n（视频段）
+  → 逐段上传 RH → asyncio.gather 并发 submit_video（Workflow 2072599683289141249，5 行 prompt）
+  → 返回 task_id=vg_*（local_task_id）
+  → 后台 _run_dh_segment_pipeline(local_task_id):
+      并发轮询 n 段 RH → 下载 segment_{idx}.mp4
+      → concatenate_videos_ffmpeg → concat.mp4
+      → status=success（半成品，不自动 _run_post_process）
+      → 用户手动 POST /api/video/edit 进入自动剪辑
 ```
 
 关键设计：
 
-- `task_id` 是本地生成的 `vg_{ts}_{rand}`，RunningHub 的 taskId 存为 `rh_task_id`
-- `_pipeline_tasks` 追踪管线 Worker，`_poll_tasks` 追踪轮询 Worker
-- `cancel` 同时取消 pipeline + poll
-- `video_status` 优先读 `_task_store`，内存丢失才尝试 RH 实时查询
+- `_task_store` 主键为 `local_task_id`（`vg_*`），batch 字段：`segment_count` / `segments_completed` / `rh_video_task_ids`
+- 产物路径：`{DATA_DIR}/video-cache/generated/{vg_*}/concat.mp4`，对外 URL `/static/video-generated/...`
+- `_dh_pipeline_tasks` 追踪分段管线；`video_cancel` 同时取消 pipeline task
+- `_poll_video_task` 保留供旧任务兼容，新管线不再使用
+- `RH_VIDEO_INSTANCE_TYPE` 环境变量可覆盖 RH 视频工作流 `instanceType`（默认 `default`）
+
+### 数字人口播积分定价（2026-07-03）
+
+| 项目 | 常量 | 单价 | 扣费时机 |
+|------|------|------|----------|
+| 音色克隆 | `VIDEO_CLONE_VOICE_COST` | **50** 积分/次 | 切段成功后、提交 RH 视频前（`ref_id={task_id}:clone`） |
+| 视频生成 | `VIDEO_SEGMENT_COST` | **250** 积分/段（20s） | 同上（`ref_id={task_id}:video`，总额 = 250×段数） |
+
+- 独立接口 `POST /api/video/clone-voice`：提交 RH 前扣 50，响应含 `ref_id`
+- 扣费 helper：`lib/api_auth.py` → `consume_voice_clone()` / `consume_video_creation_segments()`
+- `_task_store` 记录 `credit_clone_cost` / `credit_video_cost` 便于对账
+- 克隆或切段失败不扣费；扣费后 RH 失败暂不自动退款
+
+### 异步管线（P1，历史参考）
+
+早期单次 RH 工作流 + `_poll_video_task` + 自动 `_run_post_process` 模式已被上述分段管线替代。
 
 ### 运行实例 `instanceType`
 
-`lib/runninghub_client.py:253,317` — 所有 RH 任务统一用 `instanceType: "plus"`（48G 显存）。
+`lib/runninghub_client.py` — 数字人视频 `submit_video` 默认 `instanceType: "default"`（24G）；音频克隆 AI App 仍为 `plus`；可通过 `RH_VIDEO_INSTANCE_TYPE` 覆盖视频实例类型。
 
 ### Stage 追踪系统（P0）
 

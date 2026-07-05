@@ -6,6 +6,7 @@ import tempfile
 import logging
 import asyncio
 import time
+import shutil
 
 import httpx
 from dotenv import load_dotenv
@@ -16,7 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from lib.runninghub_client import RunningHubClient, RunningHubError, build_motion_prompt, build_cover_prompt
-from lib.video_postprocess import render_video_with_template, probe_audio_duration
+from lib.video_postprocess import render_video_with_template, probe_audio_duration, _FFMPEG_EXE
+from lib.video_audio_split import (
+    SEGMENT_DURATION_SEC,
+    SegmentLimitExceeded,
+    split_audio_segments,
+)
+from lib.video_concat import concatenate_videos_ffmpeg
 from lib.image_video_postprocess import image_video_render
 from lib.mashup_video_postprocess import mashup_video_render
 
@@ -30,7 +37,8 @@ from lib.auth import (
 from lib.credit import (
     CHAT_COST,
     REDEEM_CODE_AMOUNTS,
-    VIDEO_CREATION_COST,
+    VIDEO_CLONE_VOICE_COST,
+    VIDEO_SEGMENT_COST,
     consume,
     ensure_credit_schema,
     generate_redeem_codes,
@@ -53,6 +61,9 @@ from lib.api_auth import (
     assert_task_owner,
     check_base64_size,
     consume_with_idempotency,
+    consume_ai_llm,
+    consume_voice_clone,
+    consume_video_creation_segments,
     SCENE_COST_TABLE,
 )
 from lib.safe_http import download_to_path, SafeHttpError
@@ -66,6 +77,7 @@ from lib.video_extract import (
     transcribe_audio_with_timestamps,
 )
 from lib.subtitle_generator import timed_sentences_to_subtitle
+from lib.subtitle_align import try_build_aligned_subtitle, split_script_cues
 from lib.subtitle_asr import build_asr_ass_from_audio
 
 logger = logging.getLogger(__name__)
@@ -114,6 +126,11 @@ app.mount(
     "/static/video-postprocess",
     _HardenedStaticFiles(directory=POST_PROCESS_ROOT, html=False),
     name="video-postprocess",
+)
+app.mount(
+    "/static/video-generated",
+    _HardenedStaticFiles(directory=GENERATED_VIDEO_CACHE_ROOT, html=False),
+    name="video-generated",
 )
 
 
@@ -233,6 +250,21 @@ ensure_credit_schema()
 from lib.api_auth import ensure_credit_idempotency_index  # noqa: E402
 ensure_credit_idempotency_index()
 
+
+def ensure_app_schema() -> None:
+    """幂等迁移 SQLite schema（users/sessions/credit/geo_matrix_projects 等）。"""
+    from lib.db import connect
+    from scripts.init_credit_db import migrate
+
+    conn = connect()
+    try:
+        migrate(conn)
+    finally:
+        conn.close()
+
+
+ensure_app_schema()
+
 # ── Pydantic models for video endpoints ──
 
 
@@ -272,6 +304,8 @@ class TaskStatusResponse(BaseModel):
     stage_label: str = ""
     stage_history: list[str] = []
     stage_updated_at: float = 0
+    segment_count: int = 0
+    segments_completed: int = 0
 
 
 # —— 视频生成管线 stage 常量 ——
@@ -282,6 +316,7 @@ STAGE_WAITING_CLONE = "waiting_audio_clone"
 STAGE_SUBMITTING_VIDEO = "submitting_video"
 STAGE_QUEUED = "queued"
 STAGE_POLLING_VIDEO = "polling_video"
+STAGE_CONCATENATING = "concatenating"
 STAGE_POST_PROCESSING = "post_processing"
 STAGE_COVER_GENERATING = "cover_generating"
 STAGE_COMPLETED = "completed"
@@ -296,6 +331,7 @@ STAGE_LABELS = {
     STAGE_SUBMITTING_VIDEO: "提交视频生成任务",
     STAGE_QUEUED: "任务已入队",
     STAGE_POLLING_VIDEO: "等待视频生成完成",
+    STAGE_CONCATENATING: "拼接视频片段",
     STAGE_POST_PROCESSING: "后期剪辑处理中",
     STAGE_COVER_GENERATING: "生成封面图中",
     STAGE_COMPLETED: "全部完成",
@@ -464,6 +500,8 @@ class EditVideoRequest(BaseModel):
     bgm_volume: float = 0.32
     source: str = "generated"
     slide_images_base64: list[str] = []  # 图片素材 base64 列表，用于视频下方轮播
+    enable_bgm: bool = True
+    enable_subtitles: bool = True
 
 
 class EditTaskStatusResponse(BaseModel):
@@ -489,6 +527,8 @@ class ImageToVideoRequest(BaseModel):
     audio_base64: str            # 用户音色样本 base64（10~30 秒录音）
     script: str                  # 文案全文
     bgm_volume: float = 0.32     # BGM 音量
+    enable_bgm: bool = True
+    enable_subtitles: bool = True
 
 
 class ImageToVideoResponse(BaseModel):
@@ -504,6 +544,8 @@ class MashupVideoRequest(BaseModel):
     audio_base64: str            # 用户音色样本 base64（10~30 秒录音）
     script: str                  # 文案全文
     bgm_volume: float = 0.32     # BGM 音量
+    enable_bgm: bool = True
+    enable_subtitles: bool = True
 
 
 class MashupVideoResponse(BaseModel):
@@ -560,6 +602,7 @@ class AutoSubtitleRequest(BaseModel):
     video_url: str = ""                      # 在线视频链接（source=url 时）
     subtitle_format: str = "ass"             # "ass" | "srt"
     merge_gap_ms: int = 600                  # 词间句边界阈值
+    script: str = ""                         # 用户原文案；有则走校对对齐
 
 
 class AutoSubtitleResponse(BaseModel):
@@ -732,6 +775,7 @@ async def agent_chat(req: AgentRequest):
 # 内存存储任务状态（生产环境应替换为数据库）
 _task_store: dict[str, dict] = {}
 _poll_tasks: dict[str, object] = {}
+_dh_pipeline_tasks: dict[str, asyncio.Task] = {}
 _edit_task_store: dict[str, dict] = {}
 _edit_tasks: dict[str, object] = {}
 _manual_upload_store: dict[str, dict] = {}
@@ -965,6 +1009,12 @@ async def _prepare_generated_video_input(video_url: str, task_id: str, output_di
         raise HTTPException(status_code=400, detail="缺少视频地址，无法剪辑")
     if _is_http_url(cleaned):
         return await _download_video_to_project_cache(cleaned, task_id), True
+    if cleaned.startswith("/static/video-generated/"):
+        rel = cleaned[len("/static/video-generated/"):].replace("/", os.sep)
+        candidate = os.path.abspath(os.path.join(GENERATED_VIDEO_CACHE_ROOT, rel))
+        cache_root = os.path.abspath(GENERATED_VIDEO_CACHE_ROOT)
+        if candidate.startswith(cache_root + os.sep) and os.path.exists(candidate):
+            return candidate, False
     if cleaned.startswith("/static/video-postprocess/"):
         rel = cleaned[len("/static/video-postprocess/"):].replace("/", os.sep)
         candidate = os.path.abspath(os.path.join(POST_PROCESS_ROOT, rel))
@@ -997,6 +1047,16 @@ def _pick_first_result_url(result: dict) -> str:
         if url:
             return url
     return ""
+
+
+def _generated_video_public_url(abs_path: str) -> str:
+    """将 generated 缓存目录内的 concat 产物转为对外静态 URL。"""
+    real = os.path.realpath(abs_path)
+    cache_root = os.path.realpath(GENERATED_VIDEO_CACHE_ROOT)
+    if real == cache_root or real.startswith(cache_root + os.sep):
+        rel = os.path.relpath(real, cache_root).replace(os.sep, "/")
+        return f"/static/video-generated/{rel}"
+    raise ValueError(f"视频产物不在 generated 缓存目录内：{abs_path}")
 
 
 async def _run_cover_generation(task_id: str, *, image_url: str, gender: str) -> str:
@@ -1043,7 +1103,8 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
     """
     提交视频创作任务
 
-    流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 视频生成 → 轮询返回结果
+    流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 按 20s 切段
+    → 并发提交 n 段视频生成 → 后台轮询拼接 → 返回半成品（用户手动进入自动剪辑）
     """
     user = require_user(request)
     logger.info("video_generate user_id=%s", user.id)
@@ -1055,15 +1116,10 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
     check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
 
     local_task_id = f"vg_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
-    consume_with_idempotency(
-        user_id=user.id,
-        scene="video_creation",
-        ref_id=local_task_id,
-        note="口播视频创作",
-    )
 
     rh = _get_rh_client()
     image_path = audio_path = None
+    clone_work_dir = ""
 
     try:
         # 1. Base64 解码为临时文件
@@ -1088,21 +1144,77 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
         if not audio_clone_url:
             raise HTTPException(status_code=502, detail="音频克隆完成但未返回结果 URL")
 
-        # 5. 提交视频生成任务
-        print(f"[video/generate] Submitting video generation (gender={req.gender})")
+        # 5. 下载克隆音频并按 20s 切段
+        clone_work_dir = tempfile.mkdtemp(prefix="dh_clone_")
+        clone_audio_path = os.path.join(clone_work_dir, "clone.mp3")
+        await download_to_path(
+            audio_clone_url,
+            clone_audio_path,
+            max_bytes=MAX_REMOTE_AUDIO_BYTES,
+            timeout=180.0,
+        )
+        _validate_cloned_audio(clone_audio_path)
+
+        segment_dir = os.path.join(clone_work_dir, "segments")
+        try:
+            audio_segments = await asyncio.to_thread(
+                split_audio_segments,
+                clone_audio_path,
+                segment_dir,
+                SEGMENT_DURATION_SEC,
+                ffmpeg_exe=_FFMPEG_EXE,
+            )
+        except SegmentLimitExceeded as e:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "SEGMENT_LIMIT_EXCEEDED", "message": str(e)},
+            ) from e
+
+        segment_count = len(audio_segments)
+        print(f"[video/generate] Split clone audio into {segment_count} segment(s)")
+
+        credit_clone_cost = VIDEO_CLONE_VOICE_COST
+        credit_video_cost = VIDEO_SEGMENT_COST * segment_count
+        consume_voice_clone(
+            user_id=user.id,
+            ref_id=f"{local_task_id}:clone",
+            note="口播音色克隆",
+        )
+        consume_video_creation_segments(
+            user_id=user.id,
+            ref_id=f"{local_task_id}:video",
+            segment_count=segment_count,
+            note=f"口播视频生成 {segment_count} 段",
+        )
+
+        # 6. 逐段上传音频并并发提交视频生成
         prompt_mode = _normalize_video_prompt_mode(req.video_prompt_mode)
         raw_video_prompt = req.video_prompt or ""
         motion_prompt = build_motion_prompt(req.gender, raw_video_prompt)
         final_prompt_mode = prompt_mode if raw_video_prompt.strip() else "natural"
-        video_task_id = await rh.submit_video(image_url, audio_clone_url, motion_prompt)
 
-        # 6. 存储任务状态供后续轮询
-        _task_store[video_task_id] = {
-            "task_id": video_task_id,
-            "local_task_id": local_task_id,
+        segment_audio_urls: list[str] = []
+        for _idx, seg_path in audio_segments:
+            segment_audio_urls.append(await rh.upload_file(seg_path))
+
+        print(
+            f"[video/generate] Submitting {segment_count} video segment(s) "
+            f"(gender={req.gender})"
+        )
+
+        async def _submit_segment(seg_audio_url: str) -> str:
+            return await rh.submit_video(image_url, seg_audio_url, motion_prompt)
+
+        rh_video_task_ids = list(
+            await asyncio.gather(*[_submit_segment(url) for url in segment_audio_urls])
+        )
+
+        # 7. 存储任务状态（以 local_task_id 为主键）
+        _task_store[local_task_id] = {
+            "task_id": local_task_id,
             "user_id": user.id,
             "status": "queued",
-            "progress": 0,
+            "progress": 5,
             "video_url": "",
             "post_video_url": "",
             "post_stage": "",
@@ -1112,9 +1224,9 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
             "script": req.script,
             "video_prompt": motion_prompt,
             "video_prompt_mode": final_prompt_mode,
-            "image_url": image_url,       # 用于封面图生成
-            "gender": req.gender,          # 用于封面图 prompt
-            "cover_url": "",               # 封面图 URL（异步填充）
+            "image_url": image_url,
+            "gender": req.gender,
+            "cover_url": "",
             "cover_status": "idle",
             "cover_error": "",
             "cover_task_id": "",
@@ -1124,17 +1236,27 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
             "business_card_text": "",
             "error": "",
             "estimated_minutes": 30,
+            "segment_count": segment_count,
+            "segments_completed": 0,
+            "segment_duration_sec": SEGMENT_DURATION_SEC,
+            "credit_clone_cost": credit_clone_cost,
+            "credit_video_cost": credit_video_cost,
+            "rh_video_task_ids": rh_video_task_ids,
+            "segment_paths": [],
+            "concat_stage": "idle",
         }
+        _set_stage(local_task_id, STAGE_QUEUED, progress=5)
 
-        # 7. 启动后台轮询
-        import asyncio
-        poll_task = asyncio.create_task(_poll_video_task(video_task_id))
-        _poll_tasks[video_task_id] = poll_task
+        # 8. 启动后台分段管线
+        pipeline_task = asyncio.create_task(_run_dh_segment_pipeline(local_task_id))
+        _dh_pipeline_tasks[local_task_id] = pipeline_task
 
         return TaskStatusResponse(
-            task_id=video_task_id,
+            task_id=local_task_id,
             status="queued",
-            progress=0,
+            progress=5,
+            segment_count=segment_count,
+            segments_completed=0,
             audio_url=audio_clone_url,
             estimated_minutes=30,
         )
@@ -1149,6 +1271,8 @@ async def video_generate(req: VideoGenerateRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"视频生成流程异常: {e}")
     finally:
         _cleanup_temp(*[p for p in [image_path, audio_path] if p])
+        if clone_work_dir:
+            shutil.rmtree(clone_work_dir, ignore_errors=True)
 
 
 async def _run_post_process(task_id: str, video_url: str):
@@ -1232,6 +1356,136 @@ async def _run_post_process(task_id: str, video_url: str):
     finally:
         if post_video_url:
             _task_store[task_id]["post_video_url"] = post_video_url
+
+
+async def _run_dh_segment_pipeline(local_task_id: str) -> None:
+    """后台轮询 n 段 RH 视频任务，下载后 ffmpeg 拼接为半成品（不自动后处理）。"""
+    rh = _get_rh_client()
+    stored = _task_store.get(local_task_id, {})
+    rh_ids = list(stored.get("rh_video_task_ids") or [])
+    segment_count = int(stored.get("segment_count") or len(rh_ids) or 1)
+    output_dir = os.path.join(GENERATED_VIDEO_CACHE_ROOT, local_task_id)
+    os.makedirs(output_dir, exist_ok=True)
+    completed_lock = asyncio.Lock()
+    segments_completed = 0
+
+    try:
+        _set_stage(
+            local_task_id,
+            STAGE_POLLING_VIDEO,
+            status="processing",
+            progress=10,
+            concat_stage="idle",
+        )
+
+        async def _poll_and_download(seg_idx: int, rh_task_id: str) -> tuple[int, str]:
+            nonlocal segments_completed
+            try:
+                result = await rh.wait_for_completion(rh_task_id, max_wait=3000)
+                video_url = _pick_first_result_url(result)
+                if not video_url:
+                    raise RunningHubError(f"第 {seg_idx + 1} 段无有效视频输出")
+                seg_path = os.path.join(output_dir, f"segment_{seg_idx:03d}.mp4")
+                await download_to_path(
+                    video_url,
+                    seg_path,
+                    max_bytes=MAX_REMOTE_VIDEO_BYTES,
+                    timeout=180.0,
+                )
+                async with completed_lock:
+                    segments_completed += 1
+                    progress = 10 + int((segments_completed / max(segment_count, 1)) * 75)
+                    _task_store[local_task_id] = {
+                        **_task_store.get(local_task_id, {}),
+                        "segments_completed": segments_completed,
+                        "progress": progress,
+                    }
+                return seg_idx, seg_path
+            except Exception as e:
+                raise RuntimeError(
+                    f"第 {seg_idx + 1}/{segment_count} 段生成失败：{e}"
+                ) from e
+
+        segment_results = await asyncio.gather(
+            *[_poll_and_download(i, rh_id) for i, rh_id in enumerate(rh_ids)]
+        )
+        segment_results.sort(key=lambda x: x[0])
+        segment_paths = [r[1] for r in segment_results]
+
+        _set_stage(
+            local_task_id,
+            STAGE_CONCATENATING,
+            concat_stage="running",
+            progress=88,
+            segment_paths=segment_paths,
+        )
+
+        concat_path = os.path.join(output_dir, "concat.mp4")
+        await asyncio.to_thread(
+            concatenate_videos_ffmpeg,
+            segment_paths,
+            concat_path,
+            _FFMPEG_EXE,
+        )
+        public_url = _generated_video_public_url(concat_path)
+
+        _task_store[local_task_id] = {
+            **_task_store.get(local_task_id, {}),
+            "task_id": local_task_id,
+            "status": "success",
+            "progress": 100,
+            "video_url": public_url,
+            "segment_paths": segment_paths,
+            "concat_stage": "done",
+            "segments_completed": segment_count,
+            "error": "",
+            "estimated_minutes": 0,
+        }
+        _set_stage(local_task_id, STAGE_COMPLETED, progress=100, concat_stage="done")
+
+        image_url = stored.get("image_url", "")
+        gender = stored.get("gender", "female")
+        if image_url and public_url:
+            try:
+                print(f"[cover] Auto-generating cover for task {local_task_id}")
+                cover_url = await _run_cover_generation(
+                    local_task_id, image_url=image_url, gender=gender
+                )
+                print(f"[cover] Cover generated: {cover_url[:80]}")
+            except Exception as e:
+                _task_store[local_task_id] = {
+                    **_task_store.get(local_task_id, {}),
+                    "cover_status": "failed",
+                    "cover_error": str(e),
+                }
+                print(f"[cover] Cover generation failed (non-blocking): {e}")
+
+    except asyncio.CancelledError:
+        _task_store[local_task_id] = {
+            **stored,
+            "task_id": local_task_id,
+            "status": "failed",
+            "progress": 0,
+            "video_url": "",
+            "concat_stage": "failed",
+            "error": "用户已停止生成（中断任务不会返还积分）",
+            "estimated_minutes": 0,
+        }
+        return
+    except Exception as e:
+        _task_store[local_task_id] = {
+            **stored,
+            "task_id": local_task_id,
+            "status": "failed",
+            "progress": 0,
+            "video_url": "",
+            "concat_stage": "failed",
+            "error": str(e) or "分段视频生成失败",
+            "estimated_minutes": 0,
+        }
+        _set_stage(local_task_id, STAGE_FAILED, concat_stage="failed", error=str(e))
+    finally:
+        _dh_pipeline_tasks.pop(local_task_id, None)
 
 
 async def _poll_video_task(task_id: str):
@@ -1327,6 +1581,13 @@ async def video_cancel(req: CancelVideoTaskRequest, request: Request):
     if task is not None:
         try:
             task.cancel()
+        except Exception:
+            pass
+
+    dh_task = _dh_pipeline_tasks.pop(task_id, None)
+    if dh_task is not None:
+        try:
+            dh_task.cancel()
         except Exception:
             pass
 
@@ -1452,61 +1713,85 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
             cache_input_path = input_path if should_cleanup_cache else ""
             _edit_task_store[edit_job_id]["progress"] = 25 if should_cleanup_cache else 35
 
-        # ── 自动字幕：未提供预生成字幕文件时，自动执行 ASR 语音识别 ──
-        client_subtitle_path = (req.subtitle_file_path or "").strip()
-        if client_subtitle_path:
-            # 客户端给的字幕路径必须落在受信任目录里，否则 ffmpeg 的 subtitles=
-            # 过滤器可加载任意系统文件作为字幕（信息泄露 / 任意文件读取）
-            client_subtitle_path = _ensure_path_in_trusted_root(
-                client_subtitle_path, field="subtitle_file_path",
-            )
-        asr_subtitle_path = client_subtitle_path
-        if not asr_subtitle_path and os.path.isfile(input_path):
-            try:
-                _edit_task_store[edit_job_id]["progress"] = 40
-                _edit_task_store[edit_job_id]["status"] = "auto_subtitle"
-                logging.info(f"[edit:{edit_job_id}] 未提供字幕文件，自动执行 ASR 语音识别…")
-
-                from lib.video_extract import extract_audio_from_local_video, transcribe_audio_with_timestamps
-                from lib.subtitle_generator import timed_sentences_to_subtitle
-
-                # 1) 从视频中提取音频（16kHz mono WAV）
-                asr_audio_dir = os.path.join(output_dir, "asr_audio")
-                wav_path = extract_audio_from_local_video(input_path, asr_audio_dir)
-                _edit_task_store[edit_job_id]["progress"] = 55
-
-                # 2) 阿里云 NLS FlashRecognizer 极速版识别（同步返回句子级时间轴）
-                asr_result = await transcribe_audio_with_timestamps(
-                    wav_path,
-                    sentence_max_length=22,  # 每行最多 22 字
+        # ── 自动字幕：仅当 enable_subtitles 时执行 ASR / 校对 ──
+        enable_subtitles = bool(req.enable_subtitles)
+        enable_bgm = bool(req.enable_bgm) and float(req.bgm_volume) > 0
+        asr_subtitle_path = ""
+        if enable_subtitles:
+            client_subtitle_path = (req.subtitle_file_path or "").strip()
+            if client_subtitle_path:
+                # 客户端给的字幕路径必须落在受信任目录里，否则 ffmpeg 的 subtitles=
+                # 过滤器可加载任意系统文件作为字幕（信息泄露 / 任意文件读取）
+                client_subtitle_path = _ensure_path_in_trusted_root(
+                    client_subtitle_path, field="subtitle_file_path",
                 )
-                _edit_task_store[edit_job_id]["progress"] = 75
+            asr_subtitle_path = client_subtitle_path
+            if not asr_subtitle_path and os.path.isfile(input_path):
+                try:
+                    _edit_task_store[edit_job_id]["progress"] = 40
+                    _edit_task_store[edit_job_id]["status"] = "auto_subtitle"
+                    logging.info(f"[edit:{edit_job_id}] 未提供字幕文件，自动执行 ASR 语音识别…")
 
-                # 3) 生成 ASS 字幕文件（带精确时间轴）
-                asr_subtitle_path = timed_sentences_to_subtitle(
-                    sentences=asr_result.sentences,
-                    output_dir=output_dir,
-                    filename_prefix=f"asr_{edit_job_id}",
-                    format="ass",
-                )
-                _edit_task_store[edit_job_id]["progress"] = 85
+                    from lib.video_extract import extract_audio_from_local_video, transcribe_audio_with_timestamps
+                    from lib.subtitle_generator import timed_sentences_to_subtitle
 
-                logging.info(
-                    f"[edit:{edit_job_id}] ASR 字幕生成完成: "
-                    f"{len(asr_result.sentences)} 句, "
-                    f"文本 {len(asr_result.text)} 字, "
-                    f"耗时 {asr_result.latency_ms}ms"
-                )
-            except Exception as asr_err:
-                # ASR 失败不阻塞剪辑，回退到按字数均分时间轴的传统方案
-                logging.warning(
-                    f"[edit:{edit_job_id}] ASR 自动字幕失败，回退到字符比例模式: {asr_err}"
-                )
-                asr_subtitle_path = ""
+                    # 1) 从视频中提取音频（16kHz mono WAV）
+                    asr_audio_dir = os.path.join(output_dir, "asr_audio")
+                    wav_path = extract_audio_from_local_video(input_path, asr_audio_dir)
+                    _edit_task_store[edit_job_id]["progress"] = 55
+
+                    # 2) 阿里云 NLS FlashRecognizer 极速版识别（同步返回句子级时间轴）
+                    asr_result = await transcribe_audio_with_timestamps(
+                        wav_path,
+                        sentence_max_length=22,  # 每行最多 22 字
+                    )
+                    _edit_task_store[edit_job_id]["progress"] = 70
+                    _edit_task_store[edit_job_id]["status"] = "subtitle_align"
+
+                    # 3) 校对工序：原文案断句 + ASR 时间戳；失败回退纯 ASR
+                    script_text = (req.subtitle_text or "").strip()
+                    asr_subtitle_path = try_build_aligned_subtitle(
+                        script_text,
+                        asr_result.sentences,
+                        output_dir,
+                        filename_prefix=f"aligned_{edit_job_id}",
+                        format="ass",
+                    )
+                    if asr_subtitle_path:
+                        cue_count = len(split_script_cues(script_text))
+                        logging.info(
+                            f"[edit:{edit_job_id}] 字幕校对对齐完成: "
+                            f"{cue_count} cue, ASR {len(asr_result.sentences)} 句, "
+                            f"耗时 {asr_result.latency_ms}ms"
+                        )
+                    else:
+                        asr_subtitle_path = timed_sentences_to_subtitle(
+                            sentences=asr_result.sentences,
+                            output_dir=output_dir,
+                            filename_prefix=f"asr_{edit_job_id}",
+                            format="ass",
+                        )
+                        logging.info(
+                            f"[edit:{edit_job_id}] ASR 字幕生成完成（未校对）: "
+                            f"{len(asr_result.sentences)} 句, "
+                            f"文本 {len(asr_result.text)} 字, "
+                            f"耗时 {asr_result.latency_ms}ms"
+                        )
+                    _edit_task_store[edit_job_id]["progress"] = 85
+                except Exception as asr_err:
+                    # ASR 失败不阻塞剪辑，回退到按字数均分时间轴的传统方案
+                    logging.warning(
+                        f"[edit:{edit_job_id}] ASR 自动字幕失败，回退到字符比例模式: {asr_err}"
+                    )
+                    asr_subtitle_path = ""
+        else:
+            logging.info(f"[edit:{edit_job_id}] 用户关闭字幕，跳过 ASR/校对")
+            _edit_task_store[edit_job_id]["progress"] = 85
 
         # ── 端到端单次 render ──
         business_card_text = req.business_card_text if req.business_card_text.strip() else ""
-        bgm_volume = max(0.0, min(float(req.bgm_volume), 1.0))
+        bgm_volume = max(0.0, min(float(req.bgm_volume), 1.0)) if enable_bgm else 0.0
+        bgm_dir = _resolve_bgm_dir(req.bgm_dir) if enable_bgm else None
 
         # ── 图片幻灯片预处理：base64 → 临时 PNG 文件 ──
         if req.slide_images_base64:
@@ -1532,11 +1817,13 @@ async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str =
             output_dir=output_dir,
             script=req.subtitle_text,
             business_card_text=business_card_text,
-            bgm_dir=_resolve_bgm_dir(req.bgm_dir),
+            bgm_dir=bgm_dir,
             bgm_volume=bgm_volume,
             input_video_path=input_path,
             subtitle_file_path=asr_subtitle_path,
             slide_image_paths=slide_temp_paths or None,
+            enable_bgm=enable_bgm,
+            enable_subtitles=enable_subtitles,
         )
 
         if result.ok and result.output_path:
@@ -1675,12 +1962,15 @@ async def video_cover(req: CoverGenerateRequest, request: Request):
 @app.post("/api/video/clone-voice")
 async def video_clone_voice(req: VoiceCloneRequest, request: Request):
     """仅音色克隆（不生成视频）"""
-    require_user(request)
+    user = require_user(request)
     if not req.audio_base64 or not req.script.strip():
         raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
     if len(req.script) > 5000:
         raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
     check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
+
+    clone_ref = f"vc_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
+    consume_voice_clone(user_id=user.id, ref_id=clone_ref, note="独立音色克隆")
 
     rh = _get_rh_client()
     audio_path = None
@@ -1700,6 +1990,7 @@ async def video_clone_voice(req: VoiceCloneRequest, request: Request):
         return {
             "audio_url": clone_url,
             "task_id": task_id,
+            "ref_id": clone_ref,
             "message": "音色克隆完成" if clone_url else "克隆完成但无返回 URL",
         }
 
@@ -1788,7 +2079,9 @@ async def _run_iv_pipeline(task_id: str) -> None:
     image_paths = list(stored.get("image_paths") or [])
     audio_path = stored.get("audio_path") or ""
     script = stored.get("script") or ""
-    bgm_volume = float(stored.get("bgm_volume") or 0.32)
+    enable_bgm = bool(stored.get("enable_bgm", True))
+    enable_subtitles = bool(stored.get("enable_subtitles", True))
+    bgm_volume = float(stored.get("bgm_volume") or 0.32) if enable_bgm else 0.0
     output_dir = stored.get("output_dir") or os.path.join(POST_PROCESS_ROOT, task_id)
     try:
         if _is_iv_cancelled(task_id):
@@ -1817,17 +2110,19 @@ async def _run_iv_pipeline(task_id: str) -> None:
         if _is_iv_cancelled(task_id):
             return
         subtitle_file_path = ""
-        _set_iv_stage(task_id, STAGE_IV_ASR_SUBTITLE, progress=58)
-        try:
-            subtitle_file_path = await build_asr_ass_from_audio(
-                voice_local_path,
-                output_dir,
-                f"asr_{task_id}",
-                video_width=1080,
-                video_height=1440,
-            )
-        except Exception as asr_err:
-            logging.warning(f"[iv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
+        if enable_subtitles:
+            _set_iv_stage(task_id, STAGE_IV_ASR_SUBTITLE, progress=58)
+            try:
+                subtitle_file_path = await build_asr_ass_from_audio(
+                    voice_local_path,
+                    output_dir,
+                    f"asr_{task_id}",
+                    video_width=1080,
+                    video_height=1440,
+                    script=script,
+                )
+            except Exception as asr_err:
+                logging.warning(f"[iv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
         if _is_iv_cancelled(task_id):
             return
         render_started = time.time()
@@ -1841,9 +2136,11 @@ async def _run_iv_pipeline(task_id: str) -> None:
                 image_paths=image_paths,
                 script=script,
                 voice_audio_path=voice_local_path,
-                bgm_dir=_resolve_bgm_dir(""),
+                bgm_dir=_resolve_bgm_dir("") if enable_bgm else None,
                 bgm_volume=bgm_volume,
                 subtitle_file_path=subtitle_file_path,
+                enable_bgm=enable_bgm,
+                enable_subtitles=enable_subtitles,
             )
         finally:
             progress_task.cancel()
@@ -1878,7 +2175,9 @@ async def _run_mv_pipeline(task_id: str) -> None:
     video_paths = list(stored.get("video_paths") or [])
     audio_path = stored.get("audio_path") or ""
     script = stored.get("script") or ""
-    bgm_volume = float(stored.get("bgm_volume") or 0.32)
+    enable_bgm = bool(stored.get("enable_bgm", True))
+    enable_subtitles = bool(stored.get("enable_subtitles", True))
+    bgm_volume = float(stored.get("bgm_volume") or 0.32) if enable_bgm else 0.0
     output_dir = stored.get("output_dir") or os.path.join(POST_PROCESS_ROOT, task_id)
     try:
         if _is_mv_cancelled(task_id):
@@ -1907,17 +2206,19 @@ async def _run_mv_pipeline(task_id: str) -> None:
         if _is_mv_cancelled(task_id):
             return
         subtitle_file_path = ""
-        _set_mv_stage(task_id, STAGE_MV_ASR_SUBTITLE, progress=58)
-        try:
-            subtitle_file_path = await build_asr_ass_from_audio(
-                voice_local_path,
-                output_dir,
-                f"asr_{task_id}",
-                video_width=1080,
-                video_height=1440,
-            )
-        except Exception as asr_err:
-            logging.warning(f"[mv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
+        if enable_subtitles:
+            _set_mv_stage(task_id, STAGE_MV_ASR_SUBTITLE, progress=58)
+            try:
+                subtitle_file_path = await build_asr_ass_from_audio(
+                    voice_local_path,
+                    output_dir,
+                    f"asr_{task_id}",
+                    video_width=1080,
+                    video_height=1440,
+                    script=script,
+                )
+            except Exception as asr_err:
+                logging.warning(f"[mv:{task_id}] ASR 字幕失败，回退字符比例模式: {asr_err}")
         if _is_mv_cancelled(task_id):
             return
         render_started = time.time()
@@ -1931,9 +2232,11 @@ async def _run_mv_pipeline(task_id: str) -> None:
                 video_paths=video_paths,
                 script=script,
                 voice_audio_path=voice_local_path,
-                bgm_dir=_resolve_bgm_dir(""),
+                bgm_dir=_resolve_bgm_dir("") if enable_bgm else None,
                 bgm_volume=bgm_volume,
                 subtitle_file_path=subtitle_file_path,
+                enable_bgm=enable_bgm,
+                enable_subtitles=enable_subtitles,
             )
         finally:
             progress_task.cancel()
@@ -2015,6 +2318,8 @@ async def video_image_to_video(req: ImageToVideoRequest, request: Request):
         "error": "",
         "script": req.script.strip(),
         "bgm_volume": max(0.0, min(float(req.bgm_volume), 1.0)),
+        "enable_bgm": bool(req.enable_bgm),
+        "enable_subtitles": bool(req.enable_subtitles),
         "image_paths": [],
         "audio_path": "",
         "output_dir": output_dir,
@@ -2114,6 +2419,8 @@ async def video_mashup(req: MashupVideoRequest, request: Request):
         "error": "",
         "script": req.script.strip(),
         "bgm_volume": max(0.0, min(float(req.bgm_volume), 1.0)),
+        "enable_bgm": bool(req.enable_bgm),
+        "enable_subtitles": bool(req.enable_subtitles),
         "video_paths": [],
         "audio_path": "",
         "output_dir": output_dir,
@@ -2637,6 +2944,7 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
     安全要点：
     - 完全忽略 req.cost（之前未被覆盖的场景任由客户端指定金额 → 可以传 0 白嫖）
     - scene 必须命中 SCENE_COST_TABLE，否则 400
+    - ai_llm 计量场景禁止走本接口（须 consume-metered + 服务端密钥）
     - ref_id 必须由客户端提供且唯一；重复扣费走幂等返回，不再次扣
     """
     user = require_user(request)
@@ -2645,6 +2953,14 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
         raise HTTPException(
             status_code=400,
             detail={"code": "INVALID_INPUT", "message": "scene 不能为空"},
+        )
+    if scene == "ai_llm":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "METERED_ONLY",
+                "message": "ai_llm 须走计量扣费接口",
+            },
         )
     if scene not in SCENE_COST_TABLE:
         raise HTTPException(
@@ -2659,6 +2975,69 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
     return {
         "balance": new_balance,
         "cost": SCENE_COST_TABLE[scene],
+        "scene": scene,
+        "ref_id": ref_id,
+    }
+
+
+class CreditMeteredRequest(BaseModel):
+    user_id: int
+    scene: str = "ai_llm"
+    ref_id: str = ""
+    cost: int
+    note: str = ""
+
+
+def _require_metered_key(request: Request) -> None:
+    import hmac
+
+    expected = (os.getenv("CREDIT_METERED_KEY") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "METERED_KEY_MISSING", "message": "未配置 CREDIT_METERED_KEY"},
+        )
+    got = (request.headers.get("X-Metered-Key") or "").strip()
+    if not got or not hmac.compare_digest(got, expected):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "UNAUTHORIZED", "message": "计量扣费密钥无效"},
+        )
+
+
+@app.post("/api/credit/consume-metered")
+async def credit_consume_metered(req: CreditMeteredRequest, request: Request):
+    """Sonetto 等变价场景：仅持有 CREDIT_METERED_KEY 的 Next 服务端可调。"""
+    from lib.api_auth import consume_ai_llm
+
+    _require_metered_key(request)
+    scene = (req.scene or "ai_llm").strip()
+    if scene != "ai_llm":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SCENE", "message": "计量接口仅支持 ai_llm"},
+        )
+    ref_id = (req.ref_id or "").strip()
+    if not ref_id:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_REF_ID", "message": "缺少幂等键 ref_id"},
+        )
+    if not isinstance(req.user_id, int) or req.user_id < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": "user_id 无效"},
+        )
+    note = (req.note or "AI 模型计量")[:200]
+    new_balance = consume_ai_llm(
+        user_id=req.user_id,
+        ref_id=ref_id,
+        cost=req.cost,
+        note=note,
+    )
+    return {
+        "balance": new_balance,
+        "cost": req.cost,
         "scene": scene,
         "ref_id": ref_id,
     }
@@ -2863,14 +3242,62 @@ _COPYWRITING_HOSTS: frozenset[str] = frozenset({
 })
 
 
+# 从分享口令 / 混杂文案中抠出 http(s) 链接（抖音等平台复制的整段分享文本）
+_SHARE_URL_RE = re.compile(r"https?://[^\s<>\"'`（）()【】\[\]《》\u3000]+", re.IGNORECASE)
+# 链接末尾常粘上中英文标点或平台提示语残留
+_SHARE_URL_TRAIL_RE = re.compile(r"[，。！？、；：,.!?;:]+$")
+
+
+def _pick_url_from_share_text(raw: str) -> str | None:
+    """从分享口令中提取第一条白名单平台视频链接；纯链接原样返回。"""
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    from urllib.parse import urlparse
+
+    candidates: list[str] = []
+    for match in _SHARE_URL_RE.finditer(text):
+        candidate = match.group(0)
+        candidate = _SHARE_URL_TRAIL_RE.sub("", candidate)
+        while candidate and candidate[-1] in "，。！？、；：,.!?;:）)」』】\"'":
+            candidate = candidate[:-1]
+        if not candidate:
+            continue
+        try:
+            host = (urlparse(candidate).hostname or "").lower()
+        except Exception:
+            continue
+        if host in _COPYWRITING_HOSTS:
+            candidates.append(candidate)
+
+    if candidates:
+        return candidates[0]
+
+    # 整段本身就是纯链接时走原逻辑
+    if text.startswith("http://") or text.startswith("https://"):
+        return text.split()[0]
+
+    return None
+
+
 def _validate_extract_url(url: str) -> str:
-    """对用户传入的视频链接做协议 + 主机白名单 + 内网拦截校验。"""
+    """对用户传入的视频链接做协议 + 主机白名单 + 内网拦截校验。
+
+    支持抖音等平台「分享口令」整段粘贴：自动从文案中抠出视频链接。
+    """
     from urllib.parse import urlparse
     import ipaddress
 
-    cleaned = (url or "").strip()
+    cleaned = _pick_url_from_share_text(url or "")
     if not cleaned:
-        raise HTTPException(status_code=400, detail="请输入视频链接")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "NO_VIDEO_URL",
+                "message": "未识别到视频链接，请粘贴分享口令或单条视频链接",
+            },
+        )
     parsed = urlparse(cleaned)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
@@ -2905,6 +3332,16 @@ def _validate_extract_url(url: str) -> str:
                 "code": "URL_HOST_NOT_ALLOWED",
                 "message": "仅支持抖音 / 快手 / B 站 / 视频号 / 小红书 / YouTube 链接",
                 "host": host,
+            },
+        )
+    # 搜索页 / 列表页不是单条视频，智凌与 yt-dlp 都无法提取口播文案
+    path = (parsed.path or "").lower()
+    if any(seg in path for seg in ("/search", "/discover", "/channel/", "/user/")):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "URL_NOT_VIDEO",
+                "message": "请粘贴单条视频链接（打开视频后复制分享链接），不要用搜索页或主页链接",
             },
         )
     return cleaned
@@ -3023,16 +3460,32 @@ async def _run_auto_subtitle(task_id: str, req: AutoSubtitleRequest) -> None:
                     "请确认 NLS 项目已启用「识音石V1」模型且已开通商用版"
                 )
 
-            task["progress"] = 85
+            task["progress"] = 75
             task["sentence_count"] = len(result.sentences)
 
-            # 3) 生成字幕文件（直接使用 FlashRecognizer 的句子时间轴）
-            subtitle_path = timed_sentences_to_subtitle(
-                sentences=result.sentences,
-                output_dir=tmpdir,
-                filename_prefix=f"asr_{task_id}",
+            # 3) 校对工序：有原文案则对齐；否则纯 ASR
+            script_text = (req.script or "").strip()
+            subtitle_path = try_build_aligned_subtitle(
+                script_text,
+                result.sentences,
+                tmpdir,
+                filename_prefix=f"aligned_{task_id}",
                 format=req.subtitle_format,
             )
+            if subtitle_path:
+                cues = split_script_cues(script_text)
+                preview_text = "".join(cues)
+                task["sentence_count"] = len(cues)
+                align_mode = "aligned"
+            else:
+                subtitle_path = timed_sentences_to_subtitle(
+                    sentences=result.sentences,
+                    output_dir=tmpdir,
+                    filename_prefix=f"asr_{task_id}",
+                    format=req.subtitle_format,
+                )
+                preview_text = result.text
+                align_mode = "asr"
 
             # 4) 将字幕文件复制到持久化目录
             import shutil
@@ -3046,13 +3499,13 @@ async def _run_auto_subtitle(task_id: str, req: AutoSubtitleRequest) -> None:
             # 仅在内部存绝对路径供 ffmpeg 使用，对外只暴露相对 URL
             task["subtitle_path"] = dest_path
             task["subtitle_url"] = _to_subtitle_public_url(dest_path)
-            task["subtitle_text"] = result.text
+            task["subtitle_text"] = preview_text
 
             logger.info(
-                f"[auto_subtitle:{task_id}] 字幕生成完成: {dest_path} "
+                f"[auto_subtitle:{task_id}] 字幕生成完成 ({align_mode}): {dest_path} "
                 f"(FlashRecognizer: {len(result.sentences)} 句, "
                 f"耗时 {result.latency_ms}ms, "
-                f"文本 {len(result.text)} 字)"
+                f"文本 {len(preview_text)} 字)"
             )
 
     except Exception as e:
@@ -4086,8 +4539,10 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
 
 
 from routes.promo_video_routes import router as promo_video_router
+from routes.geo_matrix_routes import router as geo_matrix_router
 
 app.include_router(promo_video_router)
+app.include_router(geo_matrix_router)
 
 
 # ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──

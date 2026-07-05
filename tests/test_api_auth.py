@@ -107,6 +107,23 @@ def test_consume_with_idempotency_single_call(tmp_db):
     assert bal == 10000 - 3
 
 
+def test_consume_ai_llm_variable_cost(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    bal = auth_mod.consume_ai_llm(user_id=uid, ref_id="llm-1", cost=30)
+    assert bal == 10000 - 30
+    assert credit_mod.get_account(uid).balance == 10000 - 30
+    # 幂等
+    bal2 = auth_mod.consume_ai_llm(user_id=uid, ref_id="llm-1", cost=30)
+    assert bal2 == bal
+
+
+def test_consume_ai_llm_rejects_invalid_cost(tmp_db):
+    auth_mod, _, uid = tmp_db
+    with pytest.raises(HTTPException) as exc:
+        auth_mod.consume_ai_llm(user_id=uid, ref_id="llm-bad", cost=0)
+    assert exc.value.status_code == 400
+
+
 def test_consume_with_idempotency_duplicate_ref(tmp_db):
     auth_mod, _, uid = tmp_db
     bal1 = auth_mod.consume_with_idempotency(user_id=uid, scene="ai_chat", ref_id="r-dup")
@@ -163,3 +180,49 @@ def test_assert_task_owner_rejects_missing_owner(tmp_db):
     with pytest.raises(HTTPException) as exc:
         auth_mod.assert_task_owner({}, user, task_id="t1")
     assert exc.value.status_code == 403
+
+
+def test_consume_voice_clone_costs_50(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    bal = auth_mod.consume_voice_clone(user_id=uid, ref_id="vc-1")
+    assert bal == 10000 - 50
+    assert credit_mod.get_account(uid).balance == 9950
+
+
+def test_consume_voice_clone_idempotent(tmp_db):
+    auth_mod, _, uid = tmp_db
+    bal1 = auth_mod.consume_voice_clone(user_id=uid, ref_id="vc-dup")
+    bal2 = auth_mod.consume_voice_clone(user_id=uid, ref_id="vc-dup")
+    assert bal1 == bal2
+
+
+def test_consume_video_creation_segments_variable_cost(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    bal = auth_mod.consume_video_creation_segments(
+        user_id=uid, ref_id="vg-1:video", segment_count=3
+    )
+    assert bal == 10000 - 750
+    assert credit_mod.get_account(uid).balance == 9250
+
+
+def test_consume_video_creation_segments_idempotent(tmp_db):
+    auth_mod, _, uid = tmp_db
+    bal1 = auth_mod.consume_video_creation_segments(
+        user_id=uid, ref_id="vg-dup:video", segment_count=2
+    )
+    bal2 = auth_mod.consume_video_creation_segments(
+        user_id=uid, ref_id="vg-dup:video", segment_count=2
+    )
+    assert bal1 == bal2
+
+
+def test_consume_with_idempotency_rejects_invalid_variable_cost(tmp_db):
+    auth_mod, _, uid = tmp_db
+    with pytest.raises(HTTPException) as exc:
+        auth_mod.consume_with_idempotency(
+            user_id=uid,
+            scene="video_creation",
+            ref_id="bad-cost",
+            cost=251,
+        )
+    assert exc.value.status_code == 400

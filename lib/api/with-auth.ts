@@ -76,3 +76,56 @@ export async function chargeCredit(opts: {
   }
   return (await resp.json()) as { balance: number; cost: number }
 }
+
+/** 查询余额（预检用，不扣费） */
+export async function getCreditBalance(cookieHeader: string): Promise<number> {
+  const base = getServerFastapiBase()
+  if (!base) throw new Error("FASTAPI_UNAVAILABLE")
+  const resp = await fetch(`${base}/api/credit/balance`, {
+    headers: { Cookie: cookieHeader },
+    cache: "no-store",
+  })
+  if (resp.status === 401) throw new Error("NOT_LOGGED_IN")
+  if (!resp.ok) throw new Error(`BALANCE_FAILED:${resp.status}`)
+  const body = (await resp.json()) as { balance?: number }
+  if (typeof body.balance !== "number") throw new Error("BALANCE_FAILED")
+  return body.balance
+}
+
+/**
+ * Sonetto 计量扣费：走 consume-metered，携带 CREDIT_METERED_KEY。
+ * cost 仅由服务端定价引擎计算后传入，浏览器不可调此路径。
+ */
+export async function chargeMeteredCredit(opts: {
+  userId: number
+  cost: number
+  refId: string
+  note?: string
+}): Promise<{ balance: number; cost: number }> {
+  const base = getServerFastapiBase()
+  if (!base) throw new Error("FASTAPI_UNAVAILABLE")
+  const meteredKey = (process.env.CREDIT_METERED_KEY || "").trim()
+  if (!meteredKey) throw new Error("METERED_KEY_MISSING")
+
+  const resp = await fetch(`${base}/api/credit/consume-metered`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Metered-Key": meteredKey,
+    },
+    body: JSON.stringify({
+      user_id: opts.userId,
+      scene: "ai_llm",
+      ref_id: opts.refId,
+      cost: opts.cost,
+      note: opts.note || "AI 模型计量",
+    }),
+  })
+  if (resp.status === 402) {
+    throw new Error("INSUFFICIENT_CREDIT")
+  }
+  if (!resp.ok) {
+    throw new Error(`CHARGE_FAILED:${resp.status}`)
+  }
+  return (await resp.json()) as { balance: number; cost: number }
+}

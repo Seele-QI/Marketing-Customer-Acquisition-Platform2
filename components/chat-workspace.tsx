@@ -44,6 +44,8 @@ import {
   Loader2,
   X,
 } from "lucide-react"
+import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
+import { isSonettoModelId } from "@/lib/llm/model-registry"
 import { cn } from "@/lib/utils"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
@@ -627,6 +629,9 @@ export function ChatWorkspace({
   const [historySearch, setHistorySearch] = React.useState("")
   const [chatSessions, setChatSessions] = React.useState<Record<string, ChatMessage[]>>({})
   const [isSending, setIsSending] = React.useState(false)
+  const { models: aiModels, modelId, setModelId } = useAiModels()
+  const modelIdRef = React.useRef(modelId)
+  modelIdRef.current = modelId
   const isSendingRef = React.useRef(false)
   const abortRef = React.useRef<AbortController | null>(null)
   const agentNameRef = React.useRef(agentName)
@@ -928,10 +933,11 @@ export function ChatWorkspace({
       const controller = new AbortController()
       requestController = controller
       abortRef.current = controller
+      const clientTimeoutMs = isSonettoModelId(modelIdRef.current) ? 280_000 : 120_000
       timeoutId = window.setTimeout(() => {
         abortedByTimeout = true
         controller.abort()
-      }, 120_000)
+      }, clientTimeoutMs)
 
       const response = await fetch("/api/ai/chat-stream", {
         method: "POST",
@@ -939,6 +945,7 @@ export function ChatWorkspace({
         body: JSON.stringify({
           userMessage: text,
           agentName: requestAgentName,
+          modelId: modelIdRef.current,
           ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
           ...(imagePayload && imagePayload.length > 0 ? { images: imagePayload } : {}),
         }),
@@ -1556,6 +1563,13 @@ export function ChatWorkspace({
           {/* ===== Floating input bar（仅中间栏） ===== */}
           <div className="absolute bottom-0 left-0 right-0 px-6 pb-6 pt-8 bg-gradient-to-t from-white via-white/95 to-transparent pointer-events-none dark:from-[#0a0a0b] dark:via-[#0a0a0b]/95">
           <div className="pointer-events-auto mx-auto max-w-3xl">
+            <AiModelPicker
+              modelId={modelId}
+              onChange={setModelId}
+              models={aiModels}
+              disabled={isSending}
+              className="mb-2 px-1"
+            />
             <div className="relative rounded-2xl bg-white shadow-md shadow-black/[0.06] ring-1 ring-border/50 transition-shadow duration-200 focus-within:shadow-lg focus-within:shadow-primary/[0.08] focus-within:ring-primary/30 dark:bg-gray-800 dark:ring-gray-700/50">
               {pendingImages.length > 0 ? (
                 <div className="flex flex-wrap gap-2 border-b border-border/40 px-5 pt-3 pb-2 dark:border-gray-700/80">
