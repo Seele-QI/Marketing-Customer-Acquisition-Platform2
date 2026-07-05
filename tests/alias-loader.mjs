@@ -8,6 +8,13 @@ export async function resolve(specifier, context, nextResolve) {
     const relativePath = specifier.slice(2)
     const withExtension = path.extname(relativePath) ? relativePath : `${relativePath}.ts`
     const resolved = pathToFileURL(path.join(projectRoot, withExtension)).href
+    if (withExtension.endsWith(".json")) {
+      return {
+        shortCircuit: true,
+        url: resolved,
+        format: "json",
+      }
+    }
     return nextResolve(resolved, context)
   }
 
@@ -16,4 +23,12 @@ export async function resolve(specifier, context, nextResolve) {
   }
 
   return nextResolve(specifier, context)
+}
+
+export async function load(url, context, nextLoad) {
+  if (url.endsWith(".json")) {
+    const result = await nextLoad(url, { ...context, format: "json" })
+    return result
+  }
+  return nextLoad(url, context)
 }

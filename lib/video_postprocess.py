@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Optional
 
 from lib.ffmpeg_runner import run_ffmpeg, run_ffprobe
-from lib.subtitle_generator import max_chars_for_video_width
+from lib.subtitle_generator import (
+    max_chars_for_video_width,
+    clean_subtitle_display as _shared_clean_subtitle_display,
+    _auto_wrap_subtitle as _shared_auto_wrap_subtitle,
+)
 
 
 # ── 模板常量（单模板，未来扩展在此添加分支） ──────────────────────────────────────────
@@ -109,53 +113,23 @@ def _line_weight(line: str) -> float:
 
 
 def _clean_subtitle_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", (text or "").strip())
-    text = _SUBTITLE_ALLOWED_RE.sub("", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return _shared_clean_subtitle_display(text)
 
 
 def split_script_segments(script: str) -> list[str]:
-    raw = (script or "").replace("\r\n", "\n").replace("\r", "\n")
-    paragraphs = [part.strip() for part in raw.split("\n") if part.strip()]
-    segments: list[str] = []
-    for paragraph in paragraphs:
-        pieces = [piece.strip() for piece in _SUBTITLE_BREAK_RE.split(paragraph) if piece.strip()]
-        for piece in pieces:
-            cleaned = _clean_subtitle_text(piece)
-            if cleaned:
-                segments.append(cleaned)
-    return segments
+    """一句一字幕页：按 。！？ 与换行切分，保留段内 ，、 供折行。"""
+    from lib.subtitle_align import split_script_cues
+
+    return split_script_cues(script)
 
 
 def _auto_wrap(text: str, max_chars: int = 24) -> str:
-    """语义化字幕折行：优先按 ，、 切分，最后才硬切到 max_chars。
+    """语义化字幕折行：先按 ，、 切分，再剥标点，最后硬切。
 
-    - 长度 <= max_chars：原样返回
-    - 长度 >  max_chars：先按"语义停顿"（，、）找最近的 break，break 太靠后才硬切
-    - 每个折行段之间用 \\N 拼接，渲染为同一 Dialogue 的多行
+    每个折行段之间用 \\N 拼接，渲染为同一 Dialogue 的多行。
     """
-    text = _clean_subtitle_text(text)
-    if len(text) <= max_chars:
-        return text
-
-    parts: list[str] = []
-    while len(text) > max_chars:
-        # 在 [max_chars//2, max_chars] 区间内从右往左找最近的"语义停顿"
-        break_pos = -1
-        for idx in range(min(max_chars, len(text)) - 1, max_chars // 2 - 1, -1):
-            if text[idx] in "，、":
-                break_pos = idx + 1  # 切在标点之后，下一段从标点之后开始
-                break
-        if break_pos < max_chars // 2:
-            # 找不到语义停顿，硬切到 max_chars（兜底策略）
-            break_pos = max_chars
-        parts.append(text[:break_pos])
-        text = text[break_pos:]
-
-    if text:
-        parts.append(text)
-    return "\\N".join(parts)
+    wrapped = _shared_auto_wrap_subtitle(text, max_chars)
+    return wrapped.replace("\n", "\\N")
 
 
 def probe_duration(media_path: str) -> float:
@@ -384,17 +358,18 @@ def _build_image_slideshow(
 def _build_ffmpeg_command(
     *,
     input_video_path: str,
-    bgm_path: str,
-    ass_path: str,
+    bgm_path: Optional[str],
+    ass_path: Optional[str],
     output_path: str,
     duration: float,
     bgm_volume: float,
     business_card_lines: Optional[list[str]] = None,
     slideshow_path: Optional[str] = None,
 ) -> list[str]:
-    """单模板：原声 + BGM 混音 + 字幕烧录 + 可能的 drawtext 名片。
+    """单模板：原声 + 可选 BGM 混音 + 可选字幕烧录 + 可选 drawtext 名片。
 
-    始终假设输入有原声 + BGM 目录能选到一首 BGM，不支持 fallback 分支。
+    - ``bgm_path`` 为空：仅人声，不混 BGM
+    - ``ass_path`` 为空：不烧字幕（名片 drawtext 仍可叠加）
 
     当提供 ``slideshow_path`` 时，图片幻灯片会通过 vstack 拼在视频下方；
     字幕和名片在 vstack 前烧录到主视频上，确保坐标不变。
@@ -403,9 +378,12 @@ def _build_ffmpeg_command(
     width, height = probe_resolution(input_video_path)
     bgm_volume = max(0.0, min(float(bgm_volume), 1.0))
     business_card_lines = business_card_lines or []
+    use_bgm = bool(bgm_path)
 
-    # ── 视频 filter（字幕 + 可选名片） ──
-    filters = [f"subtitles='{_escape_filter_path(ass_path)}'"]
+    # ── 视频 filter（可选字幕 + 可选名片） ──
+    filters: list[str] = []
+    if ass_path:
+        filters.append(f"subtitles='{_escape_filter_path(ass_path)}'")
     if business_card_lines:
         line_h = cfg["card_line_height"]
         base_y = max(0, (height - len(business_card_lines) * line_h) // 2)
@@ -417,76 +395,95 @@ def _build_ffmpeg_command(
                 f"x={cfg['card_padding']}:y={y}:borderw={cfg['card_border_w']}:"
                 f"bordercolor={cfg['card_border_color']}"
             )
-    vf = ",".join(filters)
+    vf = ",".join(filters) if filters else ""
 
-    # ── 音频 filter：原声 + BGM 混音 ──
+    # ── 音频 filter：原声，可选 + BGM 混音 ──
     voice_vol = cfg["voice_volume"]
     fade_in = cfg["bgm_fade_in_sec"]
     fade_out = cfg["bgm_fade_out_sec"]
-
-    # BGM 输入索引：无幻灯片时是 1，有幻灯片时是 2（幻灯片占输入 1）
-    bgm_input_idx = 2 if slideshow_path else 1
 
     voice_chain = (
         f"[0:a]volume={voice_vol:.2f},atrim=0:{duration:.3f},apad=whole_dur={duration:.3f},aresample=48000,"
         "aformat=sample_fmts=fltp:channel_layouts=stereo[voice]"
     )
-    music_chain = (
-        f"[{bgm_input_idx}:a]atrim=0:{duration:.3f},aresample=48000,"
-        "aformat=sample_fmts=fltp:channel_layouts=stereo,"
-        f"volume={bgm_volume:.2f},afade=t=in:st=0:d={fade_in},"
-        f"afade=t=out:st={max(0, duration - fade_out):.3f}:d={fade_out}[music]"
-    )
-    amix = "[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+
+    if use_bgm:
+        # BGM 输入索引：无幻灯片时是 1，有幻灯片时是 2（幻灯片占输入 1）
+        bgm_input_idx = 2 if slideshow_path else 1
+        music_chain = (
+            f"[{bgm_input_idx}:a]atrim=0:{duration:.3f},aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume={bgm_volume:.2f},afade=t=in:st=0:d={fade_in},"
+            f"afade=t=out:st={max(0, duration - fade_out):.3f}:d={fade_out}[music]"
+        )
+        amix = "[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        audio_fc = f"{voice_chain};{music_chain};{amix}"
+    else:
+        audio_fc = (
+            f"[0:a]volume={voice_vol:.2f},atrim=0:{duration:.3f},apad=whole_dur={duration:.3f},"
+            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]"
+        )
+
+    cmd: list[str] = [_FFMPEG_EXE, "-y", "-stream_loop", "-1", "-i", input_video_path]
+    if slideshow_path:
+        cmd += ["-stream_loop", "-1", "-i", slideshow_path]
+    if use_bgm:
+        cmd += ["-stream_loop", "-1", "-i", bgm_path]
 
     if slideshow_path:
-        # ── 有幻灯片：全部走 filter_complex，vstack 拼合 ──
-        video_fc = (
-            f"[0:v]{vf}[main_sub];"
-            f"[main_sub][1:v]vstack=inputs=2[vout]"
-        )
-        fc = f"{video_fc};{voice_chain};{music_chain};{amix}"
-        return [
-            _FFMPEG_EXE, "-y",
-            "-stream_loop", "-1", "-i", input_video_path,
-            "-stream_loop", "-1", "-i", slideshow_path,
-            "-stream_loop", "-1", "-i", bgm_path,
+        if vf:
+            video_fc = f"[0:v]{vf}[main_sub];[main_sub][1:v]vstack=inputs=2[vout]"
+        else:
+            video_fc = "[0:v][1:v]vstack=inputs=2[vout]"
+        fc = f"{video_fc};{audio_fc}"
+        cmd += [
             "-filter_complex", fc,
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", cfg["video_codec"], "-preset", cfg["video_preset"],
-            "-c:a", cfg["audio_codec"],
-            "-threads", cfg["threads"],
-            "-t", f"{duration:.3f}",
-            output_path,
         ]
     else:
-        # ── 无幻灯片：保持现有行为（-vf 视频 + -filter_complex 仅音频） ──
-        fc = f"{voice_chain};{music_chain};{amix}"
-        return [
-            _FFMPEG_EXE, "-y",
-            "-stream_loop", "-1", "-i", input_video_path,
-            "-stream_loop", "-1", "-i", bgm_path,
-            "-filter_complex", fc,
-            "-map", "0:v", "-map", "[aout]",
-            "-vf", vf,
-            "-c:v", cfg["video_codec"], "-preset", cfg["video_preset"],
-            "-c:a", cfg["audio_codec"],
-            "-threads", cfg["threads"],
-            "-t", f"{duration:.3f}",
-            output_path,
-        ]
+        cmd += ["-filter_complex", audio_fc, "-map", "0:v", "-map", "[aout]"]
+        if vf:
+            cmd += ["-vf", vf]
+
+    cmd += [
+        "-c:v", cfg["video_codec"], "-preset", cfg["video_preset"],
+        "-c:a", cfg["audio_codec"],
+        "-threads", cfg["threads"],
+        "-t", f"{duration:.3f}",
+        output_path,
+    ]
+    return cmd
 
 
-def burn_subtitle_ffmpeg(input_video_path: str, ass_path: str, output_path: str, duration: float, business_card_text: str = "", bgm_dir: Optional[str] = None, preset: str = "default", bgm_volume: float = 0.32, slide_image_paths: Optional[list[str]] = None) -> PostProcessResult:
-    """单模板入口：选 BGM → 可选图片幻灯片 → 拼 ffmpeg 命令 → 执行。"""
+def burn_subtitle_ffmpeg(
+    input_video_path: str,
+    ass_path: str,
+    output_path: str,
+    duration: float,
+    business_card_text: str = "",
+    bgm_dir: Optional[str] = None,
+    preset: str = "default",
+    bgm_volume: float = 0.32,
+    slide_image_paths: Optional[list[str]] = None,
+    *,
+    enable_bgm: bool = True,
+    enable_subtitles: bool = True,
+) -> PostProcessResult:
+    """单模板入口：可选 BGM → 可选字幕 → 可选图片幻灯片 → 拼 ffmpeg 命令 → 执行。"""
     width, height = probe_resolution(input_video_path)  # noqa: F841 - probed for test back-compat
     _ = has_audio_stream(input_video_path)  # no-op 调用，保留 test mock 兼容
-    bgm_path = _pick_bgm(bgm_dir)
+    use_bgm = bool(enable_bgm) and float(bgm_volume) > 0
+    bgm_path = _pick_bgm(bgm_dir) if use_bgm else None
     debug_dir = os.path.dirname(output_path)
-    Path(os.path.join(debug_dir, "ffmpeg_bgm_choice.txt")).write_text(bgm_path or "NO_BGM_SELECTED", encoding="utf-8")
-    if not bgm_path:
-        return PostProcessResult(False, "failed", error="未配置 BGM 目录或目录为空，模板要求必须有 BGM")
+    Path(os.path.join(debug_dir, "ffmpeg_bgm_choice.txt")).write_text(
+        bgm_path or ("BGM_DISABLED" if not use_bgm else "NO_BGM_SELECTED"),
+        encoding="utf-8",
+    )
+    if use_bgm and not bgm_path:
+        return PostProcessResult(False, "failed", error="未配置 BGM 目录或目录为空，无法添加 BGM")
     card_lines = [ln.strip() for ln in (business_card_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()] if business_card_text else []
+
+    effective_ass = ass_path if (enable_subtitles and ass_path and os.path.isfile(ass_path)) else None
 
     # ── 图片幻灯片预处理 ──
     slideshow_path: Optional[str] = None
@@ -504,10 +501,10 @@ def burn_subtitle_ffmpeg(input_video_path: str, ass_path: str, output_path: str,
     cmd = _build_ffmpeg_command(
         input_video_path=input_video_path,
         bgm_path=bgm_path,
-        ass_path=ass_path,
+        ass_path=effective_ass,
         output_path=output_path,
         duration=duration,
-        bgm_volume=bgm_volume,
+        bgm_volume=bgm_volume if use_bgm else 0.0,
         business_card_lines=card_lines,
         slideshow_path=slideshow_path,
     )
@@ -542,16 +539,16 @@ def render_video_with_template(
     max_retry: int = 2,
     subtitle_file_path: str = "",
     slide_image_paths: Optional[list[str]] = None,
+    enable_bgm: bool = True,
+    enable_subtitles: bool = True,
 ) -> PostProcessResult:
-    """端到端 orchestrator：探测元数据 → 选 BGM → 可选图片幻灯片 → 拼 ffmpeg → 输出 → 清理。
+    """端到端 orchestrator：探测元数据 → 可选 BGM → 可选字幕 → 拼 ffmpeg → 输出。
 
     输入必须是本地文件路径；URL / Base64 / upload_id 由调用方（main.py）解析好再传入。
     失败时按 ``max_retry`` 自动重试。
 
-    新增 ``subtitle_file_path``：当提供预生成的 .ass 字幕文件时（如 ASR 自动字幕），
-    跳过 ``build_ass_subtitles`` 按字符比例分配的逻辑，直接使用带精确时间戳的字幕文件。
-
-    新增 ``slide_image_paths``：本地图片文件路径列表，用于构建视频下方的图片轮播幻灯片。
+    ``enable_subtitles=False``：不烧字幕。
+    ``enable_bgm=False`` 或 ``bgm_volume<=0``：不混 BGM。
     """
     os.makedirs(output_dir, exist_ok=True)
     if keep_original:
@@ -562,24 +559,29 @@ def render_video_with_template(
 
     duration = resolve_target_duration(input_video_path)
 
-    # 字幕文件：优先使用预生成的 ASR 字幕，否则按字符比例分配
-    if subtitle_file_path and os.path.isfile(subtitle_file_path):
-        ass_path = subtitle_file_path
-        # 如果是 SRT 格式，ffmpeg 的 subtitles= filter 也支持
-    else:
-        width, height = probe_resolution(input_video_path)
-        ass_path = os.path.join(output_dir, f"{task_id}.ass")
-        build_ass_subtitles(script, ass_path, duration, width, height)
+    ass_path = ""
+    owned_ass = False
+    if enable_subtitles:
+        # 字幕文件：优先使用预生成的 ASR 字幕，否则按字符比例分配
+        if subtitle_file_path and os.path.isfile(subtitle_file_path):
+            ass_path = subtitle_file_path
+        else:
+            width, height = probe_resolution(input_video_path)
+            ass_path = os.path.join(output_dir, f"{task_id}.ass")
+            build_ass_subtitles(script, ass_path, duration, width, height)
+            owned_ass = True
 
     output_path = os.path.join(output_dir, f"{task_id}_final.mp4")
     result = burn_subtitle_ffmpeg(
         input_video_path, ass_path, output_path, duration,
         business_card_text, bgm_dir, "default", bgm_volume,
         slide_image_paths=slide_image_paths,
+        enable_bgm=enable_bgm,
+        enable_subtitles=enable_subtitles,
     )
     if result.ok:
         # 只清理自己生成的临时 ASS，不删传入的字幕文件
-        if not subtitle_file_path:
+        if owned_ass and ass_path:
             try:
                 os.remove(ass_path)
             except Exception:
@@ -593,11 +595,13 @@ def render_video_with_template(
             keep_original=False, attempt=attempt + 1, max_retry=max_retry,
             subtitle_file_path=subtitle_file_path,
             slide_image_paths=slide_image_paths,
+            enable_bgm=enable_bgm,
+            enable_subtitles=enable_subtitles,
         )
     return result
 
 
-def run_ffmpeg_post_process(task_id: str, input_video_path: str, output_dir: str, script: str, keep_original: bool = True, business_card_text: str = "", bgm_dir: Optional[str] = None, preset: str = "default", bgm_volume: float = 0.32, attempt: int = 0, max_retry: int = 2, subtitle_file_path: str = "", slide_image_paths: Optional[list[str]] = None) -> PostProcessResult:
+def run_ffmpeg_post_process(task_id: str, input_video_path: str, output_dir: str, script: str, keep_original: bool = True, business_card_text: str = "", bgm_dir: Optional[str] = None, preset: str = "default", bgm_volume: float = 0.32, attempt: int = 0, max_retry: int = 2, subtitle_file_path: str = "", slide_image_paths: Optional[list[str]] = None, enable_bgm: bool = True, enable_subtitles: bool = True) -> PostProcessResult:
     """旧 API 兼容层：直接 delegate 到 render_video_with_template。"""
     return render_video_with_template(
         task_id=task_id, output_dir=output_dir, script=script,
@@ -606,4 +610,6 @@ def run_ffmpeg_post_process(task_id: str, input_video_path: str, output_dir: str
         keep_original=keep_original, attempt=attempt, max_retry=max_retry,
         subtitle_file_path=subtitle_file_path,
         slide_image_paths=slide_image_paths,
+        enable_bgm=enable_bgm,
+        enable_subtitles=enable_subtitles,
     )

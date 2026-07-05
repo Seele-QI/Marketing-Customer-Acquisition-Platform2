@@ -12,6 +12,7 @@ import logger from '../services/logger';
 import { getMachineIdShort } from '../services/machine-id';
 import { activate, type ActivationResult } from '../services/activation-client';
 import { saveCredentials, type CredentialData } from '../services/credential-store';
+import { attachEditableContextMenu } from '../utils/editable-context-menu';
 
 export type WizardCallback = (success: boolean) => void;
 
@@ -58,6 +59,7 @@ export function createWizardWindow(onDone: WizardCallback): BrowserWindow {
   ipcMain.handle('wizard:get-machine-id', () => getMachineIdShort());
 
   win.once('ready-to-show', () => win.show());
+  attachEditableContextMenu(win);
   win.on('closed', () => onDone(false));
 
   // 将回调暴露给关闭事件

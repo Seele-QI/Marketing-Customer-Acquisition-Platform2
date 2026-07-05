@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,9 @@ ASS_BOLD = 0
 
 _SENTENCE_END = {"。", "？", "！", "……", "…", ".", "?", "!"}
 _CLAUSE_MARKERS = {"，", "、", "：", "；", ",", ":", ";"}
+# 展示用：仅保留中英数字与空白
+_DISPLAY_KEEP_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff\s]+")
+_CLAUSE_SPLIT_RE = re.compile(r"[，、,;；：:]")
 
 
 # ── 句子格式化工具 ────────────────────────────────────────────────
@@ -54,27 +58,66 @@ def max_chars_for_video_width(
     return max(1, usable // font_size)
 
 
-def _auto_wrap_subtitle(text: str, max_chars: int = MAX_CHARS_PER_LINE) -> str:
-    """长句子自动换行。优先在标点处换行，否则硬切。"""
-    if len(text) <= max_chars:
-        return text
+def clean_subtitle_display(text: str) -> str:
+    """剥标点后的字幕展示文本（保留中英数字与空白）。"""
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = _DISPLAY_KEEP_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-    parts: list[str] = []
-    remaining = text
-    while len(remaining) > max_chars:
-        split_at = -1
-        for marker in _CLAUSE_MARKERS:
-            pos = remaining.rfind(marker, 0, max_chars)
-            if pos > split_at:
-                split_at = pos
-        if split_at > max_chars // 2:
-            parts.append(remaining[:split_at + 1])
-            remaining = remaining[split_at + 1:]
+
+def _auto_wrap_subtitle(text: str, max_chars: int = MAX_CHARS_PER_LINE) -> str:
+    """
+    语义化字幕折行：先按 ，、 切分，再剥标点做展示，最后才硬切。
+
+    返回用 \\n 连接的多行文本（ASS 调用方再转 \\N）。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    # 1) 先按句内标点切成子句（标点本身不进入展示）
+    clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(raw) if c.strip()]
+    if not clauses:
+        clauses = [raw]
+
+    cleaned_clauses = [clean_subtitle_display(c) for c in clauses]
+    cleaned_clauses = [c for c in cleaned_clauses if c]
+    if not cleaned_clauses:
+        return clean_subtitle_display(raw)
+
+    # 2) 将子句装入不超过 max_chars 的行
+    lines: list[str] = []
+    current = ""
+    for clause in cleaned_clauses:
+        if not current:
+            if len(clause) <= max_chars:
+                current = clause
+            else:
+                # 单子句过长：硬切
+                while len(clause) > max_chars:
+                    lines.append(clause[:max_chars])
+                    clause = clause[max_chars:]
+                current = clause
+            continue
+
+        candidate = current + clause
+        if len(candidate) <= max_chars:
+            current = candidate
         else:
-            parts.append(remaining[:max_chars])
-            remaining = remaining[max_chars:]
-    parts.append(remaining)
-    return "\n".join(p.strip() for p in parts)
+            lines.append(current)
+            if len(clause) <= max_chars:
+                current = clause
+            else:
+                while len(clause) > max_chars:
+                    lines.append(clause[:max_chars])
+                    clause = clause[max_chars:]
+                current = clause
+
+    if current:
+        lines.append(current)
+
+    return "\n".join(lines)
 
 
 def _escape_ass_text(text: str) -> str:
@@ -185,13 +228,18 @@ def sentences_from_flash_result(
 
 # ── SRT 生成 ──────────────────────────────────────────────────────
 
-def generate_srt(sentences: list[dict[str, Any]], output_path: str) -> str:
+def generate_srt(
+    sentences: list[dict[str, Any]],
+    output_path: str,
+    max_chars: int | None = None,
+) -> str:
     """从句子时间轴生成 SRT 字幕文件。返回输出路径"""
+    wrap_chars = max_chars if max_chars is not None else MAX_CHARS_PER_LINE
     lines: list[str] = []
     for i, sent in enumerate(sentences, 1):
         start_srt = _ms_to_srt_time(sent["start_ms"])
         end_srt = _ms_to_srt_time(sent["end_ms"])
-        text = _auto_wrap_subtitle(sent["text"]).replace("\n", "\n")
+        text = _auto_wrap_subtitle(sent["text"], wrap_chars)
         lines.append(f"{i}")
         lines.append(f"{start_srt} --> {end_srt}")
         lines.append(text)

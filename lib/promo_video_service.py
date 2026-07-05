@@ -814,22 +814,7 @@ def plan_promo_video_segments(
     return plans
 
 
-def concatenate_videos_ffmpeg(video_paths, output_path, ffmpeg_path="ffmpeg"):
-    if len(video_paths) == 1:
-        subprocess.run([ffmpeg_path, "-y", "-i", video_paths[0], "-c", "copy", output_path], check=True, capture_output=True, encoding="utf-8", errors="replace")
-        return output_path
-    concat_list = os.path.join(os.path.dirname(output_path) or ".", f"concat_{int(time.time()*1000)}.txt")
-    try:
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for vp in video_paths:
-                abs_path = os.path.abspath(vp).replace("\\", "/").replace(":", "\\:")
-                f.write(f"file '{abs_path}'\n")
-        subprocess.run([ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", output_path], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        logger.info(f"Concatenated {len(video_paths)} videos -> {output_path}")
-    finally:
-        if os.path.exists(concat_list):
-            os.remove(concat_list)
-    return output_path
+from lib.video_concat import concatenate_videos_ffmpeg  # noqa: F401 — re-export for main.py
 
 
 def pick_first_valid_url(results):

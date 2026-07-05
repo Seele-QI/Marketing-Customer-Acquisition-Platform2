@@ -4,6 +4,11 @@ import {
   resolveVideoPrompt,
   type VideoPromptMode,
 } from "@/lib/video/video-prompt-presets"
+import {
+  DEFAULT_EDITING_PRESET_ID,
+  resolveEditingPresetId,
+  type EditingPresetId,
+} from "@/lib/video/editing-presets"
 
 /**
  * 视频创作任务状态持久化层（localStorage）
@@ -69,6 +74,12 @@ export type VideoTaskState = {
   // 剪辑
   businessCardText: string
   bgmVolume: number
+  /** 剪辑时是否自动混入 BGM（创作前勾选） */
+  enableBgm: boolean
+  /** 剪辑时是否 ASR 校对并烧录字幕（创作前勾选） */
+  enableSubtitles: boolean
+  /** 剪辑风格 preset id，对齐 /api/video/edit */
+  editingPreset: EditingPresetId
   isEditing: boolean
   editingErrorMessage: string
   postProcessingStage: string
@@ -141,6 +152,9 @@ const DEFAULT_STATE: Omit<VideoTaskState, "taskId" | "createdAt" | "updatedAt"> 
   audioDuration: "",
   businessCardText: "",
   bgmVolume: 0.35,
+  enableBgm: true,
+  enableSubtitles: true,
+  editingPreset: DEFAULT_EDITING_PRESET_ID,
   isEditing: false,
   editingErrorMessage: "",
   postProcessingStage: "",
@@ -253,6 +267,9 @@ export function loadTask(): VideoTaskState | null {
       coverTaskId: parsed.coverTaskId ?? "",
       businessCardText: parsed.businessCardText ?? "",
       bgmVolume: typeof parsed.bgmVolume === "number" ? parsed.bgmVolume : 0.32,
+      enableBgm: parsed.enableBgm !== false,
+      enableSubtitles: parsed.enableSubtitles !== false,
+      editingPreset: resolveEditingPresetId(parsed.editingPreset),
       videoPrompt: resolveVideoPrompt(typeof parsed.videoPrompt === "string" ? parsed.videoPrompt : ""),
       videoPromptMode:
         parsed.videoPromptMode === "natural" ||

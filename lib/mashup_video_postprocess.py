@@ -151,9 +151,9 @@ def _build_segment_plan(
 def _build_mashup_ffmpeg_command(
     *,
     plan: list[dict],
-    ass_path: str,
+    ass_path: Optional[str],
     voice_audio_path: str,
-    bgm_path: str,
+    bgm_path: Optional[str],
     output_path: str,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
@@ -166,18 +166,19 @@ def _build_mashup_ffmpeg_command(
 
     结构：
     1. 每个片段: trim + scale + pad + fps → [v-i]
-    2. xfade 级联（转场随机从 slideleft/slideright/fade 选取）
-    3. 字幕烧录 → [vout]
-    4. 音频混流（voice + bgm，无淡入淡出，所有视频输入音轨丢弃） → [aout]
+    2. xfade 级联
+    3. 可选字幕烧录 → [vout]
+    4. 音频：仅 voice，或 voice+BGM → [aout]
     """
     n = len(plan)
+    use_bgm = bool(bgm_path) and float(bgm_volume) > 0
+    use_subs = bool(ass_path) and os.path.isfile(ass_path)
+
     cl = [_FFMPEG_EXE, "-y"]
 
-    # ── 输入文件 ──
-    # 每个片段独立作为视频输入（允许同一文件出现多次）
     seen_paths: dict[str, int] = {}
-    video_input_map: list[int] = []  # plan_idx → input_idx
-    for idx, seg in enumerate(plan):
+    video_input_map: list[int] = []
+    for seg in plan:
         vpath = seg["video_path"]
         if vpath not in seen_paths:
             seen_paths[vpath] = len(seen_paths)
@@ -186,26 +187,21 @@ def _build_mashup_ffmpeg_command(
 
     voice_input_idx = len(seen_paths)
     cl += ["-i", voice_audio_path]
-    bgm_input_idx = voice_input_idx + 1
-    cl += ["-i", bgm_path]
+    if use_bgm:
+        cl += ["-i", bgm_path]
 
-    # ── filter_complex ──
     fc_parts: list[str] = []
 
-    # 1) 每个片段预处理
     for i, seg in enumerate(plan):
         inp_idx = video_input_map[i]
         t_start = seg["trim_start"]
         t_dur = seg["play_duration"]
-        # trim 从源视频截取 → 缩放 → 填充 → 帧率统一
         fc_parts.append(
             f"[{inp_idx}:v]trim=start={t_start:.3f}:duration={t_dur:.3f},setpts=PTS-STARTPTS,"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={fps}[v{i}]"
         )
 
-    # 2) xfade 级联
-    # offset 公式：第 i 个转场 offset = sum(play[0..i]) - (i+1)*transition
     offsets: list[float] = []
     cum = 0.0
     for i in range(n - 1):
@@ -223,23 +219,31 @@ def _build_mashup_ffmpeg_command(
         )
         prev_label = next_label
 
-    # 3) 字幕烧录
-    fc_parts.append(f"[xfinal]subtitles='{_escape_filter_path(ass_path)}'[vout]")
+    if use_subs:
+        fc_parts.append(f"[xfinal]subtitles='{_escape_filter_path(ass_path)}'[vout]")
+    else:
+        fc_parts.append("[xfinal]format=yuv420p[vout]")
 
-    # 4) 音频混流（配音 + BGM，无淡入淡出）
     total_duration = round(
         sum(p["play_duration"] for p in plan) - (n - 1) * transition_dur, 3
     )
 
-    fc_parts.append(
+    voice_chain = (
         f"[{voice_input_idx}:a]volume={VOICE_VOLUME:.2f},atrim=0:{total_duration:.3f},"
         f"apad=whole_dur={total_duration:.3f},aresample=48000,"
-        f"aformat=sample_fmts=fltp:channel_layouts=stereo[voice];"
-        f"[{bgm_input_idx}:a]atrim=0:{total_duration:.3f},aresample=48000,"
-        f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
-        f"volume={bgm_volume:.2f}[music];"
-        f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        f"aformat=sample_fmts=fltp:channel_layouts=stereo"
     )
+    if use_bgm:
+        bgm_input_idx = voice_input_idx + 1
+        fc_parts.append(
+            f"{voice_chain}[voice];"
+            f"[{bgm_input_idx}:a]atrim=0:{total_duration:.3f},aresample=48000,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume={bgm_volume:.2f}[music];"
+            f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        )
+    else:
+        fc_parts.append(f"{voice_chain}[aout]")
 
     fc = ";".join(fc_parts)
 
@@ -274,6 +278,8 @@ def mashup_video_render(
     attempt: int = 0,
     max_retry: int = 2,
     subtitle_file_path: str = "",
+    enable_bgm: bool = True,
+    enable_subtitles: bool = True,
 ) -> PostProcessResult:
     """
     视频混剪端到端渲染入口。
@@ -308,22 +314,27 @@ def mashup_video_render(
     except ValueError as e:
         return PostProcessResult(False, "failed", error=str(e))
 
-    # 4. 生成 ASS 字幕（优先使用预生成 ASR 字幕）
-    generated_ass_path = os.path.join(output_dir, f"{task_id}.ass")
-    if subtitle_file_path and os.path.isfile(subtitle_file_path):
-        ass_path = subtitle_file_path
-        ass_is_generated = False
-    else:
-        ass_path = generated_ass_path
-        build_ass_subtitles(script, ass_path, voice_duration, width, height)
-        ass_is_generated = True
+    # 4. 可选 ASS 字幕
+    use_subs = bool(enable_subtitles)
+    ass_path: Optional[str] = None
+    ass_is_generated = False
+    if use_subs:
+        generated_ass_path = os.path.join(output_dir, f"{task_id}.ass")
+        if subtitle_file_path and os.path.isfile(subtitle_file_path):
+            ass_path = subtitle_file_path
+        else:
+            ass_path = generated_ass_path
+            build_ass_subtitles(script, ass_path, voice_duration, width, height)
+            ass_is_generated = True
 
-    # 5. 选取 BGM
-    bgm_path = _pick_bgm(bgm_dir)
+    # 5. 可选 BGM
+    use_bgm = bool(enable_bgm) and float(bgm_volume) > 0
+    bgm_path = _pick_bgm(bgm_dir) if use_bgm else None
     Path(os.path.join(output_dir, "ffmpeg_bgm_choice.txt")).write_text(
-        bgm_path or "NO_BGM_SELECTED", encoding="utf-8"
+        bgm_path or ("BGM_DISABLED" if not use_bgm else "NO_BGM_SELECTED"),
+        encoding="utf-8",
     )
-    if not bgm_path:
+    if use_bgm and not bgm_path:
         return PostProcessResult(False, "failed", error="未配置 BGM 目录或目录为空")
 
     # 6. 构建 ffmpeg 命令
@@ -338,7 +349,7 @@ def mashup_video_render(
         height=height,
         fps=fps,
         transition_dur=transition_dur,
-        bgm_volume=bgm_volume,
+        bgm_volume=bgm_volume if use_bgm else 0.0,
     )
 
     Path(os.path.join(output_dir, "ffmpeg_burn_cmd.txt")).write_text(" ".join(cmd), encoding="utf-8")
@@ -367,6 +378,7 @@ def mashup_video_render(
             bgm_volume=bgm_volume, width=width, height=height, fps=fps,
             transition_dur=transition_dur, attempt=attempt + 1, max_retry=max_retry,
             subtitle_file_path=subtitle_file_path,
+            enable_bgm=enable_bgm, enable_subtitles=enable_subtitles,
         )
 
     return PostProcessResult(False, "failed", error=err)

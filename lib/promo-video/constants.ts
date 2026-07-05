@@ -87,3 +87,23 @@ export function promoResolutionsForChannel(channel: PromoRhChannel) {
     (r) => !("officialOnly" in r && r.officialOnly) || channel === "Official",
   )
 }
+
+/** 成片扣费：每 15 秒单价（与 lib/promo_video_service.py 一致） */
+export const PROMO_VIDEO_COST_PER_15S = {
+  "480p": 798,
+  "720p": 1528,
+  "1080p": 2289,
+} as const
+
+export type PromoBillableResolution = keyof typeof PROMO_VIDEO_COST_PER_15S
+
+/** 未知分辨率（2k/4k 等）按 1080p 计费 */
+export function estimatePromoVideoCost(duration: number, resolution: string): number {
+  const segments = Math.max(1, Math.floor((duration + 14) / 15))
+  const key = (resolution || "").trim() as PromoBillableResolution
+  const per15 =
+    key in PROMO_VIDEO_COST_PER_15S
+      ? PROMO_VIDEO_COST_PER_15S[key]
+      : PROMO_VIDEO_COST_PER_15S["1080p"]
+  return segments * per15
+}

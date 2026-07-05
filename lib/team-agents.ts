@@ -103,20 +103,6 @@ export const TEAM_AGENTS: TeamAgent[] = [
     ],
   },
   {
-    id: "miyamoto-musashi",
-    name: "宫本武藏",
-    role: "战略取舍，执行训练官",
-    description: "强调节奏、取舍与行动纪律，把复杂目标收束成清晰战术动作。",
-    avatar: "/agents/miyamoto-musashi.webp",
-    tags: ["战略取舍", "执行力", "节奏"],
-    status: "working",
-    themeColor: "var(--color-orange-500)",
-    quickPrompts: [
-      { text: "这个阶段最应该舍弃什么，专注什么", iconKey: "swords" },
-      { text: "请把目标拆成一套本周可执行的训练计划", iconKey: "list-todo" },
-    ],
-  },
-  {
     id: "marie-curie",
     name: "居里夫人",
     role: "严谨实验，研究分析师",

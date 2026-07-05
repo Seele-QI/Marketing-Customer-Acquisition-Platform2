@@ -32,7 +32,6 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           {children}
           <GeoSwitchFlash />
-          <EditableContextMenu />
         </ThemeProvider>
         {process.env.NODE_ENV === "production" && <Analytics />}
       </body>

@@ -4,10 +4,10 @@ RunningHub API 客户端封装
 API 端点:
   - 文件上传: POST /openapi/v2/media/upload/binary
   - 音频克隆: POST /openapi/v2/run/ai-app/1965614643077070850
-  - 视频生成: POST /openapi/v2/run/workflow/2040243235951484930
+  - 视频生成: POST /openapi/v2/run/workflow/2072599683289141249
     · nodeId=221: 数字人形象图片 (image)
     · nodeId=238: 音频 (audio)
-    · nodeId=254: 11 行动作描述提示词 (text) — 必须 11 行，每行对应一个视频分段
+    · nodeId=254: 5 行动作描述提示词 (text) — 必须 5 行，每段 RH 调用使用同一套提示词
   - 任务查询: POST /openapi/v2/query
 
 用法:
@@ -16,6 +16,7 @@ API 端点:
     video_task_id = await client.submit_video(image_url, audio_url, motion)
 """
 
+import os
 import time
 import logging
 from typing import Optional
@@ -27,12 +28,12 @@ logger = logging.getLogger("runninghub")
 BASE_URL = "https://www.runninghub.cn/openapi/v2"
 
 AUDIO_CLONE_APP_ID = "1965614643077070850"
-VIDEO_WORKFLOW_ID = "2040243235951484930"
+VIDEO_WORKFLOW_ID = "2072599683289141249"
 
 # 视频工作流节点 ID（对应 ComfyUI 工作流）
 VIDEO_NODE_IMAGE = "221"   # LoadImage — 数字人形象
 VIDEO_NODE_AUDIO = "238"   # LoadAudio — 音频
-VIDEO_NODE_PROMPT = "254"  # TextInput_ — 11 行动作描述提示词
+VIDEO_NODE_PROMPT = "254"  # TextInput_ — 5 行动作描述提示词
 
 # 封面图 API
 COVER_IMAGE_ENDPOINT = "/rhart-image-g-2/image-to-image"
@@ -44,7 +45,7 @@ POLL_INTERVAL = 5
 MAX_WAIT_SECONDS = 50 * 60
 # 最大重试次数（任务查询失败时）
 MAX_QUERY_RETRIES = 3
-MOTION_PROMPT_LINE_COUNT = 11
+MOTION_PROMPT_LINE_COUNT = 5
 
 
 def _default_motion_prompt(gender: str) -> str:
@@ -55,19 +56,13 @@ def _default_motion_prompt(gender: str) -> str:
         f"{pronoun}对着镜头说话。\n"
         f"{pronoun}对着镜头说话，手部自然的摆动\n"
         f"{pronoun}对着镜头说话。\n"
-        f"{pronoun}对着镜头说话，手部自然的摆动\n"
-        f"{pronoun}对着镜头说话。\n"
-        f"{pronoun}对着镜头说话，手部自然摆动，轻微皱眉\n"
-        f"{pronoun}对着镜头说话。\n"
-        f"{pronoun}对着镜头说话，手部自然的摆动\n"
-        f"{pronoun}对着镜头说话。\n"
     )
 
 
 def build_motion_prompt(gender: str, custom_prompt: str = "") -> str:
-    """生成视频工作流节点 254 所需的 11 行动作描述提示词。
+    """生成视频工作流节点 254 所需的 5 行动作描述提示词。
 
-    每行对应一个视频分段的数字人动作描述，总行数必须为 11。
+    每段 RH 调用使用同一套 5 行提示词，总行数必须为 5。
     根据数字人性别使用对应的代词。
     """
     if not custom_prompt or not custom_prompt.strip():
@@ -294,12 +289,12 @@ class RunningHubClient:
         motion_prompt: str,
     ) -> str:
         """
-        提交视频生成任务。
+        提交单段数字人视频生成任务（分段管线中对每段音频各调用一次）。
 
         Args:
             image_url: 数字人形象图片 URL → nodeId=221
-            audio_url: 克隆后音频 URL → nodeId=238
-            motion_prompt: 11 行动作描述提示词 → nodeId=254
+            audio_url: 该段克隆/切分后音频 URL → nodeId=238
+            motion_prompt: 5 行动作描述提示词 → nodeId=254（各段共用同一套）
 
         Returns:
             taskId: RunningHub 任务 ID
@@ -309,6 +304,7 @@ class RunningHubClient:
         """
         client = await self._get_client()
         url = f"{BASE_URL}/run/workflow/{VIDEO_WORKFLOW_ID}"
+        instance_type = (os.getenv("RH_VIDEO_INSTANCE_TYPE") or "default").strip() or "default"
 
         payload = {
             "addMetadata": True,
@@ -329,20 +325,70 @@ class RunningHubClient:
                     "fieldValue": motion_prompt,
                 },
             ],
-            "instanceType": "plus",
+            "instanceType": instance_type,
             "usePersonalQueue": "false",
         }
+
+        # #region agent log
+        def _dbg_submit(msg: str, data: dict, hyp: str = "H1") -> None:
+            try:
+                import json as _json, time as _time
+                with open("debug-014260.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "sessionId": "014260",
+                        "hypothesisId": hyp,
+                        "location": "runninghub_client.py:submit_video",
+                        "message": msg,
+                        "data": data,
+                        "timestamp": int(_time.time() * 1000),
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        # #endregion
+
+        # #region agent log
+        _dbg_submit("submit_video request", {
+            "url": url,
+            "workflow_id": VIDEO_WORKFLOW_ID,
+            "instance_type": instance_type,
+            "image_url_prefix": (image_url or "")[:80],
+            "audio_url_prefix": (audio_url or "")[:80],
+            "prompt_lines": len([ln for ln in (motion_prompt or "").split("\n") if ln.strip()]),
+            "prompt_len": len(motion_prompt or ""),
+            "node_ids": [VIDEO_NODE_IMAGE, VIDEO_NODE_AUDIO, VIDEO_NODE_PROMPT],
+        }, "H1")
+        # #endregion
 
         try:
             resp = await client.post(url, json=payload)
         except httpx.RequestError as e:
+            # #region agent log
+            _dbg_submit("submit_video network error", {"error": str(e)}, "H4")
+            # #endregion
             raise RunningHubError(f"视频生成任务提交网络错误: {e}") from e
+
+        # #region agent log
+        _dbg_submit("submit_video response", {
+            "http_status": resp.status_code,
+            "is_success": resp.is_success,
+            "body_prefix": (resp.text or "")[:800],
+        }, "H1")
+        # #endregion
 
         if not resp.is_success:
             raise self._build_http_error("视频生成任务提交", resp)
 
         data = resp.json()
-        task_id = data.get("taskId", "")
+        task_id = data.get("taskId", "") or data.get("task_id", "")
+        # #region agent log
+        _dbg_submit("submit_video parsed", {
+            "task_id": task_id,
+            "status": data.get("status"),
+            "error_code": data.get("errorCode") or data.get("code"),
+            "error_message": data.get("errorMessage") or data.get("message"),
+            "keys": list(data.keys()) if isinstance(data, dict) else [],
+        }, "H2")
+        # #endregion
         if not task_id:
             raise RunningHubError(f"视频生成返回缺少 taskId: {resp.text[:500]}")
 

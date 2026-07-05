@@ -154,6 +154,8 @@ function createMainWindow(): BrowserWindow {
 
   win.once("ready-to-show", () => win.show());
 
+  // 主窗口由前端 EditableContextMenu 提供右键粘贴（覆盖全部受控输入框）
+
   // 阶段 3：关闭 → 隐藏到托盘
   win.on("close", (e) => {
     if (!isQuitting) {

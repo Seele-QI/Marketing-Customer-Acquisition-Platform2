@@ -1,13 +1,15 @@
 """
 图文视频 / 视频混剪 ASR 字幕共享入口。
 
-从配音音频（mp3/wav）提取 16k WAV → 阿里云 NLS 识别 → 生成 ASS 字幕。
+从配音音频（mp3/wav）提取 16k WAV → 阿里云 NLS 识别 →
+有原文案时校对对齐（原文案断句 + ASR 时间戳）→ 生成 ASS 字幕。
 """
 
 from __future__ import annotations
 
 import os
 
+from lib.subtitle_align import try_build_aligned_subtitle
 from lib.subtitle_generator import max_chars_for_video_width, timed_sentences_to_subtitle
 from lib.video_extract import extract_audio_from_local_video, transcribe_audio_with_timestamps
 
@@ -33,9 +35,12 @@ async def build_asr_ass_from_audio(
     video_width: int = 1080,
     video_height: int = 1440,
     style: dict | None = None,
+    script: str = "",
 ) -> str:
     """
-    从配音音频生成带 ASR 时间轴的 ASS 字幕文件。
+    从配音音频生成带时间轴的 ASS 字幕文件。
+
+    若提供 script，走「原文案校对 + ASR 时间戳」；否则回退纯 ASR 文本。
 
     Raises:
         Exception: ASR 或字幕生成失败时抛出，由调用方决定是否回退。
@@ -54,10 +59,7 @@ async def build_asr_ass_from_audio(
         sentence_max_length=max_chars,
     )
 
-    return timed_sentences_to_subtitle(
-        sentences=asr_result.sentences,
-        output_dir=output_dir,
-        filename_prefix=filename_prefix,
+    style_kwargs = dict(
         format="ass",
         video_width=video_width,
         video_height=video_height,
@@ -68,4 +70,21 @@ async def build_asr_ass_from_audio(
         outline=int(cfg.get("outline", 4)),
         margin_v_ratio=float(cfg.get("margin_v_ratio", 0.22)),
         max_chars=max_chars,
+    )
+
+    aligned = try_build_aligned_subtitle(
+        script,
+        asr_result.sentences,
+        output_dir,
+        filename_prefix=filename_prefix,
+        **style_kwargs,
+    )
+    if aligned:
+        return aligned
+
+    return timed_sentences_to_subtitle(
+        sentences=asr_result.sentences,
+        output_dir=output_dir,
+        filename_prefix=filename_prefix,
+        **style_kwargs,
     )

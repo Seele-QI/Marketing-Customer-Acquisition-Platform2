@@ -2,6 +2,7 @@
 
 import { Store, Clapperboard, Mic, RefreshCw, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { VIDEO_VIEWS } from "@/lib/video/workspace"
 
 type QuickAction = {
   id: string
@@ -32,7 +33,7 @@ const ACTIONS: QuickAction[] = [
     icon: Clapperboard,
     color: "text-violet-500",
     bg: "bg-violet-500/10",
-    action: { type: "goView", view: "视频创作" },
+    action: { type: "goView", view: VIDEO_VIEWS.DIGITAL_HUMAN },
     prompts: ["上传形象照+口播稿，一键生成我的数字人视频"],
   },
   {

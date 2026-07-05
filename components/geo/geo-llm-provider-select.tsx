@@ -1,18 +1,17 @@
 "use client"
 
 import * as React from "react"
-import { ChevronDown, Cpu } from "lucide-react"
+import { Cpu, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { showSwitchNotice } from "@/hooks/use-geo-switch-flash"
 import {
-  MODEL_MENU_OPTION,
-  MODEL_MENU_OPTION_DISABLED,
-  MODEL_MENU_OPTION_SELECTED,
-  MODEL_MENU_PANEL,
-  MODEL_MENU_TRIGGER,
-  upwardPanelStyle,
-} from "@/lib/llm/model-menu-styles"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 export type LlmProviderOption = {
   id: LlmProviderId
@@ -27,6 +26,8 @@ type Props = {
   providers?: LlmProviderOption[]
   className?: string
   disabled?: boolean
+  /** 显示「AI 引擎」标签（内容矩阵配置区等） */
+  showLabel?: boolean
 }
 
 export function GeoLlmProviderSelect({
@@ -35,13 +36,10 @@ export function GeoLlmProviderSelect({
   providers: externalProviders,
   className,
   disabled,
+  showLabel = false,
 }: Props) {
   const [providers, setProviders] = React.useState<LlmProviderOption[]>(externalProviders ?? [])
   const [loading, setLoading] = React.useState(!externalProviders)
-  const [open, setOpen] = React.useState(false)
-  const [panelStyle, setPanelStyle] = React.useState<React.CSSProperties>({})
-  const containerRef = React.useRef<HTMLDivElement>(null)
-  const triggerRef = React.useRef<HTMLButtonElement>(null)
 
   React.useEffect(() => {
     if (externalProviders) {
@@ -67,37 +65,6 @@ export function GeoLlmProviderSelect({
     }
   }, [externalProviders])
 
-  const updatePanelPos = React.useCallback(() => {
-    const el = triggerRef.current
-    if (!el) return
-    setPanelStyle(upwardPanelStyle(el.getBoundingClientRect()))
-  }, [])
-
-  React.useEffect(() => {
-    if (!open) return
-    updatePanelPos()
-    window.addEventListener("resize", updatePanelPos)
-    window.addEventListener("scroll", updatePanelPos, true)
-    return () => {
-      window.removeEventListener("resize", updatePanelPos)
-      window.removeEventListener("scroll", updatePanelPos, true)
-    }
-  }, [open, updatePanelPos])
-
-  React.useEffect(() => {
-    const onPointerDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        const panel = document.getElementById("geo-llm-provider-panel")
-        if (panel?.contains(e.target as Node)) return
-        setOpen(false)
-      }
-    }
-    if (open) {
-      document.addEventListener("pointerdown", onPointerDown)
-      return () => document.removeEventListener("pointerdown", onPointerDown)
-    }
-  }, [open])
-
   React.useEffect(() => {
     if (providers.length === 0) return
     const current = providers.find((p) => p.id === value)
@@ -108,70 +75,61 @@ export function GeoLlmProviderSelect({
   }, [providers, value, onChange])
 
   const selected = providers.find((p) => p.id === value)
+  const effectiveValue =
+    selected?.configured ? value : (providers.find((p) => p.configured)?.id ?? value)
+
+  const handleChange = (next: string) => {
+    const p = providers.find((x) => x.id === next)
+    if (!p?.configured) return
+    if (p.id !== value) {
+      showSwitchNotice("provider", p.label)
+    }
+    onChange(p.id)
+  }
+
+  const selectDisabled = disabled || loading || providers.length === 0
 
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={disabled || loading}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          MODEL_MENU_TRIGGER,
-          "py-2",
-          (disabled || loading) && "cursor-not-allowed opacity-60",
-        )}
-      >
-        <Cpu className="h-3.5 w-3.5 shrink-0 text-cyan-500" />
-        <span className="truncate">{loading ? "加载中…" : (selected?.label ?? "选择模型")}</span>
-        <ChevronDown
+    <div className={cn("flex flex-col gap-1", className)}>
+      {showLabel ? (
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">AI 引擎</span>
+      ) : null}
+      <Select value={effectiveValue} onValueChange={handleChange} disabled={selectDisabled}>
+        <SelectTrigger
+          size="sm"
+          aria-label="选择 AI 引擎"
           className={cn(
-            "ml-auto h-3.5 w-3.5 shrink-0 opacity-60 transition-transform",
-            open && "rotate-180",
+            "min-w-[148px] border-slate-200/80 bg-white/80 text-[12px] shadow-sm dark:border-white/10 dark:bg-white/5",
+            selectDisabled && "cursor-not-allowed opacity-60",
           )}
-        />
-      </button>
-
-      {open && (
-        <ul
-          id="geo-llm-provider-panel"
-          role="listbox"
-          aria-label="大模型列表"
-          className={MODEL_MENU_PANEL}
-          style={panelStyle}
         >
-          {providers.map((p) => {
-            const isDisabled = !p.configured
-            const isSelected = value === p.id
-            return (
-              <li key={p.id} role="option" aria-selected={isSelected} aria-disabled={isDisabled}>
-                <button
-                  type="button"
-                  disabled={isDisabled}
-                  title={isDisabled ? `请在 .env 配置 ${p.envKeys.join("、")}` : undefined}
-                  className={cn(
-                    MODEL_MENU_OPTION,
-                    isSelected && !isDisabled && MODEL_MENU_OPTION_SELECTED,
-                    isDisabled && MODEL_MENU_OPTION_DISABLED,
-                  )}
-                  onClick={() => {
-                    if (isDisabled) return
-                    if (p.id !== value) {
-                      showSwitchNotice("provider", p.label)
-                    }
-                    onChange(p.id)
-                    setOpen(false)
-                  }}
-                >
-                  {p.label}
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+          {loading ? (
+            <span className="flex items-center gap-1.5 text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              加载中…
+            </span>
+          ) : (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Cpu className="h-3.5 w-3.5 shrink-0 text-cyan-500" />
+              <SelectValue placeholder="选择模型" />
+            </span>
+          )}
+        </SelectTrigger>
+        <SelectContent align="end" className="min-w-[160px]">
+          {providers.map((p) => (
+            <SelectItem
+              key={p.id}
+              value={p.id}
+              disabled={!p.configured}
+              title={!p.configured ? `请在 .env 配置 ${p.envKeys.join("、")}` : undefined}
+              className="text-[12px]"
+            >
+              {p.label}
+              {!p.configured ? "（未配置）" : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

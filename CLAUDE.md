@@ -432,6 +432,9 @@
 | `APP_PUBLIC_BASE` | `lib/email.py` | ✅ | 邮件中拼接的公网回调地址 |
 | `DEV_EMAIL_MODE` | `lib/email.py` | ✅ | `1` = 邮件链接打到日志（开发期），`0` = 真实发送 |
 | **`VIDEO_BGM_DIR`** | **`main.py:_resolve_bgm_dir`** | **✅** | **视频剪辑 BGM 素材目录，存放 mp3 / wav / aac / m4a** |
+| `SEEDANCE_API_KEY` | `routes/dh_video_v2_routes.py`（二阶段） | 数字人视频创作（新） | aicost.xyz Seedance 2.0 Fast，`POST /v1/videos` |
+| `XINGHE_API_KEY` | 同上 | 数字人视频创作（新） | aicost.xyz 星河系列，`POST /v1/video/create` |
+| `SEEDANCE_BASE_URL` / `XINGHE_BASE_URL` | 同上 | 可选 | 默认 `https://www.aicost.xyz` |
 | `SONETTO_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | Sonetto NewAPI 基址（须含 `/v1`），默认 `https://tok.sonetto.top/v1` |
 | `SONETTO_GPT_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | ChatGPT 渠道 Key（与 Claude 分离） |
 | `SONETTO_CLAUDE_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | Claude 渠道 Key |

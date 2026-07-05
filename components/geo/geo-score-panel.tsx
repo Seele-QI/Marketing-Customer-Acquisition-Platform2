@@ -1,22 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { BarChart3 } from "lucide-react"
+import { BarChart3, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
-export type GeoScores = {
-  semanticClarity: number
-  conversationalTone: number
-  evidenceDensity: number
-  structuredFaq: number
-}
+import type { GeoScores } from "@/lib/geo/geo-scores"
 
-const DEFAULT_SCORES: GeoScores = {
-  semanticClarity: 72,
-  conversationalTone: 65,
-  evidenceDensity: 48,
-  structuredFaq: 80,
-}
+export type { GeoScores }
 
 const SCORE_LABELS: { key: keyof GeoScores; label: string; hint: string }[] = [
   { key: "semanticClarity", label: "语义清晰度", hint: "H2 结构、概念定义、上下文线索" },
@@ -26,7 +17,10 @@ const SCORE_LABELS: { key: keyof GeoScores; label: string; hint: string }[] = [
 ]
 
 type GeoScorePanelProps = {
-  scores?: GeoScores
+  scores?: GeoScores | null
+  summary?: string | null
+  loading?: boolean
+  onRefresh?: () => void
   className?: string
 }
 
@@ -36,14 +30,23 @@ function scoreColor(value: number): string {
   return "bg-amber-500"
 }
 
-export function GeoScorePanel({ scores = DEFAULT_SCORES, className }: GeoScorePanelProps) {
-  const overall = Math.round(
-    (scores.semanticClarity +
-      scores.conversationalTone +
-      scores.evidenceDensity +
-      scores.structuredFaq) /
-      4,
-  )
+export function GeoScorePanel({
+  scores = null,
+  summary,
+  loading = false,
+  onRefresh,
+  className,
+}: GeoScorePanelProps) {
+  const hasScores = scores != null
+  const overall = hasScores
+    ? Math.round(
+        (scores.semanticClarity +
+          scores.conversationalTone +
+          scores.evidenceDensity +
+          scores.structuredFaq) /
+          4,
+      )
+    : null
 
   return (
     <section
@@ -53,46 +56,94 @@ export function GeoScorePanel({ scores = DEFAULT_SCORES, className }: GeoScorePa
         className,
       )}
     >
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-cyan-600 dark:text-cyan-400" aria-hidden />
-          <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200">GEO 评分</span>
-        </div>
-        <div className="text-right">
-          <span className="text-[20px] font-bold tabular-nums text-cyan-600 dark:text-cyan-400">
-            {overall}
+          <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200">
+            GEO 评分
           </span>
-          <span className="ml-0.5 text-[11px] text-slate-400">/100</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {onRefresh && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={loading}
+              className="h-7 px-2 text-[11px]"
+              onClick={onRefresh}
+            >
+              {loading ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+              ) : (
+                <RefreshCw className="h-3 w-3" aria-hidden />
+              )}
+              <span className="ml-1">重新评分</span>
+            </Button>
+          )}
+          {overall != null && (
+            <div className="text-right">
+              <span className="text-[20px] font-bold tabular-nums text-cyan-600 dark:text-cyan-400">
+                {overall}
+              </span>
+              <span className="ml-0.5 text-[11px] text-slate-400">/100</span>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="space-y-2.5">
-        {SCORE_LABELS.map(({ key, label, hint }) => {
-          const value = scores[key]
-          return (
-            <div key={key}>
-              <div className="mb-1 flex items-center justify-between text-[11px]">
-                <span className="font-medium text-slate-700 dark:text-slate-300">{label}</span>
-                <span className="tabular-nums text-slate-400">{value}%</span>
-              </div>
-              <div
-                className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"
-                role="progressbar"
-                aria-valuenow={value}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label={label}
-              >
-                <div
-                  className={cn("h-full rounded-full transition-all", scoreColor(value))}
-                  style={{ width: `${value}%` }}
-                />
-              </div>
-              <p className="mt-0.5 text-[10px] leading-snug text-slate-400">{hint}</p>
+      {summary && hasScores && (
+        <p className="mb-3 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+          {summary}
+        </p>
+      )}
+
+      {!hasScores && !loading && (
+        <p className="py-6 text-center text-[12px] text-slate-400">
+          {onRefresh ? "点击「重新评分」获取 AI 四维评分" : "暂无评分"}
+        </p>
+      )}
+
+      {loading && !hasScores && (
+        <div className="space-y-2.5 py-2">
+          {SCORE_LABELS.map(({ key }) => (
+            <div key={key} className="animate-pulse">
+              <div className="mb-1 h-3 w-24 rounded bg-slate-100 dark:bg-white/10" />
+              <div className="h-1.5 rounded-full bg-slate-100 dark:bg-white/10" />
             </div>
-          )
-        })}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {hasScores && (
+        <div className={cn("space-y-2.5", loading && "opacity-60")}>
+          {SCORE_LABELS.map(({ key, label, hint }) => {
+            const value = scores[key]
+            return (
+              <div key={key}>
+                <div className="mb-1 flex items-center justify-between text-[11px]">
+                  <span className="font-medium text-slate-700 dark:text-slate-300">{label}</span>
+                  <span className="tabular-nums text-slate-400">{value}%</span>
+                </div>
+                <div
+                  className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"
+                  role="progressbar"
+                  aria-valuenow={value}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={label}
+                >
+                  <div
+                    className={cn("h-full rounded-full transition-all", scoreColor(value))}
+                    style={{ width: `${value}%` }}
+                  />
+                </div>
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-400">{hint}</p>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </section>
   )
 }

@@ -102,7 +102,30 @@ def migrate(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_redeem_codes_status_amount ON credit_redeem_codes(status, amount);
         CREATE INDEX IF NOT EXISTS idx_redeem_codes_batch ON credit_redeem_codes(batch_id);
+
+        CREATE TABLE IF NOT EXISTS geo_matrix_projects (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            name TEXT NOT NULL,
+            platforms_json TEXT NOT NULL,
+            model_skill_id TEXT,
+            viral_skill_ids_json TEXT,
+            enterprise_skill_id TEXT,
+            enterprise_snapshot TEXT,
+            matrix_json TEXT NOT NULL DEFAULT '{}',
+            provider TEXT NOT NULL DEFAULT 'deepseek',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_geo_matrix_user ON geo_matrix_projects(user_id);
     """)
+
+    if _table_exists(conn, "geo_matrix_projects") and not _column_exists(
+        conn, "geo_matrix_projects", "provider"
+    ):
+        conn.execute(
+            "ALTER TABLE geo_matrix_projects ADD COLUMN provider TEXT NOT NULL DEFAULT 'deepseek'"
+        )
 
     # email_tokens: 处理 sms_codes 迁移 / 新建
     if _table_exists(conn, "sms_codes"):

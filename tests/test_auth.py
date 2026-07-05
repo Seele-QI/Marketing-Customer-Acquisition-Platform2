@@ -175,7 +175,7 @@ def test_credit_consume_ai_chat_always_costs_3_points():
     assert data["balance"] == 97
 
 
-def test_credit_consume_video_creation_always_costs_500_points():
+def test_credit_consume_video_creation_unit_costs_250_points():
     from lib.credit import refund
 
     user_id = auth.create_password_user("video_cost_user", "Password123")
@@ -203,8 +203,30 @@ def test_credit_consume_video_creation_always_costs_500_points():
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["scene"] == "video_creation"
-    assert data["cost"] == 500
-    assert data["balance"] == 600
+    assert data["cost"] == 250
+    assert data["balance"] == 850
+
+
+def test_credit_consume_video_clone_voice_costs_50_points():
+    from lib.credit import refund
+
+    user_id = auth.create_password_user("clone_cost_user", "Password123")
+    refund(user_id, 500, ref_id="topup-clone", note="test topup")
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"login_name": "clone_cost_user", "password": "Password123"},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+
+    resp = client.post(
+        "/api/credit/consume",
+        json={"scene": "video_clone_voice", "ref_id": "clone-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["scene"] == "video_clone_voice"
+    assert data["cost"] == 50
+    assert data["balance"] == 550
 
 
 def test_credit_consume_video_image_to_video_costs_100_points():
@@ -263,13 +285,13 @@ def test_credit_consume_ignores_client_cost_and_rejects_unknown_scene():
     )
     assert login.status_code == 200, login.text
 
-    # 1. 即使传 cost=1，video_creation 仍扣 500
+    # 1. 即使传 cost=1，video_creation 仍扣 250（单价）
     r = client.post(
         "/api/credit/consume",
         json={"scene": "video_creation", "cost": 1, "ref_id": "pricing-1"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["cost"] == 500
+    assert r.json()["cost"] == 250
 
     # 2. 未知 scene 被拒
     r2 = client.post(
@@ -282,7 +304,7 @@ def test_credit_consume_ignores_client_cost_and_rejects_unknown_scene():
     # 3. 同 ref_id 重复扣只算一次（幂等）
     r3 = client.post(
         "/api/credit/consume",
-        json={"scene": "video_creation", "cost": 500, "ref_id": "pricing-1"},
+        json={"scene": "video_creation", "cost": 250, "ref_id": "pricing-1"},
     )
     assert r3.status_code == 200, r3.text
     assert r3.json()["balance"] == r.json()["balance"]

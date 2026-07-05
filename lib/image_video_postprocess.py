@@ -81,9 +81,9 @@ def _build_image_video_ffmpeg_command(
     *,
     image_paths: list[str],
     durations: list[float],
-    ass_path: str,
+    ass_path: Optional[str],
     voice_audio_path: str,
-    bgm_path: str,
+    bgm_path: Optional[str],
     output_path: str,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
@@ -97,39 +97,32 @@ def _build_image_video_ffmpeg_command(
     filter_complex 结构：
     1. 每个图片 scale+pad → [vi]
     2. 级联 xfade → [xN] （最后一级）
-    3. 字幕烧录 subtitles → [vout]
-    4. 音频混流 amix（voice + bgm）→ [aout]
-
-    转场 offset 公式（第 i 个转场，i 从 0 开始）：
-        offset = sum(d[0..i]) - (i + 1) × transition_dur
+    3. 可选字幕烧录 subtitles → [vout]
+    4. 音频：仅 voice，或 voice+BGM amix → [aout]
     """
     n = len(image_paths)
     if n < 2:
         raise ValueError("至少需要 2 张图片才能使用转场")
 
+    use_bgm = bool(bgm_path) and float(bgm_volume) > 0
+    use_subs = bool(ass_path) and os.path.isfile(ass_path)
+
     cl = [_FFMPEG_EXE, "-y"]
 
-    # ── 输入文件 ──
-    # 每张图片作为独立视频输入（-loop 1 循环为静态帧流）
     for img in image_paths:
         cl += ["-loop", "1", "-i", img]
-    # 配音音频
     cl += ["-i", voice_audio_path]
-    # BGM 音频
-    cl += ["-i", bgm_path]
+    if use_bgm:
+        cl += ["-i", bgm_path]
 
-    # ── filter_complex ──
     fc_parts: list[str] = []
 
-    # 1) 图片预处理：缩放到目标尺寸，居中裁剪/填充
     for i in range(n):
         fc_parts.append(
             f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={fps}[v{i}]"
         )
 
-    # 2) xfade 级联
-    # 计算每个转场的 offset
     offsets: list[float] = []
     cum = 0.0
     for i in range(n - 1):
@@ -147,25 +140,30 @@ def _build_image_video_ffmpeg_command(
         )
         prev_label = next_label
 
-    # 3) 字幕烧录
-    fc_parts.append(f"[xfinal]subtitles='{_escape_filter_path(ass_path)}'[vout]")
+    if use_subs:
+        fc_parts.append(f"[xfinal]subtitles='{_escape_filter_path(ass_path)}'[vout]")
+    else:
+        fc_parts.append("[xfinal]format=yuv420p[vout]")
 
-    # 4) 音频混流：原声 + BGM（无淡入淡出）
-    voice_idx = n       # 第 n 个输入是配音
-    bgm_idx = n + 1     # 第 n+1 个输入是 BGM
-
-    # 计算总视频时长
+    voice_idx = n
     total_duration = round(sum(durations) - (n - 1) * transition_dur, 3)
 
-    fc_parts.append(
+    voice_chain = (
         f"[{voice_idx}:a]volume={VOICE_VOLUME:.2f},atrim=0:{total_duration:.3f},"
         f"apad=whole_dur={total_duration:.3f},aresample=48000,"
-        f"aformat=sample_fmts=fltp:channel_layouts=stereo[voice];"
-        f"[{bgm_idx}:a]atrim=0:{total_duration:.3f},aresample=48000,"
-        f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
-        f"volume={bgm_volume:.2f}[music];"
-        f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        f"aformat=sample_fmts=fltp:channel_layouts=stereo"
     )
+    if use_bgm:
+        bgm_idx = n + 1
+        fc_parts.append(
+            f"{voice_chain}[voice];"
+            f"[{bgm_idx}:a]atrim=0:{total_duration:.3f},aresample=48000,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume={bgm_volume:.2f}[music];"
+            f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        )
+    else:
+        fc_parts.append(f"{voice_chain}[aout]")
 
     fc = ";".join(fc_parts)
 
@@ -200,6 +198,8 @@ def image_video_render(
     attempt: int = 0,
     max_retry: int = 2,
     subtitle_file_path: str = "",
+    enable_bgm: bool = True,
+    enable_subtitles: bool = True,
 ) -> PostProcessResult:
     """
     图文视频端到端渲染入口。
@@ -237,7 +237,7 @@ def image_video_render(
     if voice_duration <= 0:
         return PostProcessResult(False, "failed", error="配音音频无效或时长为 0")
 
-    # 2. 脚本断句 + 时间轴
+    # 2. 脚本断句 + 时间轴（无字幕时仍按文案比例切分图片时长）
     segments = split_script_segments(script)
     if not segments:
         return PostProcessResult(False, "failed", error="文案内容为空，无法生成时间轴")
@@ -255,23 +255,28 @@ def image_video_render(
     for i in range(len(timeline)):
         assigned_images.append(shuffled[i % len(shuffled)])
 
-    # 4. 生成 ASS 字幕（优先使用预生成 ASR 字幕）
-    generated_ass_path = os.path.join(output_dir, f"{task_id}.ass")
-    if subtitle_file_path and os.path.isfile(subtitle_file_path):
-        ass_path = subtitle_file_path
-        ass_is_generated = False
-    else:
-        ass_path = generated_ass_path
-        build_ass_subtitles(script, ass_path, voice_duration, width, height)
-        ass_is_generated = True
+    # 4. 可选 ASS 字幕
+    use_subs = bool(enable_subtitles)
+    ass_path: Optional[str] = None
+    ass_is_generated = False
+    if use_subs:
+        generated_ass_path = os.path.join(output_dir, f"{task_id}.ass")
+        if subtitle_file_path and os.path.isfile(subtitle_file_path):
+            ass_path = subtitle_file_path
+        else:
+            ass_path = generated_ass_path
+            build_ass_subtitles(script, ass_path, voice_duration, width, height)
+            ass_is_generated = True
 
-    # 5. 选取 BGM
-    bgm_path = _pick_bgm(bgm_dir)
+    # 5. 可选 BGM
+    use_bgm = bool(enable_bgm) and float(bgm_volume) > 0
+    bgm_path = _pick_bgm(bgm_dir) if use_bgm else None
     debug_dir = output_dir
     Path(os.path.join(debug_dir, "ffmpeg_bgm_choice.txt")).write_text(
-        bgm_path or "NO_BGM_SELECTED", encoding="utf-8"
+        bgm_path or ("BGM_DISABLED" if not use_bgm else "NO_BGM_SELECTED"),
+        encoding="utf-8",
     )
-    if not bgm_path:
+    if use_bgm and not bgm_path:
         return PostProcessResult(False, "failed", error="未配置 BGM 目录或目录为空")
 
     # 6. 构建 ffmpeg 命令
@@ -287,7 +292,7 @@ def image_video_render(
         height=height,
         fps=fps,
         transition_dur=transition_dur,
-        bgm_volume=bgm_volume,
+        bgm_volume=bgm_volume if use_bgm else 0.0,
     )
 
     # 写调试文件
@@ -331,6 +336,8 @@ def image_video_render(
             attempt=attempt + 1,
             max_retry=max_retry,
             subtitle_file_path=subtitle_file_path,
+            enable_bgm=enable_bgm,
+            enable_subtitles=enable_subtitles,
         )
 
     return PostProcessResult(False, "failed", error=err)

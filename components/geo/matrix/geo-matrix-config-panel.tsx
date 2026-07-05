@@ -156,14 +156,12 @@ export function GeoMatrixConfigPanel({
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div>
-          <p className="mb-1.5 text-[11px] font-medium text-slate-500">AI 引擎</p>
-          <GeoLlmProviderSelect
-            value={provider}
-            onChange={handleProviderChange}
-            disabled={disabled || generating}
-          />
-        </div>
+        <GeoLlmProviderSelect
+          value={provider}
+          onChange={handleProviderChange}
+          disabled={disabled || generating}
+          showLabel
+        />
 
         <div className="relative">
           <p className="mb-1.5 text-[11px] font-medium text-slate-500">A 大模型策略</p>

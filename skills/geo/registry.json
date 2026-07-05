@@ -1,0 +1,137 @@
+{
+  "skills": [
+    {
+      "id": "deep-article-optimization",
+      "category": "creation-guidelines",
+      "label": "深度优化文章创作准则",
+      "description": "多平台检索 + AI 可见度探测 + GEO 四维写作清单",
+      "path": "creation-guidelines/deep-article-optimization/SKILL.md",
+      "default": true
+    },
+    {
+      "id": "content-matrix-planning",
+      "category": "creation-guidelines",
+      "label": "内容矩阵规划准则",
+      "description": "两周跨平台 GEO 内容矩阵：主题弧、平台原生改写与 Sprint 节奏",
+      "path": "creation-guidelines/content-matrix-planning/SKILL.md"
+    },
+    {
+      "id": "model-deepseek",
+      "layer": "A",
+      "category": "model-weights",
+      "platform": "deepseek",
+      "label": "DeepSeek 引用权重",
+      "description": "长文推理、证据密度与 FAQ 结构化引用策略",
+      "path": "model-weights/deepseek/SKILL.md",
+      "default": true
+    },
+    {
+      "id": "model-qwen-tongyi",
+      "layer": "A",
+      "category": "model-weights",
+      "platform": "qwen-tongyi",
+      "label": "通义千问引用权重",
+      "description": "电商/知识库 RAG、结构化对比与选购 FAQ",
+      "path": "model-weights/qwen-tongyi/SKILL.md"
+    },
+    {
+      "id": "model-doubao",
+      "layer": "A",
+      "category": "model-weights",
+      "platform": "doubao",
+      "label": "豆包引用权重",
+      "description": "对话式摘要、口语问法与字节生态协同",
+      "path": "model-weights/doubao/SKILL.md"
+    },
+    {
+      "id": "model-douyin-ai-search",
+      "layer": "A",
+      "category": "model-weights",
+      "platform": "douyin-ai-search",
+      "label": "抖音 AI 搜索引用权重",
+      "description": "视频+图文混合索引、搜索词与可索引文字稿",
+      "path": "model-weights/douyin-ai-search/SKILL.md"
+    },
+    {
+      "id": "viral-zhihu",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "zhihu",
+      "label": "知乎爆款逻辑",
+      "description": "长文论证、高赞话术与专栏 SEO",
+      "path": "platform-viral/zhihu/SKILL.md"
+    },
+    {
+      "id": "viral-xiaohongshu",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "xiaohongshu",
+      "label": "小红书爆款逻辑",
+      "description": "笔记标题钩子、emoji 节奏与种草结构",
+      "path": "platform-viral/xiaohongshu/SKILL.md"
+    },
+    {
+      "id": "viral-tieba",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "tieba",
+      "label": "贴吧社区声量",
+      "description": "争议点采集、反例与社区话术（非事实证据）",
+      "path": "platform-viral/tieba/SKILL.md"
+    },
+    {
+      "id": "viral-douyin-content",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "douyin-content",
+      "label": "抖音爆款逻辑",
+      "description": "短视频钩子、搜索词覆盖（区别于 A 层 AI 搜索）",
+      "path": "platform-viral/douyin-content/SKILL.md"
+    },
+    {
+      "id": "viral-weibo",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "weibo",
+      "label": "微博爆款逻辑",
+      "description": "热点借势、话题标签共现与短帖转发链",
+      "path": "platform-viral/weibo/SKILL.md"
+    },
+    {
+      "id": "viral-dianping",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "dianping",
+      "label": "大众点评爆款逻辑",
+      "description": "商户评价体、星级体验与本地品类搜索",
+      "path": "platform-viral/dianping/SKILL.md"
+    },
+    {
+      "id": "viral-ctrip",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "ctrip",
+      "label": "携程爆款逻辑",
+      "description": "攻略行程清单、目的地 FAQ 与避坑预算",
+      "path": "platform-viral/ctrip/SKILL.md"
+    },
+    {
+      "id": "viral-netease",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "netease",
+      "label": "网易爆款逻辑",
+      "description": "资讯体长文、行业解读与权威引用",
+      "path": "platform-viral/netease/SKILL.md"
+    },
+    {
+      "id": "viral-sohu",
+      "layer": "B",
+      "category": "platform-viral",
+      "platform": "sohu",
+      "label": "搜狐爆款逻辑",
+      "description": "门户标题 SEO、导语 5W1H 与百科式段落",
+      "path": "platform-viral/sohu/SKILL.md"
+    }
+  ]
+}

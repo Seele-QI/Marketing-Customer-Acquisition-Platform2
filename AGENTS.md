@@ -72,6 +72,7 @@
 | `APP_PUBLIC_BASE` | `lib/email.py` | ✅ | 邮件中拼接的公网回调地址 |
 | `DEV_EMAIL_MODE` | `lib/email.py` | ✅ | `1` = 邮件链接打到日志（开发期），`0` = 真实发送 |
 | **`VIDEO_BGM_DIR`** | **`main.py:_resolve_bgm_dir`** | **✅** | **视频剪辑 BGM 素材目录，存放 mp3 / wav / aac / m4a** |
+| `SEEDANCE_API_KEY` / `XINGHE_API_KEY` | `routes/dh_video_v2_routes.py`（二阶段） | 数字人视频创作（新） | aicost.xyz，见 `接口文档/` |
 | `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` | 可选 | 火山方舟 - 识图/多模态 |
 | `ARK_ENDPOINT_ID` | 同上 | 可选 | 多模态接入点 ID |
 | `ARK_BASE_URL` | 同上 | 可选 | 火山方舟 API 地域端点 |

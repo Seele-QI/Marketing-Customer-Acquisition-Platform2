@@ -156,10 +156,16 @@ export const GEO_ARTICLE_STEPS = [
 
 export function buildGeoArticleSteps(
   currentStep: GeoWorkflowStepId,
+  options?: { loadingStep?: GeoWorkflowStepId },
 ): { id: GeoWorkflowStepId; label: string; status: GeoWorkflowStepStatus }[] {
-  return GEO_ARTICLE_STEPS.map((step) => ({
-    ...step,
-    status:
-      step.id < currentStep ? "done" : step.id === currentStep ? "active" : "pending",
-  }))
+  return GEO_ARTICLE_STEPS.map((step) => {
+    if (options?.loadingStep === step.id) {
+      return { ...step, status: "loading" as const }
+    }
+    return {
+      ...step,
+      status:
+        step.id < currentStep ? "done" : step.id === currentStep ? "active" : "pending",
+    }
+  })
 }

@@ -122,7 +122,7 @@ export function CreditRechargeView() {
               <Badge className="bg-white/20 text-white hover:bg-white/20">积分系统</Badge>
               <h1 className="text-3xl font-semibold tracking-tight">积分消费与兑换码充值中心</h1>
               <p className="max-w-2xl text-sm text-white/80">
-                视频创作按类型扣费：口播 500 积分、图文视频 100 积分、视频混剪 150 积分；大模型对话每次 3 积分。可在此输入兑换码充值。
+                视频创作按类型扣费：数字人口播 音色克隆 50 积分/次 + 视频段 250 积分/段（每 20 秒一段）、图文视频 100 积分、视频混剪 150 积分；大模型对话每次 3 积分。可在此输入兑换码充值。
               </p>
             </div>
             <div className="rounded-2xl bg-white/15 p-5 backdrop-blur">

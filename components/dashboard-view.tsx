@@ -1,5 +1,4 @@
 import { TopBanner } from "@/components/top-banner"
-import { DashboardDataPanel } from "@/components/dashboard-data-panel"
 import { DashboardQuickActions } from "@/components/dashboard-quick-actions"
 import { DashboardAIInsights } from "@/components/dashboard-ai-insights"
 import { AgentCard, type AgentCardProps } from "@/components/agent-card"
@@ -43,16 +42,13 @@ export function DashboardView({ onOpenAgent, onNavigate }: Props) {
       <div className="mt-5 flex min-w-0 flex-col gap-5 lg:flex-row lg:items-start lg:gap-6">
         {/* -------------------- Left Column -------------------- */}
         <div className="flex min-w-0 flex-1 flex-col gap-5">
-          {/* 功能一：平台数据看板 */}
-          <DashboardDataPanel />
-
-          {/* 功能二：快速创作入口 */}
+          {/* 快速创作入口 */}
           <DashboardQuickActions
             onNavigate={(v) => onNavigate?.(v)}
             onOpenAgent={handleOpenAgent}
           />
 
-          {/* 功能三：智能体团队概览（紧凑） */}
+          {/* 智能体团队概览（紧凑） */}
           <section>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-[16px] font-bold text-foreground">智能体团队</h2>

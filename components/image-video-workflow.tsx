@@ -17,7 +17,6 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
-import { addHistoryRecord } from "@/components/video-history"
 import {
   VideoWorkflowPage,
   WorkflowHero,
@@ -25,17 +24,11 @@ import {
   UploadZone,
   buildClipSteps,
 } from "@/components/video-workflow-shell"
-import { submitImageToVideo, queryImageToVideoStatus, cancelImageToVideo } from "@/lib/video/api"
-import {
-  CLIP_POLL_INTERVAL_MS,
-  POLL_ERROR_LIMIT,
-  TASK_TIMEOUT_MS,
-  formatClipNetworkError,
-  ivStageToStep,
-  isClipSuccess,
-  isClipTerminal,
-} from "@/lib/image-video-task-runtime"
-import { fileToBase64, createImageThumbnail, resolveMediaUrl } from "@/lib/video/utils"
+import { submitImageToVideo, cancelImageToVideo } from "@/lib/video/api"
+import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
+import { VideoClipOptions } from "@/components/video-clip-options"
+import { formatClipNetworkError } from "@/lib/image-video-task-runtime"
+import { fileToBase64, resolveMediaUrl } from "@/lib/video/utils"
 import type { ImageToVideoResponse } from "@/lib/video/types"
 
 /* ================================================================== */
@@ -72,6 +65,8 @@ type WorkflowState = {
   images: ImageItem[]
   script: string
   audioSample: AudioItem | null
+  enableBgm: boolean
+  enableSubtitles: boolean
   isProcessing: boolean
   taskId: string
   stageLabel: string
@@ -90,35 +85,6 @@ function uid(): string {
   return `img_${Date.now()}_${++_idCounter}`
 }
 
-async function recordImageVideoHistory(
-  taskId: string,
-  script: string,
-  videoUrl: string,
-  status: "success" | "failed",
-  firstImagePreview: string | undefined,
-  errorMessage?: string,
-) {
-  let coverThumbnail: string | undefined
-  if (firstImagePreview) {
-    try {
-      coverThumbnail = await createImageThumbnail(firstImagePreview)
-    } catch {
-      /* ignore */
-    }
-  }
-  addHistoryRecord({
-    id: taskId,
-    createdAt: Date.now(),
-    script: script.trim(),
-    videoUrl: videoUrl || "",
-    coverUrl: "",
-    coverThumbnail,
-    source: "image-video",
-    status,
-    errorMessage,
-  })
-}
-
 /* ================================================================== */
 /*  Step 1: Material Prep                                              */
 /* ================================================================== */
@@ -127,18 +93,26 @@ function StepMaterialPrep({
   images,
   script,
   audioSample,
+  enableBgm,
+  enableSubtitles,
   onImagesChange,
   onScriptChange,
   onAudioChange,
+  onEnableBgmChange,
+  onEnableSubtitlesChange,
   onSubmit,
   isProcessing,
 }: {
   images: ImageItem[]
   script: string
   audioSample: AudioItem | null
+  enableBgm: boolean
+  enableSubtitles: boolean
   onImagesChange: (imgs: ImageItem[]) => void
   onScriptChange: (s: string) => void
   onAudioChange: (a: AudioItem | null) => void
+  onEnableBgmChange: (v: boolean) => void
+  onEnableSubtitlesChange: (v: boolean) => void
   onSubmit: () => void
   isProcessing: boolean
 }) {
@@ -336,6 +310,14 @@ function StepMaterialPrep({
         </div>
       </div>
 
+      <VideoClipOptions
+        accent="emerald"
+        enableBgm={enableBgm}
+        enableSubtitles={enableSubtitles}
+        onEnableBgmChange={onEnableBgmChange}
+        onEnableSubtitlesChange={onEnableSubtitlesChange}
+      />
+
       <div className="flex flex-col items-center gap-2 pt-2">
         <Button
           size="lg"
@@ -441,6 +423,7 @@ function StepVideoResult({
         <video
           src={videoSrc}
           controls
+          disablePictureInPicture
           className="w-full"
         >
           您的浏览器不支持视频播放
@@ -466,11 +449,15 @@ function StepVideoResult({
 /* ================================================================== */
 
 export function ImageVideoWorkflow() {
+  const runtimeApi = useTaskRuntimeApi()
+  const runtimeTask = useRuntimeTask("image-video")
   const [state, setState] = React.useState<WorkflowState>({
     currentStep: 1,
     images: [],
     script: "",
     audioSample: null,
+    enableBgm: true,
+    enableSubtitles: true,
     isProcessing: false,
     taskId: "",
     stageLabel: "",
@@ -479,30 +466,71 @@ export function ImageVideoWorkflow() {
     errorMessage: "",
     submittedAt: 0,
   })
-  const pollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pollErrorCountRef = React.useRef(0)
+  const toastedRef = React.useRef<string>("")
 
+  // 从 runtime 恢复 / 同步进度
   React.useEffect(() => {
-    return () => {
-      if (pollRef.current) clearTimeout(pollRef.current)
+    if (!runtimeTask) return
+    if (runtimeTask.status === "running") {
+      setState((s) => ({
+        ...s,
+        currentStep: 2,
+        isProcessing: true,
+        taskId: runtimeTask.taskId,
+        stageLabel: runtimeTask.stageLabel || s.stageLabel,
+        progress: runtimeTask.progress,
+        errorMessage: "",
+      }))
+      return
     }
-  }, [])
-
-  const stopPolling = React.useCallback(() => {
-    if (pollRef.current) {
-      clearTimeout(pollRef.current)
-      pollRef.current = null
+    if (runtimeTask.status === "success") {
+      const videoUrl = String(runtimeTask.result?.videoUrl ?? "")
+      setState((s) => ({
+        ...s,
+        currentStep: 3,
+        isProcessing: false,
+        taskId: runtimeTask.taskId,
+        stageLabel: runtimeTask.stageLabel || "完成",
+        progress: 100,
+        result: videoUrl
+          ? { task_id: runtimeTask.taskId, status: "success", video_url: videoUrl }
+          : s.result,
+        errorMessage: "",
+      }))
+      if (toastedRef.current !== runtimeTask.taskId) {
+        toastedRef.current = runtimeTask.taskId
+        toast({ title: "图文视频生成成功！" })
+      }
+      return
     }
-  }, [])
+    if (runtimeTask.status === "failed") {
+      setState((s) => ({
+        ...s,
+        currentStep: 3,
+        isProcessing: false,
+        taskId: runtimeTask.taskId,
+        stageLabel: runtimeTask.stageLabel || "失败",
+        errorMessage: runtimeTask.error || "生成失败",
+      }))
+      if (toastedRef.current !== `fail:${runtimeTask.taskId}`) {
+        toastedRef.current = `fail:${runtimeTask.taskId}`
+        toast({
+          title: "生成失败",
+          description: runtimeTask.error || "生成失败",
+          variant: "destructive",
+        })
+      }
+    }
+  }, [runtimeTask])
 
   const handleCancel = async () => {
     if (!state.taskId) return
-    stopPolling()
     try {
       await cancelImageToVideo(state.taskId)
     } catch {
       // ignore
     }
+    runtimeApi.markFailed("image-video", "已停止生成", { writeHistory: true })
     setState((s) => ({
       ...s,
       isProcessing: false,
@@ -513,10 +541,15 @@ export function ImageVideoWorkflow() {
   const handleSubmit = async () => {
     const { images, script, audioSample } = state
     if (images.length < MIN_IMAGES || !script.trim() || !audioSample) return
+    if (runtimeApi.isRunning("image-video")) {
+      toast({
+        title: "已有任务进行中",
+        description: "请等待当前图文视频完成，避免重复扣积分。",
+        variant: "destructive",
+      })
+      return
+    }
 
-    stopPolling()
-    pollErrorCountRef.current = 0
-    const submittedAt = Date.now()
     setState((s) => ({
       ...s,
       currentStep: 2,
@@ -526,7 +559,7 @@ export function ImageVideoWorkflow() {
       stageLabel: "提交任务中",
       progress: 0,
       result: null,
-      submittedAt,
+      submittedAt: Date.now(),
     }))
 
     try {
@@ -534,7 +567,9 @@ export function ImageVideoWorkflow() {
         images_base64: images.map((img) => img.base64),
         audio_base64: audioSample.base64,
         script: script.trim(),
-        bgm_volume: 0.32,
+        enable_bgm: state.enableBgm,
+        enable_subtitles: state.enableSubtitles,
+        bgm_volume: state.enableBgm ? 0.32 : 0,
       }
 
       const queued = await submitImageToVideo(req)
@@ -542,79 +577,16 @@ export function ImageVideoWorkflow() {
       if (!taskId) throw new Error("未返回任务 ID")
 
       setState((s) => ({ ...s, taskId, stageLabel: "任务已入队" }))
-
-      const pollOnce = async () => {
-        try {
-          if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
-            throw new Error("任务超时，请稍后重试")
-          }
-          const status = await queryImageToVideoStatus(taskId)
-          pollErrorCountRef.current = 0
-          const step = ivStageToStep(status.stage || "", status.status)
-          const stageLabel = status.stage_label || status.stage || ""
-
-          if (isClipTerminal(status)) {
-            const firstPreview = images[0]?.previewUrl
-            if (isClipSuccess(status) && status.video_url) {
-              const result: ImageToVideoResponse = {
-                task_id: taskId,
-                status: "success",
-                video_url: status.video_url,
-                audio_url: status.audio_url,
-              }
-              setState((s) => ({
-                ...s,
-                currentStep: 3,
-                isProcessing: false,
-                result,
-                errorMessage: "",
-                stageLabel,
-                progress: status.progress ?? 100,
-              }))
-              void recordImageVideoHistory(taskId, script.trim(), status.video_url, "success", firstPreview)
-              toast({ title: "图文视频生成成功！" })
-            } else {
-              const err = status.error || "生成失败"
-              setState((s) => ({
-                ...s,
-                currentStep: 3,
-                isProcessing: false,
-                result: null,
-                errorMessage: err,
-                stageLabel,
-                progress: status.progress ?? 0,
-              }))
-              void recordImageVideoHistory(taskId, script.trim(), "", "failed", firstPreview, err)
-              toast({ title: "生成失败", description: err, variant: "destructive" })
-            }
-            return
-          }
-
-          setState((s) => ({
-            ...s,
-            currentStep: step,
-            stageLabel,
-            progress: status.progress ?? s.progress,
-          }))
-          pollRef.current = setTimeout(() => { void pollOnce() }, CLIP_POLL_INTERVAL_MS)
-        } catch (err: unknown) {
-          pollErrorCountRef.current += 1
-          if (pollErrorCountRef.current >= POLL_ERROR_LIMIT) {
-            const msg = formatClipNetworkError(err)
-            setState((s) => ({
-              ...s,
-              currentStep: 3,
-              isProcessing: false,
-              errorMessage: msg,
-            }))
-            toast({ title: "生成失败", description: msg, variant: "destructive" })
-            return
-          }
-          pollRef.current = setTimeout(() => { void pollOnce() }, CLIP_POLL_INTERVAL_MS)
-        }
-      }
-
-      void pollOnce()
+      runtimeApi.register({
+        kind: "image-video",
+        taskId,
+        progress: 5,
+        stageLabel: "任务已入队",
+        meta: {
+          script: script.trim(),
+          previewUrl: images[0]?.previewUrl || "",
+        },
+      })
     } catch (err: unknown) {
       const msg = formatClipNetworkError(err)
       setState((s) => ({
@@ -628,12 +600,13 @@ export function ImageVideoWorkflow() {
   }
 
   const handleReset = () => {
-    stopPolling()
     setState({
       currentStep: 1,
       images: [],
       script: "",
       audioSample: null,
+      enableBgm: true,
+      enableSubtitles: true,
       isProcessing: false,
       taskId: "",
       stageLabel: "",
@@ -669,9 +642,13 @@ export function ImageVideoWorkflow() {
           images={state.images}
           script={state.script}
           audioSample={state.audioSample}
+          enableBgm={state.enableBgm}
+          enableSubtitles={state.enableSubtitles}
           onImagesChange={(imgs) => setState((s) => ({ ...s, images: imgs }))}
           onScriptChange={(text) => setState((s) => ({ ...s, script: text }))}
           onAudioChange={(a) => setState((s) => ({ ...s, audioSample: a }))}
+          onEnableBgmChange={(v) => setState((s) => ({ ...s, enableBgm: v }))}
+          onEnableSubtitlesChange={(v) => setState((s) => ({ ...s, enableSubtitles: v }))}
           onSubmit={handleSubmit}
           isProcessing={state.isProcessing}
         />

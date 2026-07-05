@@ -30,6 +30,61 @@ export function isHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url)
 }
 
+/** 文案提取允许的平台域名（与 main.py `_COPYWRITING_HOSTS` 对齐） */
+const COPYWRITING_HOSTS = new Set([
+  "www.douyin.com",
+  "douyin.com",
+  "v.douyin.com",
+  "iesdouyin.com",
+  "www.kuaishou.com",
+  "kuaishou.com",
+  "v.kuaishou.com",
+  "www.bilibili.com",
+  "bilibili.com",
+  "b23.tv",
+  "m.bilibili.com",
+  "channels.weixin.qq.com",
+  "www.xiaohongshu.com",
+  "xiaohongshu.com",
+  "xhslink.com",
+  "www.youtube.com",
+  "youtube.com",
+  "youtu.be",
+])
+
+/**
+ * 从抖音等平台「分享口令」整段文本中抠出第一条白名单视频链接。
+ * 例：`…赚钱新机遇 # AI … https://v.douyin.com/xxx/ 复制此链接…` → `https://v.douyin.com/xxx/`
+ */
+export function extractVideoUrlFromShareText(raw: string): string | null {
+  const text = (raw || "").trim()
+  if (!text) return null
+
+  // 每次新建正则，避免全局 lastIndex 污染
+  const urlRe = /https?:\/\/[^\s<>"'`（）()【】\[\]《》\u3000]+/gi
+  const trailRe = /[，。！？、；：,.!?;:]+$/
+  const trailChars = "，。！？、；：,.!?;:）)」』】\"'"
+
+  for (const match of text.matchAll(urlRe)) {
+    let candidate = match[0].replace(trailRe, "")
+    while (candidate && trailChars.includes(candidate[candidate.length - 1]!)) {
+      candidate = candidate.slice(0, -1)
+    }
+    if (!candidate) continue
+    try {
+      const host = new URL(candidate).hostname.toLowerCase()
+      if (COPYWRITING_HOSTS.has(host)) return candidate
+    } catch {
+      // ignore malformed
+    }
+  }
+
+  if (/^https?:\/\//i.test(text)) {
+    return text.split(/\s+/)[0] ?? null
+  }
+  return null
+}
+
 /** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
 export function resolveMediaUrl(url: string): string {
   if (!url || url.startsWith("blob:") || url.startsWith("data:")) return url

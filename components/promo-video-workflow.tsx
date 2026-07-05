@@ -25,8 +25,8 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
-import { addHistoryRecord } from "@/components/video-history"
 import { resolveMediaUrl, fileToBase64 } from "@/lib/video/utils"
+import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
 import {
   VideoWorkflowPage,
   WorkflowHero,
@@ -47,6 +47,7 @@ import {
   PROMO_RH_FRAME_COUNTS,
   PROMO_VIDEO_RESOLUTIONS,
   promoResolutionsForChannel,
+  estimatePromoVideoCost,
   type PromoFrameCount,
   type PromoRhChannel,
   type PromoRhResolution,
@@ -56,10 +57,8 @@ import {
 } from "@/lib/promo-video/constants"
 import {
   submitPromoStoryboard,
-  queryPromoStoryboardStatus,
   requestPromoAutoPrompt,
   submitPromoVideo,
-  queryPromoVideoStatus,
   retryPromoCrop,
   formatPromoError,
 } from "@/lib/promo-video/api"
@@ -119,9 +118,14 @@ function buildPromoSteps(
 }
 
 const selectClass =
-  "w-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 text-[13px] text-slate-700 outline-none transition-colors focus:border-sky-400 focus:ring-2 focus:ring-sky-500/20 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+  "w-full rounded-lg border border-slate-200/80 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 outline-none transition-colors focus:border-sky-400 focus:ring-2 focus:ring-sky-500/20 dark:border-white/10 dark:bg-white/5 dark:text-slate-200"
+
+const fieldLabelClass = "mb-1 block text-[11px] font-medium text-slate-500"
 
 export default function PromoVideoWorkflow() {
+  const runtimeApi = useTaskRuntimeApi()
+  const runtimeTask = useRuntimeTask("promo-video")
+  const toastedRef = useRef("")
   const [step, setStep] = useState<Step>("form")
   const [formData, setFormData] = useState<FormData>({
     productPrompt: "",
@@ -167,20 +171,84 @@ export default function PromoVideoWorkflow() {
   const [vidSegmentCount, setVidSegmentCount] = useState(0)
   const [vidSegmentsCompleted, setVidSegmentsCompleted] = useState(0)
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const pollFailCountRef = useRef(0)
-
   const availableResolutions = promoResolutionsForChannel(formData.channel)
-  const videoSegmentCount = Math.max(1, Math.floor(formData.duration / 15))
+  const videoSegmentCount = Math.max(1, Math.floor((formData.duration + 14) / 15))
+  const estimatedCost = estimatePromoVideoCost(formData.duration, videoResolution)
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  // 从全局 runtime 同步分镜 / 成片进度
+  useEffect(() => {
+    if (!runtimeTask) return
+    const phase = String(runtimeTask.meta?.phase ?? "video")
 
-  const stopPoll = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
+    if (phase === "storyboard") {
+      setStoryTaskId(runtimeTask.taskId)
+      setSbProgress(runtimeTask.progress)
+      setSbStageLabel(runtimeTask.stageLabel || "")
+      if (runtimeTask.result?.rhTaskId) setSbRhTaskId(String(runtimeTask.result.rhTaskId))
+      if (runtimeTask.result?.rhCropTaskId) setSbRhCropTaskId(String(runtimeTask.result.rhCropTaskId))
+      if (runtimeTask.result?.frameCount) setSbFrameCount(Number(runtimeTask.result.frameCount))
+      if (runtimeTask.result?.failedStage) setSbFailedStage(String(runtimeTask.result.failedStage))
+
+      if (runtimeTask.status === "running") {
+        setStep("storyboard")
+        setSbStatus("proc")
+        setSbErr("")
+        return
+      }
+      if (runtimeTask.status === "success") {
+        const frameUrls = Array.isArray(runtimeTask.result?.frames)
+          ? (runtimeTask.result!.frames as string[])
+          : []
+        setSbStatus("ready")
+        setFrames(frameUrls)
+        setVidPrompt(formData.promoScript.trim())
+        setStep("storyboard")
+        return
+      }
+      if (runtimeTask.status === "failed") {
+        setSbStatus("fail")
+        setSbErr(formatPromoError(runtimeTask.error || "分镜生成失败"))
+        setStep("storyboard")
+      }
+      return
     }
-  }
+
+    // video phase
+    setVideoTaskId(runtimeTask.taskId)
+    setVidProgress(runtimeTask.progress)
+    if (Array.isArray(runtimeTask.result?.rhTaskIds)) {
+      setVidRhTaskIds(runtimeTask.result!.rhTaskIds as string[])
+    }
+    if (typeof runtimeTask.result?.segmentCount === "number") {
+      setVidSegmentCount(runtimeTask.result.segmentCount as number)
+    }
+    if (typeof runtimeTask.result?.segmentsCompleted === "number") {
+      setVidSegmentsCompleted(runtimeTask.result.segmentsCompleted as number)
+    }
+
+    if (runtimeTask.status === "running") {
+      setStep("video")
+      setVidStatus("proc")
+      setVidErr("")
+      return
+    }
+    if (runtimeTask.status === "success") {
+      const url = String(runtimeTask.result?.videoUrl ?? "")
+      setStep("video")
+      setVidStatus("done")
+      setVidUrl(url)
+      if (toastedRef.current !== runtimeTask.taskId) {
+        toastedRef.current = runtimeTask.taskId
+        toast({ title: "宣传视频生成成功！" })
+      }
+      return
+    }
+    if (runtimeTask.status === "failed") {
+      setStep("video")
+      setVidStatus("fail")
+      setVidErr(formatPromoError(runtimeTask.error || "视频生成失败"))
+    }
+  }, [runtimeTask, formData.promoScript])
 
   const handleImage = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) {
@@ -206,58 +274,23 @@ export default function PromoVideoWorkflow() {
     setFormData((p) => ({ ...p, audioBase64: base64 }))
   }, [])
 
-  const startStoryboardPoll = useCallback((tid: string) => {
-    stopPoll()
-    pollFailCountRef.current = 0
-    pollRef.current = setInterval(async () => {
-      try {
-        const sd = await queryPromoStoryboardStatus(tid)
-        pollFailCountRef.current = 0
-        setSbProgress(sd.progress || 0)
-        if (sd.stage_label) setSbStageLabel(sd.stage_label)
-        if (sd.rh_task_id) setSbRhTaskId(sd.rh_task_id)
-        if (sd.rh_crop_task_id) setSbRhCropTaskId(sd.rh_crop_task_id)
-        if (sd.frame_count) setSbFrameCount(sd.frame_count)
-        if (sd.status === "storyboard_ready") {
-          const frameUrls = sd.frame_urls || []
-          const expected = sd.frame_count || formData.frameCount
-          if (frameUrls.length === 0 || (expected > 0 && frameUrls.length !== expected)) {
-            setSbStatus("fail")
-            setSbFailedStage(sd.failed_stage || "pv_crop_download")
-            setSbErr(
-              formatPromoError(
-                sd.error || "分镜图裁切失败，未生成有效分镜帧，请重试裁切或联系支持",
-              ),
-            )
-            stopPoll()
-            return
-          }
-          setSbStatus("ready")
-          setFrames(frameUrls)
-          setVidPrompt(formData.promoScript.trim())
-          stopPoll()
-        } else if (sd.status === "storyboard_failed") {
-          setSbStatus("fail")
-          setSbFailedStage(sd.failed_stage || sd.stage || "")
-          if (sd.rh_task_id) setSbRhTaskId(sd.rh_task_id)
-          if (sd.rh_crop_task_id) setSbRhCropTaskId(sd.rh_crop_task_id)
-          setSbErr(formatPromoError(sd.error || "分镜生成失败"))
-          stopPoll()
-        }
-      } catch (e) {
-        pollFailCountRef.current += 1
-        if (pollFailCountRef.current >= 5) {
-          setSbStatus("fail")
-          setSbErr(
-            formatPromoError(
-              e instanceof Error ? e.message : "网络错误，无法查询分镜状态",
-            ),
-          )
-          stopPoll()
-        }
-      }
-    }, 3000)
-  }, [formData.promoScript])
+  const startStoryboardPoll = useCallback(
+    (tid: string) => {
+      runtimeApi.register({
+        kind: "promo-video",
+        taskId: tid,
+        progress: 5,
+        stageLabel: "分镜生成中",
+        meta: {
+          phase: "storyboard",
+          frameCount: formData.frameCount,
+          script: formData.promoScript.trim(),
+          skipHistory: true,
+        },
+      })
+    },
+    [runtimeApi, formData.frameCount, formData.promoScript],
+  )
 
   const submitStory = async () => {
     const isImageMode = formData.imageMode === "2"
@@ -395,37 +428,17 @@ export default function PromoVideoWorkflow() {
       setVidSegmentsCompleted(0)
       setVidRhTaskIds([])
       setVidStatus("proc")
-      pollRef.current = setInterval(async () => {
-        try {
-          const vd = await queryPromoVideoStatus(tid)
-          setVidProgress(vd.progress || 0)
-          if (vd.rh_video_task_ids?.length) setVidRhTaskIds(vd.rh_video_task_ids)
-          if (vd.segment_count) setVidSegmentCount(vd.segment_count)
-          if (vd.segments_completed != null) setVidSegmentsCompleted(vd.segments_completed)
-          if (vd.status === "video_completed") {
-            setVidStatus("done")
-            const url = vd.video_url || ""
-            setVidUrl(url)
-            stopPoll()
-            addHistoryRecord({
-              id: tid,
-              createdAt: Date.now(),
-              script: formData.promoScript.slice(0, 80),
-              videoUrl: url,
-              coverUrl: frames[0] ? resolveMediaUrl(frames[0]) : "",
-              source: "promo-video",
-              status: "success",
-            })
-            toast({ title: "宣传视频生成成功！" })
-          } else if (vd.status === "video_failed") {
-            setVidStatus("fail")
-            setVidErr(formatPromoError(vd.error || "视频生成失败"))
-            stopPoll()
-          }
-        } catch {
-          /* keep polling */
-        }
-      }, 5000)
+      runtimeApi.register({
+        kind: "promo-video",
+        taskId: tid,
+        progress: 5,
+        stageLabel: "视频生成中",
+        meta: {
+          phase: "video",
+          script: formData.promoScript.slice(0, 80),
+          coverUrl: frames[0] ? resolveMediaUrl(frames[0]) : "",
+        },
+      })
     } catch (e: unknown) {
       setVidStatus("fail")
       setVidErr(e instanceof Error ? e.message : "网络错误")
@@ -433,7 +446,6 @@ export default function PromoVideoWorkflow() {
   }
 
   const reset = () => {
-    stopPoll()
     setStep("form")
     setSbStatus("idle")
     setFrames([])
@@ -458,271 +470,220 @@ export default function PromoVideoWorkflow() {
   const promoSteps = buildPromoSteps(step, sbStatus, vidStatus)
 
   return (
-    <VideoWorkflowPage>
+    <VideoWorkflowPage compact>
       <WorkflowHero
+        compact
         accentColor={ACCENT}
         title="AI"
         accentWord="宣传视频"
         description="上传宣传文案与分镜参数，AI 生成分镜图、提示词，一键合成品牌宣传短片"
       />
 
-      <div className="mb-8">
+      <div className="mb-3">
         <WorkflowStepIndicator accentColor={ACCENT} steps={promoSteps} />
       </div>
 
-      {/* Step 1 — 上传素材 */}
+      {/* Step 1 — 上传素材（横向紧凑一屏） */}
       {step === "form" && (
-        <div className="mx-auto max-w-2xl">
-          <div className="rounded-2xl border border-slate-200/60 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-white/5 sm:p-8">
-            <div className="mb-6 flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-500/10">
-                <Package className="h-5 w-5 text-sky-400" />
+        <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5 sm:p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 dark:bg-sky-500/10">
+                <Package className="h-4 w-4 text-sky-400" />
               </span>
               <div>
-                <h2 className="text-[16px] font-semibold text-slate-800 dark:text-slate-100">上传素材</h2>
-                <p className="text-[12px] text-slate-400">配置分镜参数与成片设置</p>
+                <h2 className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">上传素材</h2>
+                <p className="text-[11px] text-slate-400">配置分镜参数与成片设置</p>
+              </div>
+            </div>
+            <Button
+              onClick={submitStory}
+              size="sm"
+              className="shrink-0 rounded-full bg-sky-500 px-4 text-white hover:bg-sky-600"
+            >
+              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              开始生成分镜图
+            </Button>
+          </div>
+
+          <div className="space-y-3">
+            {/* 上行：双栏文案 */}
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div>
+                <label className={fieldLabelClass}>
+                  产品提示词 <span className="text-sky-500">*</span>
+                  <span className="ml-1.5 font-normal text-slate-400">{formData.productPrompt.length} 字</span>
+                </label>
+                <textarea
+                  placeholder="用于 AI 绘制分镜九宫格，描述画面风格与产品场景…"
+                  value={formData.productPrompt}
+                  onChange={(e) =>
+                    setFormData((p) => ({ ...p, productPrompt: e.target.value }))
+                  }
+                  className={cn(selectClass, "min-h-[72px] resize-none leading-relaxed")}
+                />
+              </div>
+              <div>
+                <label className={fieldLabelClass}>
+                  宣传文案 <span className="text-sky-500">*</span>
+                  <span className="ml-1.5 font-normal text-slate-400">
+                    {formData.promoScript.length} 字 · 成片叙事
+                  </span>
+                </label>
+                <textarea
+                  placeholder="描述运镜、节奏、卖点叙述…"
+                  value={formData.promoScript}
+                  onChange={(e) =>
+                    setFormData((p) => ({ ...p, promoScript: e.target.value }))
+                  }
+                  className={cn(selectClass, "min-h-[72px] resize-none leading-relaxed")}
+                />
               </div>
             </div>
 
-            <div className="space-y-6">
-              {/* 分镜生成设置 */}
-              <div className="space-y-4 rounded-xl border border-sky-100/80 bg-sky-50/30 p-4 dark:border-sky-500/10 dark:bg-sky-500/5">
-                <p className="text-[13px] font-semibold text-sky-700 dark:text-sky-300">分镜生成设置</p>
-
-                <div>
-                  <label className="mb-2 block text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                    产品提示词 <span className="text-sky-500">*</span>
-                    <span className="ml-2 text-[12px] font-normal text-slate-400">
-                      {formData.productPrompt.length} 字
-                    </span>
-                  </label>
-                  <textarea
-                    placeholder="用于 AI 绘制分镜九宫格，描述画面风格与产品场景…&#10;例如：生成玉米生长过程产品广告分镜，写实摄影风格"
-                    value={formData.productPrompt}
-                    onChange={(e) =>
-                      setFormData((p) => ({ ...p, productPrompt: e.target.value }))
-                    }
-                    className={cn(selectClass, "min-h-[80px] resize-y leading-relaxed")}
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                    宣传文案 <span className="text-sky-500">*</span>
-                    <span className="ml-2 text-[12px] font-normal text-slate-400">
-                      {formData.promoScript.length} 字 · 用于视频成片叙事提示词
-                    </span>
-                  </label>
-                  <textarea
-                    placeholder="描述运镜、节奏、卖点叙述…&#10;例如：从田间到餐桌，展现玉米新鲜甘甜的品质感。"
-                    value={formData.promoScript}
-                    onChange={(e) =>
-                      setFormData((p) => ({ ...p, promoScript: e.target.value }))
-                    }
-                    className={cn(selectClass, "min-h-[100px] resize-y leading-relaxed")}
-                  />
-                </div>
-
-                <div>
-                  <p className="mb-2 text-[13px] font-medium text-slate-700 dark:text-slate-300">生成模式</p>
-                  <div className="flex gap-2">
-                    {PROMO_RH_IMAGE_MODES.map((m) => (
-                      <button
-                        key={m.value}
-                        type="button"
-                        onClick={() => {
-                          setFormData((p) => ({
-                            ...p,
-                            imageMode: m.value,
-                            ...(m.value === "1" ? { productImage: "" } : {}),
-                          }))
-                          if (m.value === "1") setImagePreview("")
-                        }}
-                        className={cn(
-                          "flex-1 rounded-xl border px-3 py-2.5 text-[13px] font-medium transition-colors",
-                          formData.imageMode === m.value
-                            ? "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300"
-                            : "border-slate-200/80 bg-white text-slate-600 hover:border-sky-300 dark:border-white/10 dark:bg-white/5 dark:text-slate-400",
-                        )}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {formData.imageMode === "2" && (
-                  <div>
-                    <p className="mb-2 text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                      产品图片 <span className="text-sky-500">*</span>
-                    </p>
-                    {imagePreview ? (
-                      <div className="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-50 dark:border-white/10 dark:bg-white/5">
-                        <img
-                          src={imagePreview}
-                          alt="产品预览"
-                          className="mx-auto max-h-48 w-full object-contain p-4"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setImagePreview("")
-                            setFormData((p) => ({ ...p, productImage: "" }))
-                          }}
-                          className="absolute right-3 top-3 rounded-full bg-black/50 px-2.5 py-1 text-[11px] text-white hover:bg-black/70"
-                        >
-                          更换
-                        </button>
-                      </div>
-                    ) : (
-                      <UploadZone
-                        accept="image/*"
-                        label="上传产品图片"
-                        icon={ImageIcon}
-                        hint="JPG / PNG / WebP，建议白底或场景图"
-                        onFile={handleImage}
-                        accentColor={ACCENT}
-                      />
-                    )}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">分镜宫格</label>
-                    <select
-                      value={formData.frameCount}
-                      onChange={(e) =>
+            {/* 中行：素材 + 成片计费 */}
+            <div className="grid gap-3 lg:grid-cols-3">
+              {/* 生成模式 + 产品图 */}
+              <div className="space-y-2 rounded-xl border border-sky-100/80 bg-sky-50/30 p-3 dark:border-sky-500/10 dark:bg-sky-500/5">
+                <p className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">分镜素材</p>
+                <div className="flex gap-1.5">
+                  {PROMO_RH_IMAGE_MODES.map((m) => (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => {
                         setFormData((p) => ({
                           ...p,
-                          frameCount: Number(e.target.value) as PromoFrameCount,
+                          imageMode: m.value,
+                          ...(m.value === "1" ? { productImage: "" } : {}),
                         }))
-                      }
-                      className={selectClass}
-                    >
-                      {PROMO_RH_FRAME_COUNTS.map((n) => (
-                        <option key={n.value} value={n.value}>{n.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">生成路线</label>
-                    <select
-                      value={formData.channel}
-                      onChange={(e) => {
-                        const ch = e.target.value as PromoRhChannel
-                        setFormData((p) => {
-                          const next = { ...p, channel: ch }
-                          if (ch !== "Official" && p.resolution === "8k") {
-                            next.resolution = "2k"
-                          }
-                          return next
-                        })
+                        if (m.value === "1") setImagePreview("")
                       }}
-                      className={selectClass}
+                      className={cn(
+                        "flex-1 rounded-lg border px-2 py-1.5 text-[11px] font-medium transition-colors",
+                        formData.imageMode === m.value
+                          ? "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300"
+                          : "border-slate-200/80 bg-white text-slate-600 hover:border-sky-300 dark:border-white/10 dark:bg-white/5 dark:text-slate-400",
+                      )}
                     >
-                      {PROMO_RH_CHANNELS.map((c) => (
-                        <option key={c.value} value={c.value}>{c.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">分镜分辨率</label>
-                    <select
-                      value={formData.resolution}
-                      onChange={(e) =>
-                        setFormData((p) => ({
-                          ...p,
-                          resolution: e.target.value as PromoRhResolution,
-                        }))
-                      }
-                      className={selectClass}
-                    >
-                      {availableResolutions.map((r) => (
-                        <option key={r.value} value={r.value}>{r.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">算力实例</label>
-                    <select
-                      value={formData.instanceType}
-                      onChange={(e) =>
-                        setFormData((p) => ({
-                          ...p,
-                          instanceType: e.target.value as PromoRhInstanceType,
-                        }))
-                      }
-                      className={selectClass}
-                    >
-                      {PROMO_RH_INSTANCE_TYPES.map((t) => (
-                        <option key={t.value} value={t.value}>{t.label}</option>
-                      ))}
-                    </select>
-                  </div>
+                      {m.label}
+                    </button>
+                  ))}
                 </div>
-              </div>
-
-              {/* 成片设置 */}
-              <div className="space-y-4 rounded-xl border border-slate-200/60 p-4 dark:border-white/10">
-                <p className="text-[13px] font-semibold text-slate-700 dark:text-slate-300">成片设置</p>
-
-                <div>
-                  <p className="mb-2 text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                    参考音色
-                    <span className="ml-2 text-[12px] font-normal text-slate-400">可选 · 10~30 秒 · MP3 / WAV / M4A</span>
-                  </p>
-                {audioSample ? (
-                  <div className="flex flex-col gap-3 rounded-2xl border border-slate-200/60 bg-white p-5 dark:border-white/10 dark:bg-white/5">
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-500/10">
-                        <Mic className="h-5 w-5 text-sky-400" />
-                      </span>
-                      <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-slate-700 dark:text-slate-300">
-                        {audioSample.name}
+                {formData.imageMode === "2" && (
+                  imagePreview ? (
+                    <div className="relative flex h-14 items-center gap-2 overflow-hidden rounded-xl border border-slate-200/60 bg-white px-2 dark:border-white/10 dark:bg-white/5">
+                      <img
+                        src={imagePreview}
+                        alt="产品预览"
+                        className="h-10 w-10 shrink-0 rounded-md object-cover"
+                      />
+                      <p className="min-w-0 flex-1 truncate text-[11px] text-slate-600 dark:text-slate-300">
+                        已上传产品图
                       </p>
                       <button
                         type="button"
                         onClick={() => {
-                          setAudioSample(null)
-                          setFormData((p) => ({ ...p, audioBase64: "" }))
+                          setImagePreview("")
+                          setFormData((p) => ({ ...p, productImage: "" }))
                         }}
-                        className="rounded-lg bg-slate-100 px-3 py-1 text-[11px] text-slate-500 hover:bg-slate-200 dark:bg-white/5"
+                        className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200 dark:bg-white/5"
                       >
-                        移除
+                        更换
                       </button>
                     </div>
+                  ) : (
+                    <UploadZone
+                      compact
+                      accept="image/*"
+                      label="上传产品图片"
+                      icon={ImageIcon}
+                      hint="JPG / PNG / WebP"
+                      onFile={handleImage}
+                      accentColor={ACCENT}
+                    />
+                  )
+                )}
+                {formData.imageMode === "1" && (
+                  <p className="text-[10px] leading-snug text-slate-400">文生图模式无需上传产品图</p>
+                )}
+              </div>
+
+              {/* 参考音色 */}
+              <div className="space-y-2 rounded-xl border border-slate-200/60 p-3 dark:border-white/10">
+                <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                  参考音色
+                  <span className="ml-1.5 font-normal text-slate-400">可选</span>
+                </p>
+                {audioSample ? (
+                  <div className="flex h-14 items-center gap-2 rounded-xl border border-slate-200/60 bg-white px-3 dark:border-white/10 dark:bg-white/5">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-50 dark:bg-sky-500/10">
+                      <Mic className="h-4 w-4 text-sky-400" />
+                    </span>
+                    <p className="min-w-0 flex-1 truncate text-[12px] font-medium text-slate-700 dark:text-slate-300">
+                      {audioSample.name}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAudioSample(null)
+                        setFormData((p) => ({ ...p, audioBase64: "" }))
+                      }}
+                      className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200 dark:bg-white/5"
+                    >
+                      移除
+                    </button>
                   </div>
                 ) : (
                   <UploadZone
+                    compact
                     accentColor={ACCENT}
                     accept={PROMO_ACCEPTED_AUDIO}
                     label="上传参考音色"
                     icon={Mic}
-                    hint="MP3 / WAV / M4A"
+                    hint="MP3 / WAV / M4A · 10~30 秒"
                     onFile={(f) => { void handleAudio(f) }}
                   />
                 )}
-                </div>
+              </div>
 
-                <div className="grid grid-cols-2 gap-3">
+              {/* 成片计费 */}
+              <div className="space-y-2 rounded-xl border border-amber-100/80 bg-amber-50/40 p-3 dark:border-amber-500/10 dark:bg-amber-500/5">
+                <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">成片设置 · 积分</p>
+                <div className="grid grid-cols-3 gap-2">
                   <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">视频时长</label>
+                    <label className={fieldLabelClass}>时长</label>
                     <select
                       value={formData.duration}
                       onChange={(e) => setFormData((p) => ({ ...p, duration: Number(e.target.value) }))}
                       className={selectClass}
                     >
                       {PROMO_DURATIONS.map((d) => (
-                        <option key={d} value={d}>{d} 秒</option>
+                        <option key={d} value={d}>{d}s</option>
                       ))}
                     </select>
                   </div>
                   <div>
-                    <label className="mb-2 block text-[12px] font-medium text-slate-500">画面比例</label>
+                    <label className={fieldLabelClass}>视频分辨率</label>
+                    <select
+                      value={videoResolution}
+                      onChange={(e) => setVideoResolution(e.target.value as PromoVideoResolution)}
+                      className={selectClass}
+                    >
+                      {PROMO_VIDEO_RESOLUTIONS.map((r) => (
+                        <option key={r.value} value={r.value}>{r.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={fieldLabelClass}>画面比例</label>
                     <select
                       value={formData.ratio}
-                      onChange={(e) => setFormData((p) => ({ ...p, ratio: e.target.value }))}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setFormData((p) => ({ ...p, ratio: v }))
+                        setVideoRatio(v)
+                      }}
                       className={selectClass}
                     >
                       {PROMO_RATIOS.map((r) => (
@@ -731,16 +692,108 @@ export default function PromoVideoWorkflow() {
                     </select>
                   </div>
                 </div>
+                <p className="rounded-lg bg-white/80 px-2.5 py-1.5 text-[11px] text-slate-600 dark:bg-black/20 dark:text-slate-300">
+                  预计消耗{" "}
+                  <span className="font-semibold text-amber-700 dark:text-amber-300">
+                    {estimatedCost.toLocaleString()}
+                  </span>{" "}
+                  积分
+                  <span className="ml-1 text-slate-400">
+                    （{videoResolution} · {formData.duration} 秒 · {videoSegmentCount} 段）
+                  </span>
+                </p>
               </div>
+            </div>
 
-              <Button
-                onClick={submitStory}
-                size="lg"
-                className="mt-2 w-full rounded-full bg-sky-500 text-white hover:bg-sky-600"
-              >
-                <Sparkles className="mr-2 h-4 w-4" />
-                开始生成分镜图
-              </Button>
+            {/* 下行：分镜参数带 */}
+            <div className="rounded-xl border border-slate-200/60 p-3 dark:border-white/10">
+              <p className="mb-2 text-[11px] font-semibold text-slate-700 dark:text-slate-300">分镜参数</p>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
+                <div>
+                  <label className={fieldLabelClass}>分镜宫格</label>
+                  <select
+                    value={formData.frameCount}
+                    onChange={(e) =>
+                      setFormData((p) => ({
+                        ...p,
+                        frameCount: Number(e.target.value) as PromoFrameCount,
+                      }))
+                    }
+                    className={selectClass}
+                  >
+                    {PROMO_RH_FRAME_COUNTS.map((n) => (
+                      <option key={n.value} value={n.value}>{n.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={fieldLabelClass}>生成路线</label>
+                  <select
+                    value={formData.channel}
+                    onChange={(e) => {
+                      const ch = e.target.value as PromoRhChannel
+                      setFormData((p) => {
+                        const next = { ...p, channel: ch }
+                        if (ch !== "Official" && p.resolution === "8k") {
+                          next.resolution = "2k"
+                        }
+                        return next
+                      })
+                    }}
+                    className={selectClass}
+                  >
+                    {PROMO_RH_CHANNELS.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={fieldLabelClass}>分镜分辨率</label>
+                  <select
+                    value={formData.resolution}
+                    onChange={(e) =>
+                      setFormData((p) => ({
+                        ...p,
+                        resolution: e.target.value as PromoRhResolution,
+                      }))
+                    }
+                    className={selectClass}
+                  >
+                    {availableResolutions.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={fieldLabelClass}>分镜算力</label>
+                  <select
+                    value={formData.instanceType}
+                    onChange={(e) =>
+                      setFormData((p) => ({
+                        ...p,
+                        instanceType: e.target.value as PromoRhInstanceType,
+                      }))
+                    }
+                    className={selectClass}
+                  >
+                    {PROMO_RH_INSTANCE_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="col-span-2 md:col-span-1">
+                  <label className={fieldLabelClass}>成片算力</label>
+                  <select
+                    value={videoInstanceType}
+                    onChange={(e) => setVideoInstanceType(e.target.value as PromoRhInstanceType)}
+                    className={selectClass}
+                  >
+                    {PROMO_RH_INSTANCE_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -891,37 +944,43 @@ export default function PromoVideoWorkflow() {
 
       {/* Step 3 — 提示词 */}
       {step === "prompt" && (
-        <div className="mx-auto max-w-2xl">
-          <div className="rounded-2xl border border-slate-200/60 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-white/5 sm:p-8">
-            <div className="mb-6 flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-500/10">
-                <Wand2 className="h-5 w-5 text-sky-400" />
+        <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/5 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 dark:bg-sky-500/10">
+                <Wand2 className="h-4 w-4 text-sky-400" />
               </span>
               <div>
-                <h2 className="text-[16px] font-semibold text-slate-800 dark:text-slate-100">视频提示词</h2>
-                <p className="text-[12px] text-slate-400">
+                <h2 className="text-[14px] font-semibold text-slate-800 dark:text-slate-100">视频提示词</h2>
+                <p className="text-[11px] text-slate-400">
                   已选 {selected.size} 张分镜 · 可手动编辑或由 AI 自动生成
                 </p>
               </div>
             </div>
+            <p className="rounded-lg bg-amber-50 px-2.5 py-1 text-[11px] text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+              预计 <span className="font-semibold">{estimatedCost.toLocaleString()}</span> 积分
+              <span className="ml-1 text-amber-700/70 dark:text-amber-300/70">
+                · {videoResolution} · {formData.duration}s · {videoSegmentCount} 段
+              </span>
+            </p>
+          </div>
 
+          <div className="grid gap-3 lg:grid-cols-[1fr_280px]">
             <textarea
               value={vidPrompt}
               onChange={(e) => setVidPrompt(e.target.value)}
               placeholder="描述镜头运动、氛围、转场节奏… 使用 Image1, Image2 引用分镜"
               className={cn(
                 selectClass,
-                "min-h-[200px] font-mono text-[12px] leading-relaxed",
+                "min-h-[160px] font-mono text-[12px] leading-relaxed lg:min-h-[200px]",
               )}
             />
 
-            {/* 视频生成设置 */}
-            <div className="mt-6 space-y-4 rounded-xl border border-sky-100/80 bg-sky-50/30 p-4 dark:border-sky-500/10 dark:bg-sky-500/5">
-              <p className="text-[13px] font-semibold text-sky-700 dark:text-sky-300">视频生成设置</p>
-
-              <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2 rounded-xl border border-sky-100/80 bg-sky-50/30 p-3 dark:border-sky-500/10 dark:bg-sky-500/5">
+              <p className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">视频生成设置</p>
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="mb-2 block text-[12px] font-medium text-slate-500">视频分辨率</label>
+                  <label className={fieldLabelClass}>视频分辨率</label>
                   <select
                     value={videoResolution}
                     onChange={(e) => setVideoResolution(e.target.value as PromoVideoResolution)}
@@ -933,7 +992,7 @@ export default function PromoVideoWorkflow() {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-2 block text-[12px] font-medium text-slate-500">画面比例</label>
+                  <label className={fieldLabelClass}>画面比例</label>
                   <select
                     value={videoRatio}
                     onChange={(e) => setVideoRatio(e.target.value)}
@@ -945,13 +1004,13 @@ export default function PromoVideoWorkflow() {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-2 block text-[12px] font-medium text-slate-500">成片时长</label>
+                  <label className={fieldLabelClass}>成片时长</label>
                   <div className={cn(selectClass, "bg-slate-50 text-slate-600 dark:bg-white/5")}>
                     {formData.duration} 秒
                   </div>
                 </div>
                 <div>
-                  <label className="mb-2 block text-[12px] font-medium text-slate-500">算力实例</label>
+                  <label className={fieldLabelClass}>算力实例</label>
                   <select
                     value={videoInstanceType}
                     onChange={(e) => setVideoInstanceType(e.target.value as PromoRhInstanceType)}
@@ -964,61 +1023,57 @@ export default function PromoVideoWorkflow() {
                 </div>
               </div>
 
-              <label className="flex cursor-pointer items-center gap-2 text-[13px] text-slate-700 dark:text-slate-300">
+              <label className="flex cursor-pointer items-center gap-2 text-[12px] text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={realPersonMode}
                   onChange={(e) => setRealPersonMode(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-sky-500 focus:ring-sky-500"
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-500"
                 />
-                真人模式（Seedance real_person_mode）
+                真人模式
               </label>
 
-              <p className="text-[12px] text-slate-500">
-                将分为 <span className="font-semibold text-sky-600">{videoSegmentCount}</span> 段 × 15 秒并发生成
-                {selected.size > 0 && (
-                  <span className="ml-1 text-slate-400">
-                    · 已选 {selected.size} 张分镜
-                  </span>
-                )}
+              <p className="text-[11px] text-slate-500">
+                {videoSegmentCount} 段 × 15 秒并发
               </p>
             </div>
+          </div>
 
-            <div className="mt-4 flex gap-3">
-              <Button
-                variant="outline"
-                onClick={() => void autoPrompt()}
-                disabled={autoPrompting}
-                className="flex-1 rounded-full"
-              >
-                {autoPrompting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    AI 生成中…
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    AI 自动生成
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setStep("storyboard")}
-                className="flex-1 rounded-full"
-              >
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                返回选帧
-              </Button>
-            </div>
-
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void autoPrompt()}
+              disabled={autoPrompting}
+              className="rounded-full"
+            >
+              {autoPrompting ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  AI 生成中…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  AI 自动生成
+                </>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStep("storyboard")}
+              className="rounded-full"
+            >
+              <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+              返回选帧
+            </Button>
             <Button
               onClick={() => void submitVideo()}
-              size="lg"
-              className="mt-4 w-full rounded-full bg-sky-500 hover:bg-sky-600"
+              size="sm"
+              className="ml-auto rounded-full bg-sky-500 px-4 hover:bg-sky-600"
             >
-              生成宣传视频
+              生成宣传视频 · {estimatedCost.toLocaleString()} 积分
             </Button>
           </div>
         </div>
@@ -1066,7 +1121,7 @@ export default function PromoVideoWorkflow() {
                 视频生成完成
               </h3>
               <div className="mb-6 w-full max-w-md overflow-hidden rounded-2xl bg-black shadow-lg">
-                <video controls className="w-full">
+                <video controls disablePictureInPicture className="w-full">
                   <source src={resolveMediaUrl(vidUrl)} />
                 </video>
               </div>

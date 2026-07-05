@@ -14,11 +14,10 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
-import {
-  startCopyExtraction,
-  queryExtractStatus,
-} from "@/lib/video/api"
+import { startCopyExtraction } from "@/lib/video/api"
 import type { ExtractCopyStatusResponse } from "@/lib/video/api"
+import { extractVideoUrlFromShareText } from "@/lib/video/utils"
+import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -37,7 +36,6 @@ type ExtractionStatus = "idle" | "downloading" | "transcribing" | "completed" | 
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-const POLL_INTERVAL = 2000  // 轮询间隔 ms
 const PLATFORM_HINTS = "抖音 · B站 · 快手 · 小红书 · YouTube"
 
 const STEP_LABELS: Record<ExtractionStatus, string> = {
@@ -53,6 +51,9 @@ const STEP_LABELS: Record<ExtractionStatus, string> = {
 /* ------------------------------------------------------------------ */
 
 export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: Props) {
+  const runtimeApi = useTaskRuntimeApi()
+  const runtimeTask = useRuntimeTask("copywriting-extract")
+
   /* ── State ── */
   const [url, setUrl] = React.useState("")
   const [taskId, setTaskId] = React.useState("")
@@ -64,46 +65,87 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
   const [editedText, setEditedText] = React.useState("")
 
   const isRunning = status === "downloading" || status === "transcribing"
-  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
 
-  /* ── Cleanup poll on unmount ── */
+  // 从全局 runtime 恢复 / 同步
   React.useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
+    if (!runtimeTask) return
+    setTaskId(runtimeTask.taskId)
+    setProgress(runtimeTask.progress)
+
+    if (runtimeTask.status === "running") {
+      const step = (runtimeTask.stageLabel || "").includes("识别")
+        ? "transcribing"
+        : "downloading"
+      setStatus(step)
+      setError("")
+      return
     }
-  }, [])
-
-  /* ── Polling ── */
-  const startPoll = React.useCallback((tid: string) => {
-    if (pollRef.current) clearInterval(pollRef.current)
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const data = await queryExtractStatus(tid)
-        setStatus(data.status as ExtractionStatus)
-        setProgress(data.progress)
-
-        if (data.status === "completed") {
-          clearInterval(pollRef.current!)
-          pollRef.current = null
-          setResult(data)
-          setEditedText(data.text || "")
-        } else if (data.status === "failed") {
-          clearInterval(pollRef.current!)
-          pollRef.current = null
-          setError(data.error || "提取失败，请检查视频链接或重试")
-        }
-      } catch (e) {
-        // silent — keep polling
+    if (runtimeTask.status === "success") {
+      setStatus("completed")
+      const text = String(runtimeTask.result?.text ?? "")
+      const data: ExtractCopyStatusResponse = {
+        task_id: runtimeTask.taskId,
+        status: "completed",
+        step: runtimeTask.stageLabel || "完成",
+        progress: 100,
+        text,
+        title: String(runtimeTask.result?.title ?? ""),
+        duration:
+          typeof runtimeTask.result?.duration === "number"
+            ? runtimeTask.result.duration
+            : undefined,
+        source:
+          typeof runtimeTask.result?.source === "string"
+            ? runtimeTask.result.source
+            : undefined,
       }
-    }, POLL_INTERVAL)
+      setResult(data)
+      setEditedText(text)
+      setError("")
+      return
+    }
+    if (runtimeTask.status === "failed") {
+      setStatus("failed")
+      setError(runtimeTask.error || "提取失败，请检查视频链接或重试")
+    }
+  }, [runtimeTask])
+
+  /** 粘贴分享口令时自动抠出视频链接，避免文案干扰 */
+  const handlePaste = React.useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData("text")
+    const extracted = extractVideoUrlFromShareText(pasted)
+    if (extracted && extracted !== pasted.trim()) {
+      e.preventDefault()
+      setUrl(extracted)
+      toast({ description: "已从分享口令中识别视频链接" })
+    }
   }, [])
 
   /* ── Submit ── */
   const handleExtract = React.useCallback(async () => {
     const trimmed = url.trim()
     if (!trimmed) {
-      toast({ description: "请粘贴视频链接" })
+      toast({ description: "请粘贴视频链接或分享口令" })
+      return
+    }
+
+    const videoUrl = extractVideoUrlFromShareText(trimmed)
+    if (!videoUrl) {
+      const msg = "未识别到视频链接，请粘贴分享口令或单条视频链接"
+      setError(msg)
+      setStatus("failed")
+      toast({ description: msg, variant: "destructive" })
+      return
+    }
+    if (videoUrl !== trimmed) {
+      setUrl(videoUrl)
+    }
+
+    if (runtimeApi.isRunning("copywriting-extract")) {
+      toast({
+        description: "已有提取任务进行中，请稍候",
+        variant: "destructive",
+      })
       return
     }
 
@@ -114,19 +156,24 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
     setEditedText("")
 
     try {
-      const res = await startCopyExtraction({ url: trimmed })
+      const res = await startCopyExtraction({ url: videoUrl })
       setTaskId(res.task_id)
       setStatus("downloading")
       setProgress(5)
-
-      startPoll(res.task_id)
+      runtimeApi.register({
+        kind: "copywriting-extract",
+        taskId: res.task_id,
+        progress: 5,
+        stageLabel: "下载中",
+        meta: { url: videoUrl },
+      })
     } catch (e) {
       const msg = e instanceof Error ? e.message : "提交提取任务失败"
       setError(msg)
       setStatus("failed")
       toast({ description: msg, variant: "destructive" })
     }
-  }, [url, startPoll])
+  }, [url, runtimeApi])
 
   /* ── Keyboard shortcut ── */
   const handleKeyDown = React.useCallback(
@@ -161,7 +208,7 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight">文案提取</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">
-            粘贴视频链接，自动提取口播文案。优先使用平台自带字幕，无字幕时通过语音识别提取。
+            粘贴视频链接或分享口令，自动识别链接并提取口播文案。优先使用平台自带字幕，无字幕时通过语音识别提取。
           </p>
         </div>
 
@@ -174,11 +221,12 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
                 <LinkIcon className="h-4 w-4" />
               </span>
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
+                onPaste={handlePaste}
                 onKeyDown={handleKeyDown}
-                placeholder="粘贴抖音 / B站 / 快手 / 小红书 视频链接…"
+                placeholder="粘贴视频链接，或抖音等平台整段分享口令…"
                 disabled={isRunning}
                 className={cn(
                   "h-11 w-full rounded-xl border border-input bg-background pl-10 pr-4",
@@ -378,8 +426,15 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
               <li className="flex items-start gap-2">
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/50" />
                 <span>
+                  <strong>分享口令：</strong>
+                  可直接粘贴抖音等平台复制的整段分享文案，系统会自动识别其中的视频链接
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/50" />
+                <span>
                   <strong>需要登录：</strong>
-                  抖音、小红书、快手等平台需先在浏览器中登录后再粘贴链接
+                  使用本功能需先登录账号
                 </span>
               </li>
               <li className="flex items-start gap-2">

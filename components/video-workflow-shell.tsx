@@ -41,7 +41,7 @@ export function buildClipSteps(
   }))
 }
 
-export type WorkflowAccent = "rose" | "emerald" | "violet" | "sky"
+export type WorkflowAccent = "rose" | "emerald" | "violet" | "sky" | "amber"
 
 const ACCENT = {
   rose: {
@@ -84,12 +84,38 @@ const ACCENT = {
     icon: "text-sky-400",
     drag: "border-sky-400 bg-sky-50/50 dark:border-sky-500/40 dark:bg-sky-500/5",
   },
+  amber: {
+    bar: "bg-amber-500/70",
+    title: "text-amber-500 dark:text-amber-400",
+    loading: "bg-amber-500 text-white",
+    active: "bg-amber-100 text-amber-700 ring-2 ring-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
+    activeLabel: "text-amber-600 dark:text-amber-400",
+    iconBg: "bg-amber-50 dark:bg-amber-500/10",
+    icon: "text-amber-400",
+    drag: "border-amber-400 bg-amber-50/50 dark:border-amber-500/40 dark:bg-amber-500/5",
+  },
 } as const
 
-export function VideoWorkflowPage({ children }: { children: React.ReactNode }) {
+export function VideoWorkflowPage({
+  children,
+  compact = false,
+}: {
+  children: React.ReactNode
+  /** 一屏紧凑：更宽容器、更小内边距 */
+  compact?: boolean
+}) {
   return (
     <div className="h-full overflow-y-auto bg-[#fafaf8] dark:bg-slate-950">
-      <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8 sm:py-10">{children}</div>
+      <div
+        className={cn(
+          "mx-auto px-5",
+          compact
+            ? "max-w-6xl py-4 sm:px-6 sm:py-5"
+            : "max-w-5xl py-8 sm:px-8 sm:py-10",
+        )}
+      >
+        {children}
+      </div>
     </div>
   )
 }
@@ -100,18 +126,25 @@ export function WorkflowHero({
   accentWord,
   description,
   accentColor = "rose",
+  compact = false,
 }: {
   title: string
   accent?: string
   accentWord?: string
   description: string
   accentColor?: WorkflowAccent
+  compact?: boolean
 }) {
   const a = ACCENT[accentColor]
   return (
-    <header className="mb-8">
-      <div className={cn("mb-4 h-1 w-12 rounded-full", a.bar)} />
-      <h1 className="text-[28px] font-bold leading-tight tracking-tight text-slate-900 sm:text-[34px] dark:text-slate-50">
+    <header className={compact ? "mb-3" : "mb-8"}>
+      <div className={cn("rounded-full", a.bar, compact ? "mb-2 h-0.5 w-8" : "mb-4 h-1 w-12")} />
+      <h1
+        className={cn(
+          "font-bold leading-tight tracking-tight text-slate-900 dark:text-slate-50",
+          compact ? "text-[20px] sm:text-[22px]" : "text-[28px] sm:text-[34px]",
+        )}
+      >
         {title}
         {accentWord ? (
           <span className={a.title}> {accentWord}</span>
@@ -119,7 +152,14 @@ export function WorkflowHero({
           <span className={a.title}> {accent}</span>
         ) : null}
       </h1>
-      <p className="mt-3 max-w-lg text-[15px] leading-relaxed text-slate-500 dark:text-slate-400">
+      <p
+        className={cn(
+          "text-slate-500 dark:text-slate-400",
+          compact
+            ? "mt-1 max-w-2xl truncate text-[12px] leading-snug"
+            : "mt-3 max-w-lg text-[15px] leading-relaxed",
+        )}
+      >
         {description}
       </p>
     </header>
@@ -196,6 +236,7 @@ export function UploadZone({
   disabled,
   onFile,
   accentColor = "rose",
+  compact = false,
 }: {
   accept: string
   label: string
@@ -204,10 +245,64 @@ export function UploadZone({
   disabled?: boolean
   onFile: (file: File) => void
   accentColor?: WorkflowAccent
+  /** 横向条模式，用于一屏紧凑表单 */
+  compact?: boolean
 }) {
   const inputRef = React.useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = React.useState(false)
   const a = ACCENT[accentColor]
+
+  const open = () => inputRef.current?.click()
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+  const onDragLeave = () => setDragOver(false)
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const f = e.dataTransfer.files[0]
+    if (f) onFile(f)
+  }
+  const fileInput = (
+    <input
+      ref={inputRef}
+      type="file"
+      accept={accept}
+      className="hidden"
+      onChange={(e) => {
+        const f = e.target.files?.[0]
+        if (f) onFile(f)
+      }}
+    />
+  )
+
+  if (compact) {
+    return (
+      <div
+        className={cn(
+          "relative flex h-14 cursor-pointer items-center gap-3 rounded-xl border border-dashed px-3 transition-all",
+          dragOver
+            ? a.drag
+            : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20",
+          disabled && "pointer-events-none opacity-40",
+        )}
+        onClick={open}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        <span className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", a.iconBg)}>
+          <Icon className={cn("h-4 w-4", a.icon)} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[12px] font-medium text-slate-700 dark:text-slate-300">{label}</p>
+          <p className="truncate text-[10px] text-slate-400">{hint}</p>
+        </div>
+        {fileInput}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -218,34 +313,17 @@ export function UploadZone({
           : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50 dark:border-white/10 dark:bg-white/5 dark:hover:border-white/20",
         disabled && "pointer-events-none opacity-40",
       )}
-      onClick={() => inputRef.current?.click()}
-      onDragOver={(e) => {
-        e.preventDefault()
-        setDragOver(true)
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragOver(false)
-        const f = e.dataTransfer.files[0]
-        if (f) onFile(f)
-      }}
+      onClick={open}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       <span className={cn("flex h-10 w-10 items-center justify-center rounded-xl", a.iconBg)}>
         <Icon className={cn("h-5 w-5", a.icon)} />
       </span>
       <p className="text-[13px] font-medium text-slate-700 dark:text-slate-300">{label}</p>
       <p className="text-[11px] text-slate-400">{hint}</p>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) onFile(f)
-        }}
-      />
+      {fileInput}
     </div>
   )
 }

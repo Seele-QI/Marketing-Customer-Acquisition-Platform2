@@ -1,6 +1,6 @@
 "use client"
 
-import { Lightbulb, TrendingUp, Eye, Heart, MessageCircle, ChevronRight } from "lucide-react"
+import { Lightbulb, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /* ------------------------------------------------------------------ */
@@ -22,12 +22,6 @@ const MOCK_RECOMMENDATIONS = [
     color: "text-blue-500",
     bg: "bg-blue-500/10",
   },
-]
-
-const MOCK_RECENT_CONTENT = [
-  { title: "老王的店·新品展示", platform: "抖音", views: "3.2w", likes: "856", comments: "124", date: "05/27" },
-  { title: "装修避坑指南第3期", platform: "视频号", views: "1.8w", likes: "432", comments: "67", date: "05/26" },
-  { title: "实体店转型做短视频", platform: "小红书", views: "2.1w", likes: "1.2k", comments: "203", date: "05/25" },
 ]
 
 const HOT_SNIPPETS = [
@@ -56,37 +50,6 @@ export function DashboardAIInsights() {
                 <r.icon className="h-3.5 w-3.5" />
               </span>
               <p className="text-[12px] leading-relaxed text-slate-600 dark:text-slate-400">{r.text}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Recent Content */}
-      <section>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[13px] font-semibold text-slate-500 uppercase tracking-wider">最近内容表现</h3>
-          <button className="flex items-center gap-0.5 text-[11px] text-primary hover:underline">
-            查看全部 <ChevronRight className="h-3 w-3" />
-          </button>
-        </div>
-        <div className="rounded-xl border border-border/60 bg-white dark:bg-white/5">
-          {MOCK_RECENT_CONTENT.map((item, i) => (
-            <div
-              key={i}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2.5",
-                i < MOCK_RECENT_CONTENT.length - 1 && "border-b border-border/40",
-              )}
-            >
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[12px] font-medium text-foreground">{item.title}</p>
-                <p className="text-[10px] text-slate-400">{item.platform} · {item.date}</p>
-              </div>
-              <div className="flex items-center gap-3 text-[11px] text-slate-500">
-                <span className="inline-flex items-center gap-0.5"><Eye className="h-3 w-3" />{item.views}</span>
-                <span className="inline-flex items-center gap-0.5"><Heart className="h-3 w-3" />{item.likes}</span>
-                <span className="inline-flex items-center gap-0.5"><MessageCircle className="h-3 w-3" />{item.comments}</span>
-              </div>
             </div>
           ))}
         </div>

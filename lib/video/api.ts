@@ -17,7 +17,6 @@ import type {
   MashupStatusResponse,
 } from "./types"
 import { parseApiDetail, parseApiErrorResponse } from "@/lib/api/parse-detail"
-import { getFastapiBase } from "@/lib/fastapi-base"
 
 const JSON_HEADERS = { "Content-Type": "application/json" }
 const FETCH_INIT: RequestInit = { credentials: "include" }
@@ -25,12 +24,6 @@ const FETCH_INIT: RequestInit = { credentials: "include" }
 async function readError(res: Response, fallback: string): Promise<never> {
   const data = (await res.json().catch(() => ({}))) as { detail?: unknown }
   throw new Error(parseApiErrorResponse(res.status, data, fallback))
-}
-
-async function fastapiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const base = getFastapiBase()
-  if (!base) throw new Error("请配置 NEXT_PUBLIC_FASTAPI_URL")
-  return fetch(`${base}${path}`, { credentials: "include", ...init })
 }
 
 export type ExtractCopyRequest = { url: string; platform?: string }
@@ -174,7 +167,8 @@ export async function cancelMashup(taskId: string): Promise<void> {
 export async function startCopyExtraction(
   req: ExtractCopyRequest,
 ): Promise<ExtractCopyResponse> {
-  const res = await fastapiFetch("/api/copywriting/extract", {
+  const res = await fetch("/api/copywriting/extract", {
+    ...FETCH_INIT,
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(req),
@@ -187,8 +181,9 @@ export async function startCopyExtraction(
 export async function queryExtractStatus(
   taskId: string,
 ): Promise<ExtractCopyStatusResponse> {
-  const res = await fastapiFetch(
+  const res = await fetch(
     `/api/copywriting/extract/status?task_id=${encodeURIComponent(taskId)}`,
+    FETCH_INIT,
   )
   if (!res.ok) await readError(res, "查询提取状态失败")
   return (await res.json()) as ExtractCopyStatusResponse
@@ -200,6 +195,8 @@ export type AutoSubtitleRequest = {
   video_url?: string
   subtitle_format?: "ass" | "srt"
   merge_gap_ms?: number
+  /** 用户原文案；有则后端走 ASR 校对对齐 */
+  script?: string
 }
 
 export type AutoSubtitleResponse = {
