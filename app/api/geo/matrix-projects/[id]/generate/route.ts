@@ -1,6 +1,8 @@
+import crypto from "node:crypto"
+
 import { NextResponse } from "next/server"
 
-import { withAuth } from "@/lib/api/with-auth"
+import { withAuth, chargeCredit, chargeErrorResponse } from "@/lib/api/with-auth"
 import { getServerFastapiBase } from "@/lib/fastapi-base"
 import { generateMatrixConcurrent } from "@/lib/geo/matrix-generate"
 import type { LlmProviderId } from "@/lib/geo/llm/router"
@@ -77,6 +79,17 @@ async function handleGenerate(
     }
     if (platforms.length < 1) {
       return NextResponse.json({ error: "请至少选择一个平台" }, { status: 400 })
+    }
+
+    const refId = `geo-matrix:${projectId}:${crypto.randomUUID()}`
+    try {
+      await chargeCredit({
+        cookieHeader,
+        scene: "geo_matrix_gen",
+        refId,
+      })
+    } catch (e) {
+      return chargeErrorResponse(e)
     }
 
     let matrix

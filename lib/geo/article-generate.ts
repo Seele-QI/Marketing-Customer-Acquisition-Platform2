@@ -8,7 +8,6 @@ import {
 import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
 import {
   completeText,
-  isSonettoLlmProvider,
   type CompleteTextBilling,
   type LlmProviderId,
 } from "@/lib/geo/llm/router"
@@ -32,13 +31,12 @@ function billingFor(
   params: GenerateArticlesParams,
   jobId: string,
 ): CompleteTextBilling | undefined {
-  if (!isSonettoLlmProvider(params.provider) || params.userId == null) {
-    return undefined
-  }
+  if (params.userId == null || !params.cookieHeader) return undefined
   return {
     userId: params.userId,
     cookieHeader: params.cookieHeader,
     refIdPrefix: `geo-article:${params.batchId}:${jobId}`,
+    provider: params.provider,
   }
 }
 

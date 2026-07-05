@@ -33,15 +33,19 @@ import { getEnterpriseSkillEntry } from "@/lib/geo/skills-registry"
 import { downloadArticleMarkdown } from "@/lib/geo/article-export"
 import { parseMarkdownOutline } from "@/lib/geo/markdown-outline"
 import { scoreArticle } from "@/lib/geo/article-score-api"
+import { retryArticleGenerate } from "@/lib/geo/article-batch-api"
+import { buildRetryJob } from "@/lib/geo/article-batch-jobs"
+import { getMatrixProject } from "@/lib/geo/matrix-api"
 import { fileToBase64Parts } from "@/lib/image-base64"
 import {
+  getJobSnapshot,
   loadArticleBatch,
   mergeArticles,
   saveBatchConfig,
   upsertArticle,
   type ArticleBatchConfig,
 } from "@/lib/geo/article-batch-store"
-import type { GeneratedArticle } from "@/lib/geo/article-types"
+import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
 import { toast } from "@/hooks/use-toast"
 
 const ARTICLE_PROVIDER_KEY = "geo-article-llm-provider"
@@ -70,6 +74,7 @@ export function GeoArticleEditorView() {
   const [scores, setScores] = React.useState<GeoScores | null>(null)
   const [scoreSummary, setScoreSummary] = React.useState<string | null>(null)
   const [scoreLoading, setScoreLoading] = React.useState(false)
+  const [retryingJobIds, setRetryingJobIds] = React.useState<Set<string>>(new Set())
 
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -153,29 +158,43 @@ export function GeoArticleEditorView() {
     setArticles(next)
   }, [])
 
-  const handleJobError = React.useCallback((jobId: string, error: string) => {
+  const handleJobError = React.useCallback((jobId: string, error: string, meta?: Partial<GeneratedArticle>) => {
     setGridItems((prev) => {
       const pending = prev.find((i) => i.kind === "pending" && i.jobId === jobId)
-      if (!pending || pending.kind !== "pending") return prev
+      const fromArticle = prev.find(
+        (i) => i.kind === "article" && i.article.jobId === jobId,
+      )
+      const base =
+        pending && pending.kind === "pending"
+          ? pending
+          : fromArticle && fromArticle.kind === "article"
+            ? fromArticle.article
+            : null
+      if (!base) return prev
+
       const failed: GeneratedArticle = {
-        id: `failed-${jobId}`,
+        id: meta?.id ?? `failed-${jobId}`,
         jobId,
-        mode: "direction",
-        platformId: pending.platformId,
-        date: pending.date,
-        title: pending.title,
+        mode: meta?.mode ?? (fromArticle?.kind === "article" ? fromArticle.article.mode : "direction"),
+        platformId: meta?.platformId ?? ("platformId" in base ? base.platformId : ""),
+        date: meta?.date ?? ("date" in base ? base.date : undefined),
+        title: meta?.title ?? ("title" in base ? base.title : "生成失败"),
         markdown: "",
         status: "failed",
         error,
-        createdAt: Date.now(),
+        createdAt: meta?.createdAt ?? Date.now(),
       }
       mergeArticles([failed])
       setArticles((a) => {
-        const exists = a.some((x) => x.jobId === jobId)
-        return exists ? a : [...a, failed]
+        const filtered = a.filter((x) => x.jobId !== jobId)
+        return [...filtered, failed]
       })
       return [
-        ...prev.filter((i) => !(i.kind === "pending" && i.jobId === jobId)),
+        ...prev.filter(
+          (i) =>
+            !(i.kind === "pending" && i.jobId === jobId) &&
+            !(i.kind === "article" && i.article.jobId === jobId),
+        ),
         { kind: "article", article: failed },
       ]
     })
@@ -184,6 +203,94 @@ export function GeoArticleEditorView() {
   const handleBatchComplete = React.useCallback((config: ArticleBatchConfig) => {
     saveBatchConfig(config)
   }, [])
+
+  const resolveRetryJob = React.useCallback(
+    async (article: GeneratedArticle): Promise<ArticleJob> => {
+      const snapshot = getJobSnapshot(article.jobId)
+      if (snapshot) return snapshot
+
+      const { lastConfig } = loadArticleBatch()
+      if (!lastConfig) {
+        throw new Error("缺少批次配置，请重新发起批量创作")
+      }
+
+      let project = null
+      if (lastConfig.mode === "matrix" && lastConfig.projectId) {
+        project = await getMatrixProject(lastConfig.projectId)
+      }
+
+      return buildRetryJob({
+        jobId: article.jobId,
+        mode: article.mode,
+        platformId: article.platformId,
+        date: article.date,
+        title: article.title,
+        direction: lastConfig.direction,
+        project,
+      })
+    },
+    [],
+  )
+
+  const handleRetryArticle = React.useCallback(
+    async (article: GeneratedArticle) => {
+      if (retryingJobIds.has(article.jobId)) return
+
+      let job: ArticleJob
+      try {
+        job = await resolveRetryJob(article)
+      } catch (e) {
+        toast({
+          title: e instanceof Error ? e.message : "无法重试",
+          variant: "destructive",
+        })
+        return
+      }
+
+      setRetryingJobIds((prev) => new Set(prev).add(article.jobId))
+
+      try {
+        const result = await retryArticleGenerate({
+          provider,
+          modelSkillId,
+          viralSkillIds,
+          enterpriseSnapshot,
+          job,
+        })
+
+        if (result.status === "success") {
+          handleArticleDone(result)
+          toast({ title: "重试成功" })
+        } else {
+          handleJobError(result.jobId, result.error ?? "重试失败", result)
+          toast({
+            title: result.error ?? "重试失败",
+            variant: "destructive",
+          })
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "重试失败"
+        handleJobError(article.jobId, message, article)
+        toast({ title: message, variant: "destructive" })
+      } finally {
+        setRetryingJobIds((prev) => {
+          const next = new Set(prev)
+          next.delete(article.jobId)
+          return next
+        })
+      }
+    },
+    [
+      retryingJobIds,
+      resolveRetryJob,
+      provider,
+      modelSkillId,
+      viralSkillIds,
+      enterpriseSnapshot,
+      handleArticleDone,
+      handleJobError,
+    ],
+  )
 
   const runScore = React.useCallback(async () => {
     if (!markdown.trim()) {
@@ -386,7 +493,9 @@ export function GeoArticleEditorView() {
           <GeoArticleDocGrid
             items={gridItems}
             activeArticleId={activeArticleId}
+            retryingJobIds={retryingJobIds}
             onSelect={handleSelectArticle}
+            onRetry={(article) => void handleRetryArticle(article)}
           />
         </div>
       ) : step === 4 ? (

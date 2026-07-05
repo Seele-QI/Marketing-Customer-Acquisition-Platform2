@@ -1,7 +1,6 @@
 import { buildSkillContextBlock } from "@/lib/geo/build-skill-context"
 import {
   completeText,
-  isSonettoLlmProvider,
   type CompleteTextBilling,
   type LlmProviderId,
 } from "@/lib/geo/llm/router"
@@ -52,10 +51,7 @@ ${prompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     system,
     user: userWithSkills,
     maxTokens: 2048,
-    billing:
-      isSonettoLlmProvider(provider) && input.billing
-        ? { ...input.billing, refIdPrefix: input.billing.refIdPrefix || "geo-probe" }
-        : undefined,
+    billing: undefined,
   })
 
   let parsed: Record<string, unknown>
@@ -91,7 +87,7 @@ ${prompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     provider === "gpt"
       ? "gpt-5.5"
       : provider === "claude"
-        ? "claude-opus"
+        ? "claude-opus-4-8"
         : provider
 
   return {

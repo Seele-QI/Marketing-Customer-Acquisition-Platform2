@@ -1,4 +1,4 @@
-import type { GeneratedArticle } from "@/lib/geo/article-types"
+import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
 
 export const ARTICLE_BATCH_STORAGE_KEY = "geo-article-batch-v1"
 
@@ -13,6 +13,7 @@ export type ArticleBatchConfig = {
 export type ArticleBatchStore = {
   articles: GeneratedArticle[]
   lastConfig?: ArticleBatchConfig
+  jobSnapshots?: Record<string, ArticleJob>
   updatedAt: number
 }
 
@@ -27,6 +28,10 @@ function readStore(): ArticleBatchStore {
     return {
       articles: Array.isArray(parsed.articles) ? parsed.articles : [],
       lastConfig: parsed.lastConfig,
+      jobSnapshots:
+        parsed.jobSnapshots && typeof parsed.jobSnapshots === "object"
+          ? (parsed.jobSnapshots as Record<string, ArticleJob>)
+          : undefined,
       updatedAt: parsed.updatedAt ?? 0,
     }
   } catch {
@@ -86,4 +91,17 @@ export function removeArticle(id: string): GeneratedArticle[] {
 export function saveBatchConfig(config: ArticleBatchConfig): void {
   const store = readStore()
   writeStore({ ...store, lastConfig: config, updatedAt: Date.now() })
+}
+
+export function saveJobSnapshots(snapshots: Record<string, ArticleJob>): void {
+  const store = readStore()
+  writeStore({
+    ...store,
+    jobSnapshots: { ...store.jobSnapshots, ...snapshots },
+    updatedAt: Date.now(),
+  })
+}
+
+export function getJobSnapshot(jobId: string): ArticleJob | undefined {
+  return readStore().jobSnapshots?.[jobId]
 }

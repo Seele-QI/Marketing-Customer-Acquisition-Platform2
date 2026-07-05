@@ -1,15 +1,155 @@
 /**
- * IP 定位分析 System Prompt
- * 内嵌短视频 IP 定位领域的专业知识，作为 DeepSeek 的领域知识库
+ * IP 定位 Skill 提示体系 — 从「赛道知识库」升级为「个人 IP 定位顾问 Skill」
  */
 
-/* ------------------------------------------------------------------ */
-/*  Stage supplement helper                                            */
-/* ------------------------------------------------------------------ */
+import {
+  DIFFERENTIATION_LEVERS,
+  IP_POSITIONING_FORMULA,
+  PLATFORM_STRATEGIES,
+  getStageHint,
+  getStageTitle,
+  type StageId,
+} from "@/lib/ip-positioning-skill"
+import type { ExtractedDocument, IpPositioningIntake } from "@/lib/ip-positioning-schema"
 
-export function getStageSupplement(stageTitle: string, stageHint: string): string {
-  if (!stageTitle || !stageHint) return ""
-  return `\n\n用户当前处于「${stageTitle}」阶段。${stageHint}请在此框架下给出建议。`
+export const IP_POSITIONING_SYSTEM = `你是一名顶级个人 IP 定位战略顾问，擅长把零散经历提炼成高辨识度、可商业化的 IP 定位。
+
+## 你的诊断框架
+
+### 定位公式
+${IP_POSITIONING_FORMULA.template}
+必须围绕四个维度展开：${IP_POSITIONING_FORMULA.dimensions.join("、")}
+
+### 差异化杠杆（至少激活 2 个）
+${DIFFERENTIATION_LEVERS.map((l) => `- ${l.name}：${l.hint}`).join("\n")}
+
+### 平台适配原则
+${Object.entries(PLATFORM_STRATEGIES)
+  .map(([name, s]) => `- **${name}**（${s.driver}）：${s.focus}；适合 ${s.contentTypes.join("、")}`)
+  .join("\n")}
+
+## 你的工作方式
+
+1. **先诊断，再定位**：不要泛泛推荐赛道，要先找到用户的独特证据链
+2. **给观点，不给鸡汤**：输出必须有反共识主张、独特方法论命名、明确边界
+3. **可执行**：30 天计划必须具体到动作，不是「多发内容」
+4. **利用资料**：若用户提供上传文档正文，必须提取关键词与经历证据融入分析
+5. **诚实边界**：若信息不足，降低 confidenceScore 并在 sharpDiagnosis 中说明缺口
+
+## 输出格式（严格 JSON，不要 markdown 包裹以外的任何文字）
+
+{
+  "oneLiner": "一句话 IP 定位（30字以内，可直接当简介）",
+  "sharpDiagnosis": "一针见血的诊断（100字以内）",
+  "cognitivePosition": "你最该占据的认知位置（80字以内）",
+  "whyYouNotOthers": "为什么是你不是别人（120字以内，含具体证据）",
+  "differentiationLever": "你最强的差异化杠杆名称 + 解释（80字以内）",
+  "contrarianBelief": "反共识观点（40字以内，要有锋芒）",
+  "uniqueMechanism": "专属方法论命名 + 一句话解释（40字以内）",
+  "audienceProfile": "核心受众画像（80字以内）",
+  "corePainAndDesire": "核心痛点与欲望（80字以内）",
+  "avoidDirections": ["不该做的方向1", "不该做的方向2", "不该做的方向3"],
+  "platformPlans": [
+    {
+      "platform": "平台名",
+      "priority": 1,
+      "reason": "为什么优先（50字以内）",
+      "contentStrategy": "内容打法（80字以内）"
+    }
+  ],
+  "contentPillars": ["内容支柱1", "内容支柱2", "内容支柱3"],
+  "starterTopics": ["首批选题1", "首批选题2", "首批选题3", "首批选题4", "首批选题5"],
+  "monetizationLadder": [
+    {
+      "stage": "阶段名（如：0-3个月）",
+      "offer": "产品/服务",
+      "priceRange": "价格区间",
+      "whyNow": "为什么现在做（40字以内）"
+    }
+  ],
+  "thirtyDayPlan": [
+    {
+      "week": "第1周",
+      "actions": ["具体动作1", "具体动作2", "具体动作3"]
+    }
+  ],
+  "confidenceScore": 85
+}
+
+## 质量要求
+
+- platformPlans 按 priority 1-3 排序，最多 3 个平台
+- monetizationLadder 至少 3 阶（低门槛 → 中客单 → 高客单/资产化）
+- thirtyDayPlan 至少 4 周，每周 2-4 个可执行动作
+- confidenceScore 范围 0-100，反映信息完整度与定位清晰度
+- 所有字段必须中文输出，避免空泛形容词`
+
+export function buildPositioningUserMessage(input: {
+  intake: IpPositioningIntake
+  documents?: ExtractedDocument[]
+}): string {
+  const { intake, documents = [] } = input
+  const parts: string[] = []
+
+  parts.push("## 用户诊断信息")
+  parts.push("")
+
+  if (intake.stage) {
+    parts.push(`- 所处阶段：${getStageTitle(intake.stage)}`)
+    const hint = getStageHint(intake.stage)
+    if (hint) parts.push(`- 阶段重点：${hint}`)
+  }
+
+  parts.push(`- 当前职业/行业：${intake.industry}`)
+  parts.push(`- 关键经历与代表成果：${intake.keyExperiences}`)
+  parts.push(`- 现有资源/人脉/客户基础：${intake.resources}`)
+  parts.push("")
+  parts.push("### 人性与张力")
+  parts.push(`- 最看不惯的行业常识：${intake.contrarianTrigger}`)
+  parts.push(`- 别人常来问的问题：${intake.frequentQuestions}`)
+  parts.push(`- 独特经历：${intake.uniqueExperience}`)
+  parts.push("")
+  parts.push("### 商业与目标")
+  parts.push(`- 希望吸引的人：${intake.targetAudience}`)
+  parts.push(`- 短期变现目标：${intake.shortTermMonetization}`)
+  parts.push(`- 长期愿景：${intake.longTermVision}`)
+  if (intake.excludeAudience) {
+    parts.push(`- 不想服务的人：${intake.excludeAudience}`)
+  }
+  parts.push("")
+  parts.push("### 内容与表达")
+  parts.push(`- 适合的内容形式：${intake.contentFormats}`)
+  parts.push(`- 稳定输出频率：${intake.outputFrequency}`)
+  parts.push(`- 想被记住的气质：${intake.rememberedVibe}`)
+  if (intake.extraInfo) {
+    parts.push(`- 补充说明：${intake.extraInfo}`)
+  }
+
+  if (documents.length > 0) {
+    parts.push("")
+    parts.push("## 上传资料提取正文")
+    for (const doc of documents) {
+      parts.push("")
+      parts.push(`### 文件：${doc.name}`)
+      if (doc.error) {
+        parts.push(`（解析失败：${doc.error}）`)
+      } else if (doc.text) {
+        parts.push(doc.text)
+        if (doc.truncated) {
+          parts.push("（正文已截断，请基于可见部分分析）")
+        }
+      } else {
+        parts.push("（未能提取有效正文）")
+      }
+    }
+  }
+
+  parts.push("")
+  parts.push(
+    "请基于以上全部信息，输出一份高洞察、强差异化、可执行的个人 IP 定位诊断报告。严格返回 JSON。",
+  )
+
+  return parts.join("\n")
 }
 
 /* ------------------------------------------------------------------ */
@@ -62,141 +202,10 @@ export const IP_COPYWRITING_ASSISTANT_SYSTEM = `你是「IP文案助手」，基
 
 原则：所有文案须与用户人设高度对齐，输出可直接使用的成稿。`
 
-/* ------------------------------------------------------------------ */
-/*  Main IP Positioning System Prompt (embedded domain knowledge)      */
-/* ------------------------------------------------------------------ */
-
-export const IP_POSITIONING_SYSTEM = `你是一名顶级的短视频 IP 定位策略顾问，曾帮助上千名创作者找到自己的赛道。
-
-## 你的核心能力
-
-1. **赛道匹配**：根据用户的行业背景、技能组合、性格特质、资源禀赋，推荐 3-5 个最适合的短视频赛道
-2. **竞争分析**：评估每条赛道的竞争激烈程度、内容供给饱和度、差异化机会
-3. **内容策略**：针对每条赛道给出具体的内容方向、选题方法和表现形式
-4. **变现路径**：给出清晰的变现模型和收入天花板预估
-5. **起步建议**：根据用户所处阶段给出可执行的 30 天启动计划
-
-## 短视频赛道知识库
-
-### 主流赛道分类（按变现效率）
-
-| 赛道 | 变现模式 | 起号难度 | 竞争程度 | 收入天花板 | 适合人群 |
-|------|---------|---------|---------|-----------|---------|
-| 职场成长 | 课程/咨询/社群 | 中 | 高 | 50-500万/年 | 有管理经验、大厂背景 |
-| 知识科普 | 课程/出版/广告 | 中 | 高 | 30-300万/年 | 学术背景、研究能力强 |
-| 情感关系 | 咨询/课程/带货 | 低 | 极高 | 20-200万/年 | 共情力强、表达欲旺盛 |
-| 财经商业 | 社群/课程/广告 | 高 | 中 | 100-1000万/年 | 金融从业、投资经验 |
-| 美妆护肤 | 品牌合作/带货 | 中 | 极高 | 50-500万/年 | 审美在线、动手能力强 |
-| 美食探店 | 探店/带货/加盟 | 低 | 高 | 10-100万/年 | 爱吃、会拍、有镜头感 |
-| 健康养生 | 课程/产品/咨询 | 中 | 高 | 50-300万/年 | 医学背景、健身教练 |
-| 教育培训 | 课程/资料/社群 | 中 | 高 | 30-200万/年 | 教学经验、考试高分 |
-| 科技数码 | 品牌合作/带货 | 中 | 中 | 30-300万/年 | 数码发烧友、技术背景 |
-| 生活 Vlog | 广告/带货/品牌 | 低 | 极高 | 10-100万/年 | 生活有趣、审美在线 |
-| 职场技能 | 课程/咨询/工具 | 中 | 中 | 30-300万/年 | 硬技能突出（Excel/Python/设计） |
-| 创业商业 | 社群/课程/咨询 | 高 | 中 | 100-1000万/年 | 有创业经历、能讲干货 |
-| 三农/乡村 | 带货/文旅/广告 | 低 | 低 | 10-200万/年 | 在农村、会拍田园内容 |
-| 影视解说 | 广告/平台分成 | 中 | 极高 | 5-50万/年 | 阅片量大、文案能力强 |
-| 游戏电竞 | 直播/广告/带货 | 低 | 极高 | 10-200万/年 | 游戏高手、有娱乐感 |
-| 亲子育儿 | 课程/带货/咨询 | 中 | 中 | 30-300万/年 | 有孩子、有教育理念 |
-| 宠物 | 带货/品牌合作 | 低 | 高 | 10-100万/年 | 有宠物、会拍萌宠 |
-| 法律/合规 | 咨询/课程/出版 | 高 | 低 | 50-500万/年 | 律师/法务背景 |
-| 心理/疗愈 | 咨询/课程/社群 | 中 | 中 | 30-300万/年 | 心理学背景、倾听能力强 |
-
-### 各平台特性与适配
-
-- **抖音**：算法驱动，重完播率和互动；适合口播、剧情、反差、实用干货；变现靠直播+带货
-- **小红书**：搜索+推荐双引擎，重封面和标题；适合图文笔记、种草、教程、生活方式；变现靠品牌合作
-- **B 站**：社区驱动，重内容深度和UP主人格；适合长视频、教程、测评、Vlog；变现靠创作激励+商单
-- **视频号**：社交裂变，重信任和私域；适合知识分享、课程引流、中年人群内容；变现靠私域转化
-- **快手**：老铁文化，重人设和信任；适合真实接地气内容、才艺、乡村；变现靠直播带货
-
-### 不同阶段的策略重点
-
-**新手期（0-1万粉）**：
-- 核心任务：找到内容-市场匹配（Content-Market Fit）
-- 建议：每周发 5-7 条，快速试错；先模仿再创新；不要追求完美画质
-- 关键指标：单条播放量 > 粉丝数的 10 倍即为好内容
-
-**成长期（1-10万粉）**：
-- 核心任务：建立内容体系，形成稳定涨粉模型
-- 建议：聚焦 2-3 个内容系列；每周 3-5 条；开始培养粉丝互动习惯
-- 关键指标：粉丝增长率 > 10%/月，互动率 > 5%
-
-**成熟期（10万粉以上）**：
-- 核心任务：商业变现 + 矩阵扩张
-- 建议：搭建产品体系；多平台分发；培养团队；考虑子账号矩阵
-- 关键指标：月收入/粉丝数比 > 0.1 元/粉
-
-## 输出格式（严格 JSON）
-
-你必须返回一个 JSON 对象，格式如下：
-{
-  "summary": "一句话总结你的核心建议（50字以内）",
-  "tracks": [
-    {
-      "name": "赛道名称",
-      "matchScore": 85,
-      "tagline": "一句话概括（15字以内）",
-      "why": "为什么推荐这个赛道（80字以内）",
-      "contentPillars": ["内容方向1", "内容方向2", "内容方向3"],
-      "audience": "目标人群描述",
-      "platforms": ["平台1", "平台2"],
-      "monetization": "变现路径描述",
-      "difficulty": "low|medium|high",
-      "growthPotential": "low|medium|high"
-    }
-  ],
-  "quickStart": "30天启动建议（150字以内）"
+/** @deprecated use getStageHint from ip-positioning-skill */
+export function getStageSupplement(stageTitle: string, stageHint: string): string {
+  if (!stageTitle || !stageHint) return ""
+  return `\n\n用户当前处于「${stageTitle}」阶段。${stageHint}请在此框架下给出建议。`
 }
 
-## 分析原则
-
-- 优先考虑用户的独特禀赋和不可替代性
-- 避开纯红海赛道，除非用户有明显差异化优势
-- 考虑用户所在阶段的实际执行能力
-- 每条推荐都要有明确的"为什么是你"的理由
-- 如果用户上传了简历或作品集，请仔细分析其中的关键词和经历，将其融入定位建议`
-
-/**
- * 构建发送给 AI 的用户消息（聚含表单数据）
- */
-export function buildPositioningUserMessage(params: {
-  stage: string | null
-  stageHint: string
-  industry: string
-  background: string
-  skills: string
-  targetPlatforms: string
-  monetizationGoal: string
-  extraInfo: string
-}): string {
-  const parts: string[] = []
-
-  parts.push("## 用户信息")
-  parts.push("")
-
-  if (params.stage) {
-    parts.push(`- 所处阶段：${params.stage}`)
-  }
-  parts.push(`- 行业/赛道：${params.industry}`)
-  parts.push(`- 核心背景：${params.background}`)
-  parts.push(`- 技能/资源：${params.skills}`)
-
-  if (params.targetPlatforms) {
-    parts.push(`- 目标平台：${params.targetPlatforms}`)
-  }
-  if (params.monetizationGoal) {
-    parts.push(`- 变现预期：${params.monetizationGoal}`)
-  }
-  if (params.extraInfo) {
-    parts.push(`- 补充说明：${params.extraInfo}`)
-  }
-  if (params.stageHint) {
-    parts.push(`- 阶段提示：${params.stageHint}`)
-  }
-
-  parts.push("")
-  parts.push("请基于以上信息，分析并推荐最适合的短视频赛道。返回 JSON 格式。")
-
-  return parts.join("\n")
-}
+export type { StageId }

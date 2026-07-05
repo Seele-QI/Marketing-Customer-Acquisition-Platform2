@@ -27,6 +27,13 @@ export async function listMatrixProjects(): Promise<MatrixProject[]> {
   return data.projects ?? []
 }
 
+export async function getMatrixProject(id: string): Promise<MatrixProject | null> {
+  const resp = await fetch(`/api/geo/matrix-projects/${id}`, { credentials: "include" })
+  if (resp.status === 404) return null
+  const data = await parseJson<{ project?: MatrixProject }>(resp, "加载项目失败")
+  return data.project ?? null
+}
+
 export async function createMatrixProject(name: string): Promise<MatrixProject> {
   const resp = await fetch("/api/geo/matrix-projects", {
     method: "POST",

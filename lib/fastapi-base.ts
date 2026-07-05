@@ -46,6 +46,28 @@ export function getServerFastapiBase(): string {
   return DEV_FASTAPI_DEFAULT
 }
 
+/** Node fetch(undici) 不支持转发的 hop-by-hop / 特殊请求头 */
+const PROXY_STRIP_HEADERS = [
+  "host",
+  "connection",
+  "keep-alive",
+  "proxy-connection",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+  "expect",
+  "content-length",
+] as const
+
+function buildProxyHeaders(req: Request): Headers {
+  const headers = new Headers(req.headers)
+  for (const name of PROXY_STRIP_HEADERS) {
+    headers.delete(name)
+  }
+  return headers
+}
+
 export async function proxyToFastapi(req: Request, path: string): Promise<Response> {
   const base = getServerFastapiBase()
   if (!base) {
@@ -57,9 +79,7 @@ export async function proxyToFastapi(req: Request, path: string): Promise<Respon
     )
   }
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
-  const headers = new Headers(req.headers)
-  headers.delete("host")
-  headers.delete("connection")
+  const headers = buildProxyHeaders(req)
   const init: RequestInit = {
     method: req.method,
     headers,
@@ -68,9 +88,73 @@ export async function proxyToFastapi(req: Request, path: string): Promise<Respon
   if (req.method !== "GET" && req.method !== "HEAD") {
     init.body = await req.text()
   }
-  const upstream = await fetch(url, init)
-  const respHeaders = new Headers(upstream.headers)
-  return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+  // #region agent log
+  fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
+    body: JSON.stringify({
+      sessionId: "c48468",
+      runId: "pre-fix",
+      hypothesisId: "A",
+      location: "lib/fastapi-base.ts:proxyToFastapi",
+      message: "proxy request",
+      data: { method: req.method, path, hasExpect: req.headers.has("expect") },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {})
+  // #endregion
+  try {
+    const upstream = await fetch(url, init)
+    const respHeaders = new Headers(upstream.headers)
+    // #region agent log
+    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
+      body: JSON.stringify({
+        sessionId: "c48468",
+        runId: "pre-fix",
+        hypothesisId: "A",
+        location: "lib/fastapi-base.ts:proxyToFastapi",
+        message: "proxy upstream ok",
+        data: { path, status: upstream.status },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {})
+    // #endregion
+    return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+  } catch (err) {
+    const cause =
+      err instanceof Error && "cause" in err && err.cause instanceof Error
+        ? err.cause.message
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    // #region agent log
+    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
+      body: JSON.stringify({
+        sessionId: "c48468",
+        runId: "pre-fix",
+        hypothesisId: "B",
+        location: "lib/fastapi-base.ts:proxyToFastapi",
+        message: "proxy fetch failed",
+        data: { path, cause },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {})
+    // #endregion
+    return new Response(
+      JSON.stringify({
+        detail: {
+          code: "FASTAPI_PROXY_FAILED",
+          message: "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）",
+          cause,
+        },
+      }),
+      { status: 503, headers: { "Content-Type": "application/json" } },
+    )
+  }
 }
 
 /** 转发 multipart/form-data（manual-upload 等）。 */
@@ -85,10 +169,7 @@ export async function proxyMultipartToFastapi(req: Request, path: string): Promi
     )
   }
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
-  const headers = new Headers(req.headers)
-  headers.delete("host")
-  headers.delete("connection")
-  headers.delete("content-length")
+  const headers = buildProxyHeaders(req)
   const formData = await req.formData()
   const upstream = await fetch(url, {
     method: req.method,

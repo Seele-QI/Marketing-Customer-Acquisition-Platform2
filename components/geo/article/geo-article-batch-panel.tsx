@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select"
 import {
   ARTICLE_BATCH_MAX_JOBS,
+  alignJobSnapshots,
   expandDirectionJobs,
   expandMatrixJobs,
   listMatrixDates,
@@ -23,8 +24,8 @@ import { listMatrixProjects } from "@/lib/geo/matrix-api"
 import type { MatrixProject } from "@/lib/geo/matrix-types"
 import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { startBatchGenerate } from "@/lib/geo/article-batch-api"
-import type { ArticleBatchConfig } from "@/lib/geo/article-batch-store"
-import type { BatchGenerateEvent, GeneratedArticle } from "@/lib/geo/article-types"
+import { saveJobSnapshots, type ArticleBatchConfig } from "@/lib/geo/article-batch-store"
+import type { ArticleJob, BatchGenerateEvent, GeneratedArticle } from "@/lib/geo/article-types"
 import { toast } from "@/hooks/use-toast"
 
 type Props = {
@@ -64,6 +65,7 @@ export function GeoArticleBatchPanel({
   const [previewCount, setPreviewCount] = React.useState<number | null>(null)
   const [previewSkipped, setPreviewSkipped] = React.useState(0)
   const [previewError, setPreviewError] = React.useState<string | null>(null)
+  const localJobsRef = React.useRef<ArticleJob[]>([])
 
   const selectedProject = React.useMemo(
     () => projects.find((p) => p.id === projectId) ?? null,
@@ -177,24 +179,29 @@ export function GeoArticleBatchPanel({
     }
 
     let jobMetas: { jobId: string; title: string; platformId: string; date?: string }[] = []
+    let expandedJobs: ArticleJob[] = []
     try {
       if (mode === "direction") {
-        jobMetas = expandDirectionJobs({
+        const expanded = expandDirectionJobs({
           mode: "direction",
           direction: direction.trim(),
           platformIds,
-        }).jobs.map((j) => ({
+        })
+        expandedJobs = expanded.jobs
+        jobMetas = expanded.jobs.map((j) => ({
           jobId: j.jobId,
           title: j.title,
           platformId: j.platformId,
         }))
       } else if (selectedProject) {
-        jobMetas = expandMatrixJobs({
+        const expanded = expandMatrixJobs({
           mode: "matrix",
           project: selectedProject,
           dates: selectedDates,
           platformIds,
-        }).jobs.map((j) => ({
+        })
+        expandedJobs = expanded.jobs
+        jobMetas = expanded.jobs.map((j) => ({
           jobId: j.jobId,
           title: j.title,
           platformId: j.platformId,
@@ -208,6 +215,8 @@ export function GeoArticleBatchPanel({
       })
       return
     }
+
+    localJobsRef.current = expandedJobs
 
     onGeneratingChange(true)
     onProgress(0, jobMetas.length)
@@ -231,6 +240,7 @@ export function GeoArticleBatchPanel({
           onEvent: (event: BatchGenerateEvent) => {
             if (event.type === "batch_start") {
               onBatchStart(event.jobs)
+              saveJobSnapshots(alignJobSnapshots(localJobsRef.current, event.jobs))
               total = event.total
               onProgress(0, total)
             }

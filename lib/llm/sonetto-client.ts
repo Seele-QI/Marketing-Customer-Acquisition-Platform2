@@ -2,23 +2,26 @@ import { getSonettoModel, type SonettoProvider } from "@/lib/llm/model-registry"
 import { parseOpenAiUsage, type LlmUsage } from "@/lib/llm/pricing"
 import { readServerEnv } from "@/lib/server-env"
 
-const DEFAULT_SONETTO_BASE = "https://tok.sonetto.top/v1"
+const DEFAULT_NEWAPI_BASE = "https://www.aicost.xyz"
+
+export type SonettoContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
 
 export type SonettoMessage = {
   role: "system" | "user" | "assistant"
-  content: string
+  content: string | SonettoContentPart[]
 }
 
 export type SonettoChatResult =
   | { ok: true; text: string; usage: LlmUsage | null }
   | { ok: false; status: number; detail: string }
 
-function normalizeSonettoBaseUrl(raw: string): string {
-  let t = (raw || DEFAULT_SONETTO_BASE).trim().replace(/\/+$/, "")
+function normalizeNewApiBaseUrl(raw: string): string {
+  let t = (raw || DEFAULT_NEWAPI_BASE).trim().replace(/\/+$/, "")
   if (t.endsWith("/chat/completions")) {
     t = t.slice(0, -"/chat/completions".length).replace(/\/+$/, "")
   }
-  // 确保带 /v1
   if (!/\/v\d+$/i.test(t)) {
     t = `${t}/v1`
   }
@@ -26,10 +29,16 @@ function normalizeSonettoBaseUrl(raw: string): string {
 }
 
 export function getSonettoBaseUrl(): string {
-  return normalizeSonettoBaseUrl(readServerEnv("SONETTO_BASE_URL") || DEFAULT_SONETTO_BASE)
+  const raw =
+    readServerEnv("NEWAPI_BASE_URL") ||
+    readServerEnv("SONETTO_BASE_URL") ||
+    DEFAULT_NEWAPI_BASE
+  return normalizeNewApiBaseUrl(raw)
 }
 
 export function getSonettoApiKey(provider: SonettoProvider): string {
+  const unified = readServerEnv("NEWAPI_KEY")
+  if (unified) return unified
   if (provider === "sonetto_gpt") return readServerEnv("SONETTO_GPT_API_KEY")
   return readServerEnv("SONETTO_CLAUDE_API_KEY")
 }
@@ -38,11 +47,12 @@ export function isSonettoProviderConfigured(provider: SonettoProvider): boolean 
   return Boolean(getSonettoApiKey(provider))
 }
 
-/** 南 tok 300s 限 → 默认 280s；北 new 1200s → 若 base 含 new. 则 1100s */
+/** aicost / NewAPI 默认 280s；可通过 NEWAPI_TIMEOUT_MS 覆盖 */
 export function sonettoTimeoutMs(): number {
-  const base = getSonettoBaseUrl()
-  if (base.includes("new.sonetto") || base.includes("new2.sonetto")) {
-    return 1_100_000
+  const raw = readServerEnv("NEWAPI_TIMEOUT_MS") || readServerEnv("SONETTO_TIMEOUT_MS")
+  if (raw) {
+    const n = Number(raw)
+    if (Number.isFinite(n) && n > 0) return n
   }
   return 280_000
 }
@@ -52,6 +62,7 @@ export async function sonettoChatCompletion(input: {
   messages: SonettoMessage[]
   maxTokens?: number
   timeoutMs?: number
+  temperature?: number
 }): Promise<SonettoChatResult> {
   const model = getSonettoModel(input.modelId)
   if (!model) {
@@ -62,10 +73,7 @@ export async function sonettoChatCompletion(input: {
     return {
       ok: false,
       status: 503,
-      detail:
-        model.provider === "sonetto_gpt"
-          ? "未配置 SONETTO_GPT_API_KEY"
-          : "未配置 SONETTO_CLAUDE_API_KEY",
+      detail: "未配置 NEWAPI_KEY（或 SONETTO_GPT_API_KEY / SONETTO_CLAUDE_API_KEY）",
     }
   }
 
@@ -85,6 +93,7 @@ export async function sonettoChatCompletion(input: {
         messages: input.messages,
         stream: false,
         ...(input.maxTokens != null ? { max_tokens: input.maxTokens } : {}),
+        ...(input.temperature != null ? { temperature: input.temperature } : {}),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -94,7 +103,7 @@ export async function sonettoChatCompletion(input: {
       return {
         ok: false,
         status: res.status >= 400 && res.status < 600 ? res.status : 502,
-        detail: `Sonetto 报错: ${raw.slice(0, 8000)}`,
+        detail: `NewAPI 报错: ${raw.slice(0, 8000)}`,
       }
     }
 
@@ -105,17 +114,17 @@ export async function sonettoChatCompletion(input: {
     try {
       data = JSON.parse(raw) as typeof data
     } catch {
-      return { ok: false, status: 502, detail: "Sonetto 返回非 JSON" }
+      return { ok: false, status: 502, detail: "NewAPI 返回非 JSON" }
     }
 
     const text = data.choices?.[0]?.message?.content
     if (typeof text !== "string") {
-      return { ok: false, status: 502, detail: "Sonetto 响应缺少正文" }
+      return { ok: false, status: 502, detail: "NewAPI 响应缺少正文" }
     }
     return { ok: true, text, usage: parseOpenAiUsage(data.usage) }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return { ok: false, status: 502, detail: `调用 Sonetto 失败: ${msg}` }
+    return { ok: false, status: 502, detail: `调用 NewAPI 失败: ${msg}` }
   }
 }
 
@@ -141,10 +150,7 @@ export function buildSonettoStreamRequest(input: {
     return {
       ok: false,
       status: 503,
-      detail:
-        model.provider === "sonetto_gpt"
-          ? "未配置 SONETTO_GPT_API_KEY"
-          : "未配置 SONETTO_CLAUDE_API_KEY",
+      detail: "未配置 NEWAPI_KEY（或 SONETTO_GPT_API_KEY / SONETTO_CLAUDE_API_KEY）",
     }
   }
 

@@ -1,11 +1,11 @@
 import crypto from "node:crypto"
 
-import { chargeMeteredCredit, getCreditBalance } from "@/lib/api/with-auth"
+import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
+import { getCreditBalance } from "@/lib/api/with-auth"
 import {
-  estimateMaxCredits,
-  settleCredits,
-  type LlmUsage,
-} from "@/lib/llm/pricing"
+  DEFAULT_NEWAPI_CLAUDE_MODEL,
+  DEFAULT_NEWAPI_GPT_MODEL,
+} from "@/lib/llm/model-registry"
 import {
   isSonettoProviderConfigured,
   sonettoChatCompletion,
@@ -26,14 +26,14 @@ const DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 const KIMI_CHAT_URL = "https://api.moonshot.cn/v1/chat/completions"
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-const DEFAULT_SONETTO_GPT_MODEL = "gpt-5.5"
-const DEFAULT_SONETTO_CLAUDE_MODEL = "[kiro]claude-opus-4-7"
+const DEFAULT_SONETTO_GPT_MODEL = DEFAULT_NEWAPI_GPT_MODEL
+const DEFAULT_SONETTO_CLAUDE_MODEL = DEFAULT_NEWAPI_CLAUDE_MODEL
 
 export type CompleteTextBilling = {
   userId: number
   refIdPrefix?: string
-  /** 有则预检余额；无则仅在扣费时校验 */
   cookieHeader?: string
+  provider: LlmProviderId
 }
 
 export type CompleteTextParams = {
@@ -41,7 +41,6 @@ export type CompleteTextParams = {
   system: string
   user: string
   maxTokens?: number
-  /** 仅 gpt/claude（Sonetto）成功后计量扣费 */
   billing?: CompleteTextBilling
 }
 
@@ -59,9 +58,17 @@ export function isSonettoLlmProvider(id: LlmProviderId): boolean {
 
 export function sonettoModelIdForProvider(provider: "gpt" | "claude"): string {
   if (provider === "gpt") {
-    return readServerEnv("SONETTO_GPT_MODEL") || DEFAULT_SONETTO_GPT_MODEL
+    return (
+      readServerEnv("NEWAPI_GPT_MODEL") ||
+      readServerEnv("SONETTO_GPT_MODEL") ||
+      DEFAULT_SONETTO_GPT_MODEL
+    )
   }
-  return readServerEnv("SONETTO_CLAUDE_MODEL") || DEFAULT_SONETTO_CLAUDE_MODEL
+  return (
+    readServerEnv("NEWAPI_CLAUDE_MODEL") ||
+    readServerEnv("SONETTO_CLAUDE_MODEL") ||
+    DEFAULT_SONETTO_CLAUDE_MODEL
+  )
 }
 
 function isProviderConfigured(id: LlmProviderId): boolean {
@@ -93,8 +100,8 @@ export function listLlmProviders(): LlmProviderMeta[] {
     { id: "deepseek", label: "DeepSeek", envKeys: ["DEEPSEEK_API_KEY"] },
     { id: "doubao", label: "豆包 2.1", envKeys: ["ARK_API_KEY", "ARK_CHAT_MODEL"] },
     { id: "kimi", label: "Kimi", envKeys: ["KIMI_API_KEY"] },
-    { id: "gpt", label: "GPT-5.5", envKeys: ["SONETTO_GPT_API_KEY"] },
-    { id: "claude", label: "Claude Opus", envKeys: ["SONETTO_CLAUDE_API_KEY"] },
+    { id: "gpt", label: "GPT-5.5", envKeys: ["NEWAPI_KEY", "SONETTO_GPT_API_KEY"] },
+    { id: "claude", label: "Claude Opus 4.8", envKeys: ["NEWAPI_KEY", "SONETTO_CLAUDE_API_KEY"] },
     { id: "gemini", label: "Gemini", envKeys: ["GEMINI_API_KEY"] },
   ]
   return defs.map((d) => ({ ...d, configured: isProviderConfigured(d.id) }))
@@ -137,7 +144,6 @@ async function completeDeepSeek(system: string, user: string, maxTokens: number)
   return parseChatCompletionText(res)
 }
 
-/** 豆包：优先 ARK_CHAT_MODEL（预置如 doubao-seed-2-1-pro），否则 ARK_ENDPOINT_ID */
 export function getArkChatModelId(): string {
   return (
     readServerEnv("ARK_CHAT_MODEL") ||
@@ -236,14 +242,12 @@ async function completeGemini(system: string, user: string, maxTokens: number): 
   return text
 }
 
-type SonettoCompleteResult = { text: string; usage: LlmUsage | null; modelId: string }
-
 async function completeSonetto(
   provider: "gpt" | "claude",
   system: string,
   user: string,
   maxTokens: number,
-): Promise<SonettoCompleteResult> {
+): Promise<string> {
   const modelId = sonettoModelIdForProvider(provider)
   const result = await sonettoChatCompletion({
     modelId,
@@ -258,43 +262,45 @@ async function completeSonetto(
     ;(err as Error & { statusCode?: number }).statusCode = result.status
     throw err
   }
-  return { text: result.text, usage: result.usage, modelId }
+  return result.text
 }
 
-async function settleSonettoBilling(opts: {
-  billing: CompleteTextBilling
-  modelId: string
-  system: string
-  user: string
-  maxTokens: number
-  usage: LlmUsage | null
-}): Promise<void> {
-  const inputText = `${opts.system}\n${opts.user}`
-  const estimate = estimateMaxCredits(opts.modelId, inputText, opts.maxTokens)
-  const costCredits = opts.usage
-    ? settleCredits(opts.modelId, opts.usage)
-    : estimate
+async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<void> {
+  if (!billing.cookieHeader) {
+    const err = new Error("缺少 cookieHeader，无法扣费")
+    ;(err as Error & { statusCode?: number }).statusCode = 500
+    throw err
+  }
 
-  const prefix = opts.billing.refIdPrefix || "geo-llm"
-  const refId = `${prefix}:${opts.billing.userId}:${crypto.randomBytes(8).toString("hex")}`
+  const need = estimateBillingCost("geo.article", { provider: billing.provider })
+  try {
+    const balance = await getCreditBalance(billing.cookieHeader)
+    if (balance < need) {
+      const err = new Error(`积分不足（需要 ${need}，当前 ${balance}）`)
+      ;(err as Error & { statusCode?: number }).statusCode = 402
+      throw err
+    }
+  } catch (e) {
+    if (e instanceof Error && (e as Error & { statusCode?: number }).statusCode === 402) {
+      throw e
+    }
+  }
+
+  const prefix = billing.refIdPrefix || "geo-article"
+  const refId = `${prefix}:${billing.userId}:${crypto.randomBytes(8).toString("hex")}`
 
   try {
-    await chargeMeteredCredit({
-      userId: opts.billing.userId,
-      cost: costCredits,
+    await chargeBillingEvent({
+      cookieHeader: billing.cookieHeader,
+      billingKey: "geo.article",
+      params: { provider: billing.provider },
       refId,
-      note: `GEO AI ${opts.modelId}`,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg === "INSUFFICIENT_CREDIT") {
       const err = new Error("积分不足")
       ;(err as Error & { statusCode?: number }).statusCode = 402
-      throw err
-    }
-    if (msg === "METERED_KEY_MISSING") {
-      const err = new Error("未配置 CREDIT_METERED_KEY，无法计量扣费")
-      ;(err as Error & { statusCode?: number }).statusCode = 503
       throw err
     }
     const err = new Error("扣费失败")
@@ -315,52 +321,31 @@ export async function completeText(params: CompleteTextParams): Promise<string> 
     throw err
   }
 
+  let text: string
   if (provider === "gpt" || provider === "claude") {
-    const modelId = sonettoModelIdForProvider(provider)
-
-    if (billing?.cookieHeader) {
-      const estimate = estimateMaxCredits(modelId, `${system}\n${user}`, maxTokens)
-      try {
-        const balance = await getCreditBalance(billing.cookieHeader)
-        if (balance < estimate) {
-          const err = new Error(`积分不足（需要约 ${estimate}，当前 ${balance}）`)
-          ;(err as Error & { statusCode?: number }).statusCode = 402
-          throw err
-        }
-      } catch (e) {
-        if (e instanceof Error && (e as Error & { statusCode?: number }).statusCode === 402) {
-          throw e
-        }
-        // 余额查询失败不阻断（扣费时仍会校验）
-      }
+    text = await completeSonetto(provider, system, user, maxTokens)
+  } else {
+    switch (provider) {
+      case "deepseek":
+        text = await completeDeepSeek(system, user, maxTokens)
+        break
+      case "doubao":
+        text = await completeDoubao(system, user, maxTokens)
+        break
+      case "kimi":
+        text = await completeKimi(system, user, maxTokens)
+        break
+      case "gemini":
+        text = await completeGemini(system, user, maxTokens)
+        break
+      default:
+        throw new Error(`未知 provider: ${provider}`)
     }
-
-    const { text, usage } = await completeSonetto(provider, system, user, maxTokens)
-
-    if (billing) {
-      await settleSonettoBilling({
-        billing,
-        modelId,
-        system,
-        user,
-        maxTokens,
-        usage,
-      })
-    }
-
-    return text
   }
 
-  switch (provider) {
-    case "deepseek":
-      return completeDeepSeek(system, user, maxTokens)
-    case "doubao":
-      return completeDoubao(system, user, maxTokens)
-    case "kimi":
-      return completeKimi(system, user, maxTokens)
-    case "gemini":
-      return completeGemini(system, user, maxTokens)
-    default:
-      throw new Error(`未知 provider: ${provider}`)
+  if (billing) {
+    await settleGeoArticleBilling({ ...billing, provider })
   }
+
+  return text
 }

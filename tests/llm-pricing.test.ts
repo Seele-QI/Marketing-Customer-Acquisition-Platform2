@@ -23,29 +23,21 @@ test("yuanToCredits applies 20% markup and ceil", () => {
   assert.equal(yuanToCredits(0), 1)
 })
 
-test("per_call aws claude costs 30 credits", () => {
+test("per_call claude-opus-4-8 costs 30 credits", () => {
   assert.equal(perCallCredits(0.25), 30)
-  assert.equal(settleCredits("[aws]claude-opus-4-8--25", null), 30)
-  assert.equal(settleCredits("[aws]claude-opus-4-7--25", null), 30)
+  assert.equal(settleCredits("claude-opus-4-8", null), 30)
 })
 
-test("gpt-5.4 token settle matches hand calculation", () => {
-  // 2000 in + 800 out: cost = 0.0015 + 0.0036 = 0.0051 → 1 credit
+test("gpt-5.5 token settle uses registry", () => {
+  // 2000 in + 800 out @ gpt-5.5: 0.003 + 0.0072 = 0.0102 → 2 credits
   assert.equal(
-    settleCredits("gpt-5.4", { promptTokens: 2000, completionTokens: 800 }),
-    1,
+    settleCredits("gpt-5.5", { promptTokens: 2000, completionTokens: 800 }),
+    2,
   )
 })
 
-test("kiro claude token settle matches hand calculation", () => {
-  // 10k in + 3k out: cost = 0.035 + 0.0525 = 0.0875 → 11 credits
-  assert.equal(
-    settleCredits("[kiro]claude-opus-4-7", {
-      promptTokens: 10_000,
-      completionTokens: 3_000,
-    }),
-    11,
-  )
+test("removed gpt-5.4 is unknown model", () => {
+  assert.throws(() => settleCredits("gpt-5.4", null), /未知/)
 })
 
 test("tokenCostYuan includes cache prices", () => {
@@ -74,15 +66,14 @@ test("estimateInputTokens treats CJK as one token", () => {
   assert.ok(estimateInputTokens("abcd") >= 1)
 })
 
-test("estimateMaxCredits for per_call is fixed", () => {
-  assert.equal(estimateMaxCredits("[aws]claude-opus-4-8--25", "任意长文本"), 30)
+test("estimateMaxCredits for per_call claude is fixed", () => {
+  assert.equal(estimateMaxCredits("claude-opus-4-8", "任意长文本"), 30)
 })
 
-test("estimateMaxCredits for token uses max_tokens ceiling", () => {
-  const est = estimateMaxCredits("gpt-5.4", "短", 1000)
+test("estimateMaxCredits for gpt-5.5 uses max_tokens ceiling", () => {
+  const est = estimateMaxCredits("gpt-5.5", "短", 1000)
   assert.ok(est >= 1)
-  // 1 prompt + 1000 completion on gpt-5.4: (1/1e6)*0.75 + (1000/1e6)*4.5 ≈ 0.0045 → 1
-  assert.equal(est, 1)
+  assert.equal(est, 2)
 })
 
 test("parseOpenAiUsage reads standard and cache fields", () => {

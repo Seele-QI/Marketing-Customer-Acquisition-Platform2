@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  alignJobSnapshots,
   ARTICLE_BATCH_MAX_JOBS,
+  buildRetryJob,
   expandDirectionJobs,
   expandMatrixJobs,
 } from "../lib/geo/article-batch-jobs.ts"
@@ -116,4 +118,32 @@ test("缺 cell 的 date+platform 计入 skipped", () => {
 
 test("ARTICLE_BATCH_MAX_JOBS 为 20", () => {
   assert.equal(ARTICLE_BATCH_MAX_JOBS, 20)
+})
+
+test("alignJobSnapshots 按序对齐服务端 jobId", () => {
+  const local = expandDirectionJobs({
+    mode: "direction",
+    direction: "测试方向",
+    platformIds: ["zhihu", "xiaohongshu"],
+  }).jobs
+  const server = [
+    { jobId: "srv-1", platformId: "zhihu" },
+    { jobId: "srv-2", platformId: "xiaohongshu" },
+  ]
+  const snapshots = alignJobSnapshots(local, server)
+  assert.equal(snapshots["srv-1"]?.brief, "测试方向")
+  assert.equal(snapshots["srv-2"]?.platformId, "xiaohongshu")
+})
+
+test("buildRetryJob 可从矩阵格重建任务", () => {
+  const job = buildRetryJob({
+    jobId: "retry-1",
+    mode: "matrix",
+    platformId: "zhihu",
+    date: "2026-07-01",
+    title: "知乎标题A",
+    project: SAMPLE_PROJECT,
+  })
+  assert.equal(job.brief, "方向A")
+  assert.equal(job.matrixMeta?.format, "长文")
 })

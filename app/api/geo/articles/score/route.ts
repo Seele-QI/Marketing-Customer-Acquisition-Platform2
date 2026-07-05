@@ -1,5 +1,3 @@
-import crypto from "node:crypto"
-
 import { NextResponse } from "next/server"
 
 import { withAuth } from "@/lib/api/with-auth"
@@ -7,7 +5,7 @@ import {
   buildArticleScoreSystemPrompt,
   buildArticleScoreUserPrompt,
 } from "@/lib/geo/article-score-prompt"
-import { completeText, isSonettoLlmProvider, type LlmProviderId } from "@/lib/geo/llm/router"
+import { completeText, type LlmProviderId } from "@/lib/geo/llm/router"
 import type { GeoScores } from "@/lib/geo/geo-scores"
 
 export const runtime = "nodejs"
@@ -86,8 +84,6 @@ async function handleScore(
       ? String(body.platformId)
       : null
 
-  const refHash = crypto.createHash("sha256").update(markdown.slice(0, 500)).digest("hex").slice(0, 12)
-
   try {
     const text = await completeText({
       provider,
@@ -99,14 +95,6 @@ async function handleScore(
         platformId,
       }),
       maxTokens: 1024,
-      billing:
-        isSonettoLlmProvider(provider) && userId != null
-          ? {
-              userId,
-              cookieHeader,
-              refIdPrefix: `geo-article-score:${userId}:${refHash}`,
-            }
-          : undefined,
     })
 
     let parsed: Record<string, unknown>

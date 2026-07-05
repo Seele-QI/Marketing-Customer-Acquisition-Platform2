@@ -28,6 +28,14 @@ export type GeneratedArticle = {
   createdAt: number
 }
 
+export type RetryArticleRequest = {
+  provider: string
+  modelSkillId?: string | null
+  viralSkillIds?: string[]
+  enterpriseSnapshot?: string | null
+  job: ArticleJob
+}
+
 export type BatchGenerateRequest = {
   provider: string
   modelSkillId?: string | null

@@ -101,6 +101,7 @@ export function GeoEntityPanel({ value, onChange, className }: GeoEntityPanelPro
       const res = await fetch("/api/geo/authority-link/fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ url }),
       })
       const json = (await res.json()) as {

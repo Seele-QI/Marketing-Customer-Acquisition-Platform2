@@ -1,5 +1,5 @@
 /**
- * Sonetto（Claude / ChatGPT）与固定价模型的注册表。
+ * NewAPI / aicost（Claude / ChatGPT）与固定价模型的注册表。
  * 密钥不在此文件；仅元数据与成本价（¥）。
  */
 
@@ -19,10 +19,12 @@ export type SonettoModelDef = {
   label: string
   provider: SonettoProvider
   billing: "token" | "per_call"
-  /** 按次：单次成本（¥） */
-  pricePerCallYuan?: number
+  /** UI 展示：单次扣费积分（实际扣费由 pricing registry 解析） */
+  costCredits?: number
   /** 按 Token：每 1M tokens 成本（¥） */
   tokenPricesYuan?: TokenPriceYuanPer1M
+  /** 按次：每次调用成本（¥） */
+  pricePerCallYuan?: number
 }
 
 export type FixedModelDef = {
@@ -36,6 +38,10 @@ export type FixedModelDef = {
 /** 豆包 2.1 预置推理模型 ID（火山方舟） */
 export const DOUBAO_SEED_21_MODEL_ID = "doubao-seed-2-1-pro-260628"
 
+/** 默认 NewAPI 模型 ID */
+export const DEFAULT_NEWAPI_GPT_MODEL = "gpt-5.5"
+export const DEFAULT_NEWAPI_CLAUDE_MODEL = "claude-opus-4-8"
+
 /** 1 积分 = ¥0.01；利润点 20% → 成本(¥) × 120 = 积分 */
 export const CREDIT_YUAN = 0.01
 export const PROFIT_MARGIN = 0.2
@@ -47,31 +53,20 @@ export const DEFAULT_MAX_TOKENS = 4096
 
 export const SONETTO_MODELS: readonly SonettoModelDef[] = [
   {
-    id: "gpt-5.5",
+    id: DEFAULT_NEWAPI_GPT_MODEL,
     label: "GPT-5.5",
     provider: "sonetto_gpt",
     billing: "token",
+    costCredits: 15,
     tokenPricesYuan: { input: 1.5, output: 9.0, cacheRead: 0.15 },
   },
   {
-    id: "gpt-5.4",
-    label: "GPT-5.4",
-    provider: "sonetto_gpt",
-    billing: "token",
-    tokenPricesYuan: { input: 0.75, output: 4.5, cacheRead: 0.075 },
-  },
-  // 当前 Sonetto Claude 渠道仅开通 kiro；aws 按次型号返回 model_not_found，不列入可选
-  {
-    id: "[kiro]claude-opus-4-7",
-    label: "Claude Opus 4.7",
+    id: DEFAULT_NEWAPI_CLAUDE_MODEL,
+    label: "Claude Opus 4.8",
     provider: "sonetto_claude",
-    billing: "token",
-    tokenPricesYuan: {
-      input: 3.5,
-      output: 17.5,
-      cacheRead: 0.35,
-      cacheCreate: 2.0,
-    },
+    billing: "per_call",
+    costCredits: 30,
+    pricePerCallYuan: 0.25,
   },
 ] as const
 
@@ -81,14 +76,14 @@ export const FIXED_CHAT_MODELS: readonly FixedModelDef[] = [
     label: "DeepSeek",
     provider: "deepseek",
     billing: "fixed",
-    costCredits: 3,
+    costCredits: 2,
   },
   {
     id: DOUBAO_SEED_21_MODEL_ID,
     label: "豆包 2.1",
     provider: "ark",
     billing: "fixed",
-    costCredits: 3,
+    costCredits: 2,
   },
 ] as const
 

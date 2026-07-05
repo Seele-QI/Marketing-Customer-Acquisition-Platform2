@@ -7,7 +7,7 @@ import { getServerFastapiBase } from "@/lib/fastapi-base"
 import { expandJobs } from "@/lib/geo/article-batch-jobs"
 import { generateArticlesConcurrent } from "@/lib/geo/article-generate"
 import type { BatchGenerateEvent } from "@/lib/geo/article-types"
-import { isSonettoLlmProvider, type LlmProviderId } from "@/lib/geo/llm/router"
+import type { LlmProviderId } from "@/lib/geo/llm/router"
 import type { MatrixProject } from "@/lib/geo/matrix-types"
 
 export const runtime = "nodejs"
@@ -136,8 +136,8 @@ async function handleBatchGenerate(
             modelSkillId,
             viralSkillIds,
             enterpriseSnapshot,
-            userId: isSonettoLlmProvider(provider) ? userId : undefined,
-            cookieHeader: isSonettoLlmProvider(provider) ? cookieHeader : undefined,
+            userId,
+            cookieHeader,
           },
           {
             concurrency: 20,

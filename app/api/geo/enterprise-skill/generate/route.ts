@@ -1,6 +1,6 @@
 import crypto from "node:crypto"
 import { NextResponse } from "next/server"
-import { withAuth } from "@/lib/api/with-auth"
+import { withAuth, chargeCredit, chargeErrorResponse } from "@/lib/api/with-auth"
 import type { AuthorityPage, GeoEntityData } from "@/lib/geo/entity-types"
 import {
   buildEnterpriseSkillSystemPrompt,
@@ -8,7 +8,7 @@ import {
   extractSkillDescription,
   type EnterpriseDocInput,
 } from "@/lib/geo/enterprise-skill-prompt"
-import { completeText, isSonettoLlmProvider, type LlmProviderId } from "@/lib/geo/llm/router"
+import { completeText, type LlmProviderId } from "@/lib/geo/llm/router"
 import {
   fetchHtmlTextMany,
   HTMLTEXT_MAX_URLS,
@@ -157,6 +157,17 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
       )
     }
 
+    const refId = `geo-skill:${userId}:${crypto.randomUUID()}`
+    try {
+      await chargeCredit({
+        cookieHeader,
+        scene: "geo_skill_gen",
+        refId,
+      })
+    } catch (e) {
+      return chargeErrorResponse(e)
+    }
+
     const authorityPages = await resolveAuthorityPages(entity)
 
     const system = buildEnterpriseSkillSystemPrompt()
@@ -174,9 +185,6 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
         system,
         user,
         maxTokens: 4096,
-        billing: isSonettoLlmProvider(provider)
-          ? { userId, cookieHeader, refIdPrefix: "geo-skill" }
-          : undefined,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : "生成失败"

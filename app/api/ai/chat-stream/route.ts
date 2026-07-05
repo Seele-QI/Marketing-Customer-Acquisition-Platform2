@@ -1,22 +1,15 @@
 import crypto from "node:crypto"
 import { NextResponse } from "next/server"
 
-import { chargeCredit, chargeErrorResponse, chargeMeteredCredit, getCreditBalance, withAuth } from "@/lib/api/with-auth"
+import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
+import { getCreditBalance, withAuth } from "@/lib/api/with-auth"
 import {
   DEFAULT_MAX_TOKENS,
   isArkChatModelId,
   isSonettoModelId,
 } from "@/lib/llm/model-registry"
 import { getArkChatModelId, isArkChatConfigured } from "@/lib/geo/llm/router"
-import {
-  estimateMaxCredits,
-  settleCredits,
-  type LlmUsage,
-} from "@/lib/llm/pricing"
-import {
-  buildSonettoStreamRequest,
-  extractUsageFromSseChunk,
-} from "@/lib/llm/sonetto-client"
+import { buildSonettoStreamRequest } from "@/lib/llm/sonetto-client"
 import { buildCopywritingEnrichedSystemPrompt } from "@/lib/prompts/copywriting-agent-systems"
 import { getWorkflowKnowledgeForAgent } from "@/lib/prompts/copywriting-workflow-knowledge"
 import { deepseekApiKeyMissingUserMessage, getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
@@ -136,55 +129,20 @@ function normalizeArkBaseUrl(raw: string): string {
 }
 
 /** 客户端断开时取消上游 SSE 读取，避免空转。 */
-function pipeUpstreamSse(upstreamBody: ReadableStream<Uint8Array>, clientSignal: AbortSignal): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = upstreamBody.getReader()
-      const onAbort = () => {
-        reader.cancel().catch(() => {})
-        try {
-          controller.close()
-        } catch {
-          /* already closed */
-        }
-      }
-      clientSignal.addEventListener("abort", onAbort, { once: true })
-      try {
-        while (!clientSignal.aborted) {
-          const { done, value } = await reader.read()
-          if (done) break
-          controller.enqueue(value)
-        }
-      } catch {
-        /* upstream cancelled or client gone */
-      } finally {
-        clientSignal.removeEventListener("abort", onAbort)
-        reader.cancel().catch(() => {})
-        try {
-          controller.close()
-        } catch {
-          /* already closed */
-        }
-      }
-    },
-  })
-}
-
-/**
- * Sonetto SSE：透传内容，解析 usage，结束后计量扣费并追加 billing 事件。
- * 无 usage 时按 estimateCredits 扣费（防白嫖）。
- */
-function pipeSonettoSseWithBilling(
+function pipeSseWithBillingOnSuccess(
   upstreamBody: ReadableStream<Uint8Array>,
   clientSignal: AbortSignal,
-  settle: (usage: LlmUsage | null) => Promise<{ costCredits: number; balance: number }>,
+  billing: {
+    cookieHeader: string
+    modelId: string
+    userId: number
+    refId: string
+  },
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const reader = upstreamBody.getReader()
-      let usage: LlmUsage | null = null
       let sawContent = false
       const onAbort = () => {
         reader.cancel().catch(() => {})
@@ -194,24 +152,23 @@ function pipeSonettoSseWithBilling(
         while (!clientSignal.aborted) {
           const { done, value } = await reader.read()
           if (done) break
-          if (value) {
+          if (value?.byteLength) {
             sawContent = true
-            const text = decoder.decode(value, { stream: true })
-            usage = extractUsageFromSseChunk(text, usage)
             controller.enqueue(value)
           }
         }
-        const trailing = decoder.decode()
-        if (trailing) {
-          usage = extractUsageFromSseChunk(trailing, usage)
-        }
         if (sawContent) {
           try {
-            const billing = await settle(usage)
+            const result = await chargeBillingEvent({
+              cookieHeader: billing.cookieHeader,
+              billingKey: "copywriting.llm_call",
+              params: { modelId: billing.modelId },
+              refId: billing.refId,
+            })
             const event =
               `event: billing\ndata: ${JSON.stringify({
-                costCredits: billing.costCredits,
-                balance: billing.balance,
+                costCredits: result.cost,
+                balance: result.balance,
               })}\n\n`
             controller.enqueue(encoder.encode(event))
           } catch (e) {
@@ -319,7 +276,8 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
       ...historyMessages.map((m) => m.content),
       effectiveUserText,
     ].join("\n")
-    const estimateCredits = estimateMaxCredits(modelId, inputForEstimate, DEFAULT_MAX_TOKENS)
+    void inputForEstimate
+    const estimateCredits = estimateBillingCost("copywriting.llm_call", { modelId })
 
     let balance: number
     try {
@@ -361,9 +319,9 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     }
 
     const { setup } = built
-    const refId = `llm:${userId}:${crypto.randomBytes(8).toString("hex")}`
+    const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
     console.log(
-      `[chat-stream] provider=Sonetto, model=${modelId}, estimate=${estimateCredits}, url=${setup.url}`,
+      `[chat-stream] provider=Sonetto, model=${modelId}, cost=${estimateCredits}, url=${setup.url}`,
     )
 
     const upstreamSignal = AbortSignal.any([
@@ -403,22 +361,12 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
       return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
     }
 
-    const stream = pipeSonettoSseWithBilling(
-      upstream.body,
-      request.signal,
-      async (usage) => {
-        const costCredits = usage
-          ? settleCredits(modelId, usage)
-          : estimateCredits
-        const result = await chargeMeteredCredit({
-          userId,
-          cost: costCredits,
-          refId,
-          note: `AI 模型 ${modelId}`,
-        })
-        return { costCredits: result.cost, balance: result.balance }
-      },
-    )
+    const stream = pipeSseWithBillingOnSuccess(upstream.body, request.signal, {
+      cookieHeader,
+      modelId,
+      userId,
+      refId,
+    })
 
     return new Response(stream, {
       status: 200,
@@ -555,11 +503,24 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
 
   console.log(`[chat-stream] provider=${providerLabel}, hasImages=${hasImages}, model=${(requestBody as Record<string, unknown>).model}, url=${upstreamUrl}`)
 
+  const billingModelId = useArkTextChat
+    ? getArkChatModelId() || modelId
+    : hasImages
+      ? readServerEnv("DEEPSEEK_VISION_MODEL") || DEFAULT_VISION_MODEL
+      : readServerEnv("DEEPSEEK_CHAT_MODEL") || DEFAULT_TEXT_MODEL
+
   const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  const needCredits = estimateBillingCost("copywriting.llm_call", { modelId: billingModelId })
   try {
-    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
-  } catch (e) {
-    return chargeErrorResponse(e)
+    const balance = await getCreditBalance(cookieHeader)
+    if (balance < needCredits) {
+      return NextResponse.json(
+        { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足", need: needCredits, have: balance } },
+        { status: 402 },
+      )
+    }
+  } catch {
+    /* 余额查询失败不阻断，扣费时仍会校验 */
   }
 
   const upstreamSignal = AbortSignal.any([
@@ -608,7 +569,14 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
   }
 
-  return new Response(pipeUpstreamSse(upstream.body, request.signal), {
+  return new Response(
+    pipeSseWithBillingOnSuccess(upstream.body, request.signal, {
+      cookieHeader,
+      modelId: billingModelId,
+      userId,
+      refId,
+    }),
+    {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",

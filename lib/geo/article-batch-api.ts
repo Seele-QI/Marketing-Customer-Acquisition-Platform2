@@ -3,6 +3,7 @@ import type {
   BatchGenerateEvent,
   BatchGenerateRequest,
   GeneratedArticle,
+  RetryArticleRequest,
 } from "@/lib/geo/article-types"
 
 export type BatchGenerateHandlers = {
@@ -84,4 +85,31 @@ export async function startBatchGenerate(
   }
 
   return { successCount, failCount }
+}
+
+/** 单篇重试（失败任务重新生成） */
+export async function retryArticleGenerate(
+  body: RetryArticleRequest,
+): Promise<GeneratedArticle> {
+  const resp = await fetch("/api/geo/articles/retry", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+
+  const data = (await resp.json()) as {
+    article?: GeneratedArticle
+    error?: string
+  }
+
+  if (!resp.ok) {
+    if (data.article) return data.article
+    throw new Error(parseApiErrorResponse(resp.status, data, "重试失败"))
+  }
+
+  if (!data.article) {
+    throw new Error("服务端未返回文章")
+  }
+  return data.article
 }

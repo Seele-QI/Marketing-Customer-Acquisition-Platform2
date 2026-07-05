@@ -29,8 +29,9 @@ export type AiModelOption = {
 }
 
 function envHint(m: AiModelOption): string {
-  if (m.provider === "sonetto_gpt") return "需配置 SONETTO_GPT_API_KEY"
-  if (m.provider === "sonetto_claude") return "需配置 SONETTO_CLAUDE_API_KEY"
+  if (m.provider === "sonetto_gpt" || m.provider === "sonetto_claude") {
+    return "需配置 NEWAPI_KEY"
+  }
   if (m.provider === "deepseek") return "需配置 DEEPSEEK_API_KEY"
   if (m.provider === "ark") return "需配置 ARK_API_KEY、ARK_CHAT_MODEL"
   return "未配置"

@@ -84,6 +84,7 @@ export function GeoResearchPanel({
       const res = await fetch("/api/geo/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ keyword, platforms, urls }),
       })
       const body = await res.json()

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 
 import { withAuth } from "@/lib/api/with-auth"
-import { isSonettoLlmProvider, type LlmProviderId } from "@/lib/geo/llm/router"
+import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { runAiVisibilityProbe } from "@/lib/geo/retrieval/adapters/ai-probe"
 
 export const runtime = "nodejs"
@@ -16,7 +16,7 @@ const VALID_PROVIDERS = new Set<LlmProviderId>([
   "gemini",
 ])
 
-export const POST = withAuth(async (req, { userId, cookieHeader }) => {
+export const POST = withAuth(async (req) => {
   try {
     const body = (await req.json()) as {
       topic?: string
@@ -44,9 +44,6 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
       modelSkillId: body.modelSkillId,
       enterpriseSnapshot: body.enterpriseSnapshot,
       provider,
-      billing: isSonettoLlmProvider(provider)
-        ? { userId, cookieHeader, refIdPrefix: "geo-probe" }
-        : undefined,
     })
     return NextResponse.json(data)
   } catch (err) {

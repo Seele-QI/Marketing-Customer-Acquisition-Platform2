@@ -313,6 +313,7 @@ export function HotTopics({ variant = "mini" }: HotTopicsProps) {
       const response = await fetch("/api/trends/fetch-all", {
         method: "GET",
         headers: { Accept: "application/json" },
+        credentials: "include",
       })
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)

@@ -5,7 +5,8 @@ import {
   DEFAULT_REWRITE_SYSTEM,
   deepseekChatCompletion,
 } from "@/lib/deepseek-chat"
-import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
+import { chargeBillingEvent } from "@/lib/api/charge-billing"
+import { chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
 
 /**
  * AI 爆改：Next 服务端直连 DeepSeek。固定 system prompt，不再接受客户端覆盖。
@@ -31,13 +32,6 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     return NextResponse.json({ detail: "original_text 超过 8000 字" }, { status: 400 })
   }
 
-  const refId = `rewrite:${userId}:${crypto.randomBytes(8).toString("hex")}`
-  try {
-    await chargeCredit({ cookieHeader, scene: "ai_rewrite", refId })
-  } catch (e) {
-    return chargeErrorResponse(e)
-  }
-
   const result = await deepseekChatCompletion(
     [
       { role: "system", content: DEFAULT_REWRITE_SYSTEM },
@@ -50,5 +44,17 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     return NextResponse.json({ detail: result.detail }, { status: result.status })
   }
 
-  return NextResponse.json({ status: "success", rewritten_text: result.text })
+  const refId = `rewrite:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  try {
+    await chargeBillingEvent({
+      cookieHeader,
+      billingKey: "copywriting.llm_call",
+      params: { modelId: "deepseek-chat" },
+      refId,
+    })
+  } catch (e) {
+    return chargeErrorResponse(e)
+  }
+
+  return NextResponse.json({ rewritten_text: result.text })
 })

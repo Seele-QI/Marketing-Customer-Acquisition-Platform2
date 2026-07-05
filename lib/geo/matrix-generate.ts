@@ -13,7 +13,6 @@ import {
 } from "@/lib/geo/content-matrix-prompt"
 import {
   completeText,
-  isSonettoLlmProvider,
   type CompleteTextBilling,
   type LlmProviderId,
 } from "@/lib/geo/llm/router"
@@ -37,15 +36,11 @@ export type GenerateMatrixParams = {
 }
 
 function billingFor(
-  params: GenerateMatrixParams,
-  prefix: string,
+  _params: GenerateMatrixParams,
+  _prefix: string,
 ): CompleteTextBilling | undefined {
-  if (!isSonettoLlmProvider(params.provider) || params.userId == null) return undefined
-  return {
-    userId: params.userId,
-    cookieHeader: params.cookieHeader,
-    refIdPrefix: prefix,
-  }
+  // 矩阵整批扣费在 API 路由层（geo_matrix_gen），此处不再按 LLM 次扣费
+  return undefined
 }
 
 const MAX_TOKENS_SEED = 2048

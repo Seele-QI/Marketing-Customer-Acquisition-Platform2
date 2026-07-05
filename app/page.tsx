@@ -26,6 +26,7 @@ import { CreditRechargeView } from "@/components/credit-recharge-view"
 import { AdminCreditView } from "@/components/admin-credit-view"
 import { BackToTop } from "@/components/back-to-top"
 import { TaskRuntimeProvider } from "@/components/task-runtime-provider"
+import { LoginRequiredProvider } from "@/components/auth/login-required-provider"
 import { TEAM_AGENTS, getTeamAgentByName } from "@/lib/team-agents"
 import {
   Store,
@@ -292,6 +293,7 @@ export default function Page() {
   }
 
   return (
+    <LoginRequiredProvider>
     <div className="relative flex min-h-screen bg-background">
       {activeAgent != null ? (
         <div
@@ -387,5 +389,6 @@ export default function Page() {
         </div>
       </TaskRuntimeProvider>
     </div>
+    </LoginRequiredProvider>
   )
 }

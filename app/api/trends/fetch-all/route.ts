@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server"
+
+import { withAuth } from "@/lib/api/with-auth"
 import { fetchAllTrendsSections } from "@/lib/tianapi-trends"
 
-export async function GET() {
+export const GET = withAuth(async () => {
   try {
     const data = await fetchAllTrendsSections()
     return NextResponse.json(data)
@@ -9,4 +11,4 @@ export async function GET() {
     const message = err instanceof Error ? err.message : "请求失败"
     return NextResponse.json({ error: message }, { status: 500 })
   }
-}
+})

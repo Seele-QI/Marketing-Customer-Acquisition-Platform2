@@ -39,6 +39,8 @@ import {
   buildMemoryContext,
 } from "@/lib/user-memory"
 import { parseApiErrorResponse } from "@/lib/api/parse-detail"
+import { useLoginRequired } from "@/components/auth/login-required-provider"
+import { isLoginRequiredError } from "@/lib/auth/prompt-login"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -409,6 +411,7 @@ export function CopywritingChatWorkspace({
   onJumpToVideo,
   initialUserMessage,
 }: Props) {
+  const { requireLogin, promptLogin } = useLoginRequired()
   const [sessions, setSessions] = React.useState<HistorySession[]>(() => loadSessions(agentName))
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Message[]>([])
@@ -518,13 +521,7 @@ export function CopywritingChatWorkspace({
       .map((m) => ({ role: m.role, content: m.content }))
 
     try {
-      const meResp = await fetch("/api/auth/me", { credentials: "include", cache: "no-store" })
-      if (!meResp.ok) {
-        toast({
-          title: "请先登录",
-          description: "登录后可使用 AI 文案对话并扣减积分",
-          variant: "destructive",
-        })
+      if (!(await requireLogin("登录后可使用 AI 文案对话并扣减积分"))) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantMsg.id))
         setIsSending(false)
         return
@@ -545,7 +542,9 @@ export function CopywritingChatWorkspace({
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(parseApiErrorResponse(res.status, err, "请求失败"))
+        const msg = parseApiErrorResponse(res.status, err, "请求失败")
+        if (res.status === 401) promptLogin(msg)
+        throw new Error(msg)
       }
 
       let fullResponse = ""
@@ -585,6 +584,9 @@ export function CopywritingChatWorkspace({
       extractMemory(finalMessages)
     } catch (e) {
       const errorText = e instanceof Error ? e.message : "发送失败"
+      if (isLoginRequiredError(errorText)) {
+        promptLogin(errorText)
+      }
       const suffix =
         errorText.includes("请先登录") || errorText.includes("积分不足")
           ? ""
@@ -599,7 +601,7 @@ export function CopywritingChatWorkspace({
     } finally {
       setIsSending(false)
     }
-  }, [messages, isSending, agentName, activeSessionId, sessions, extractMemory])
+  }, [messages, isSending, agentName, activeSessionId, sessions, extractMemory, requireLogin, promptLogin])
 
   const handleNewChat = React.useCallback(() => {
     setActiveSessionId(null)
