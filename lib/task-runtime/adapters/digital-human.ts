@@ -1,8 +1,9 @@
 /**
  * 数字人口播状态轮询适配器
- * 覆盖主生成管线（含封面等待 / 后处理）；剪辑子任务仍由页面内处理。
+ * 覆盖主生成管线（含封面等待 / 后处理）及剪辑子任务（meta.phase=editing）。
  */
 import { queryVideoStatus } from "@/lib/video/api"
+import { pollDigitalHumanEditJob } from "@/lib/task-runtime/adapters/digital-human-edit"
 import type { PollOutcome, RuntimeTask, TaskAdapter } from "@/lib/task-runtime/types"
 
 /** 封面等待上限（与 workflow 一致） */
@@ -22,6 +23,10 @@ export const digitalHumanAdapter: TaskAdapter = {
   pollIntervalMs: 5_000,
   writeHistory: true,
   async poll(task: RuntimeTask): Promise<PollOutcome> {
+    if (task.meta?.phase === "editing") {
+      return pollDigitalHumanEditJob(task)
+    }
+
     let sd: Record<string, unknown>
     try {
       sd = (await queryVideoStatus(task.taskId)) as unknown as Record<string, unknown>

@@ -60,6 +60,13 @@ import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 import { resolveMediaUrl, createImageThumbnail } from "@/lib/video/utils"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
 import {
+  blobToBase64,
+  blobToDataUrl,
+  getWorkflowAsset,
+  newAssetId,
+  putWorkflowAsset,
+} from "@/lib/workflow-asset-store"
+import {
   VideoWorkflowPage,
   WorkflowHero,
   WorkflowStepIndicator,
@@ -232,6 +239,7 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     const saved = loadTask()
     return isMaterialsLost(saved)
   })
+  const [assetsHydrating, setAssetsHydrating] = React.useState(true)
 
   const [storageWarningMessage, setStorageWarningMessage] = React.useState("")
   // 临时未持久化的状态
@@ -289,6 +297,55 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     setTaskState(nextState)
     handleTaskStoreResult(saveTask(nextState))
   }, [handleTaskStoreResult])
+
+  // 从 IndexedDB 恢复图片/音频素材
+  React.useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const saved = loadTask()
+      if (!saved) {
+        setAssetsHydrating(false)
+        return
+      }
+      if (saved.imageAssetId) {
+        const stored = await getWorkflowAsset(saved.imageAssetId)
+        if (stored && !cancelled) {
+          const base64 = await blobToBase64(stored.blob)
+          const previewUrl = URL.createObjectURL(stored.blob)
+          const file = new File([stored.blob], stored.name, { type: stored.mime })
+          setImage({ file, previewUrl, base64 })
+          updateTask({
+            imageBase64: base64,
+            imagePreview: await blobToDataUrl(stored.blob),
+            imageAssetId: saved.imageAssetId,
+          })
+          setMaterialsLost(false)
+        }
+      }
+      if (saved.audioAssetId) {
+        const stored = await getWorkflowAsset(saved.audioAssetId)
+        if (stored && !cancelled) {
+          const base64 = await blobToBase64(stored.blob)
+          const file = new File([stored.blob], stored.name, { type: stored.mime })
+          setAudio({
+            file,
+            name: stored.name,
+            duration: saved.audioDuration || "",
+            base64,
+          })
+          updateTask({
+            audioBase64: base64,
+            audioName: stored.name,
+            audioAssetId: saved.audioAssetId,
+          })
+          setMaterialsLost(false)
+        }
+      }
+      if (!cancelled) setAssetsHydrating(false)
+    })()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount hydrate only
+  }, [])
 
   // Legacy aliases for source-level readability
   const taskId = taskState.taskId
@@ -557,9 +614,19 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       const base64 = await fileToBase64(file)
       const previewUrl = URL.createObjectURL(file)
       setImage({ file, previewUrl, base64 })
+      const assetId = newAssetId("dh_img")
+      const put = await putWorkflowAsset({
+        id: assetId,
+        workflow: "digital-human",
+        name: file.name,
+        mime: file.type || "image/png",
+        kind: "image",
+        blob: file,
+      })
       updateTask({
         imageBase64: base64,
         imagePreview: `data:${file.type || "image/png"};base64,${base64}`,
+        imageAssetId: put.ok ? assetId : "",
       })
       setMaterialsLost(false)
     } catch {
@@ -574,13 +641,22 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
     try {
       const base64 = await fileToBase64(file)
-      // Mock duration — in real implementation, read actual duration
       const duration = "0:32"
       setAudio({ file, name: file.name, duration, base64 })
+      const assetId = newAssetId("dh_audio")
+      const put = await putWorkflowAsset({
+        id: assetId,
+        workflow: "digital-human",
+        name: file.name,
+        mime: file.type || "audio/mpeg",
+        kind: "audio",
+        blob: file,
+      })
       updateTask({
         audioBase64: base64,
         audioName: file.name,
         audioDuration: duration,
+        audioAssetId: put.ok ? assetId : "",
       })
       setMaterialsLost(false)
     } catch {
@@ -917,10 +993,11 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
 
     if (runtimeTask.status === "success") {
       const stageProgress = { voiceClone: 100, videoGen: 100, editing: 100 }
+      const edited = runtimeTask.meta?.phase === "editing" || postStage === "published"
       updateTask({
         taskId: runtimeTask.taskId,
         isProcessing: false,
-        status: "success",
+        status: edited && postStage === "published" ? "published" : "success",
         currentStage: "done",
         progress: 100,
         stageProgress,
@@ -936,6 +1013,10 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         coverError: coverError,
         postProcessingStage: postStage === "published" ? "published" : "",
         postProcessingProgress: 100,
+        isEditing: false,
+        editJobId: "",
+        editPollStartedAt: 0,
+        editingErrorMessage: "",
         lastStatusAt: now,
         resumeGraceUntil: 0,
         errorMessage: "",
@@ -944,6 +1025,19 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
     }
 
     if (runtimeTask.status === "failed") {
+      if (runtimeTask.meta?.phase === "edit_failed" || runtimeTask.meta?.phase === "editing") {
+        updateTask({
+          isEditing: false,
+          editJobId: "",
+          editPollStartedAt: 0,
+          editingErrorMessage: runtimeTask.error || "剪辑失败，请重试",
+          currentStage: "done",
+          status: "success",
+          lastStatusAt: now,
+          resumeGraceUntil: 0,
+        })
+        return
+      }
       updateTask({
         taskId: runtimeTask.taskId,
         isProcessing: false,
@@ -1185,29 +1279,38 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
         return
       }
 
-      // 持久化 editJobId 并启动后台轮询（跨界面切换后可恢复）
       updateTask({
         editJobId: jobId,
         editPollStartedAt: Date.now(),
       })
-      startEditPoll(jobId)
+      runtimeApi.patchTask("digital-human", {
+        status: "running",
+        progress: taskStateRef.current.progress,
+        stageLabel: "剪辑中",
+        meta: {
+          phase: "editing",
+          editJobId: jobId,
+          script: scriptRef.current.trim(),
+          gender: genderRef.current,
+          previewUrl: imagePreviewRef.current || "",
+        },
+      })
     } catch {
       handleEditingSubmitFailure("剪辑请求失败，请检查服务是否启动", "网络错误")
     }
-  }, [businessCardText, enableBgm, enableSubtitles, isEditing, isLocalPreviewMode, manualUploadId, manualVideoPreview, script, selectedPreset, setIsEditing, setVideoUrl, slideImages, startEditPoll, updateTask, videoUrl, autoSubtitlePath])
+  }, [businessCardText, enableBgm, enableSubtitles, isEditing, isLocalPreviewMode, manualUploadId, manualVideoPreview, script, selectedPreset, setIsEditing, setVideoUrl, slideImages, runtimeApi, updateTask, videoUrl, autoSubtitlePath])
 
-  // 重新挂载时恢复剪辑轮询（切页回来时 editJobId 还在 localStorage 但 editPollRef 已失）
+  // 重新挂载时恢复剪辑轮询（task-store 有 editJobId 时登记到全局 runtime）
   React.useEffect(() => {
     const shouldResumeEdit =
       taskState.currentStage === "editing" &&
       taskState.isEditing &&
-      !!taskState.editJobId &&
-      !editPollRef.current
+      !!taskState.editJobId
 
-    if (!shouldResumeEdit) {
-      if (!taskState.isEditing || !taskState.editJobId) {
-        stopEditPoll()
-      }
+    if (!shouldResumeEdit) return
+
+    const rt = runtimeApi.getTask("digital-human")
+    if (rt?.meta?.phase === "editing" && rt.meta.editJobId === taskState.editJobId) {
       return
     }
 
@@ -1216,13 +1319,21 @@ export function VideoCreationWorkflow({ initialScript }: Props) {
       updateTask({ resumeGraceUntil: now + RESUME_POLL_GRACE_MS })
     }
 
-    startEditPoll(taskState.editJobId)
-  }, [taskState.currentStage, taskState.isEditing, taskState.editJobId, taskState.resumeGraceUntil, startEditPoll, stopEditPoll, updateTask])
+    runtimeApi.patchTask("digital-human", {
+      status: "running",
+      progress: taskState.progress,
+      stageLabel: "剪辑中",
+      meta: {
+        phase: "editing",
+        editJobId: taskState.editJobId,
+        script: scriptRef.current.trim(),
+        gender: genderRef.current,
+        previewUrl: imagePreviewRef.current || "",
+      },
+    })
+  }, [taskState.currentStage, taskState.isEditing, taskState.editJobId, taskState.resumeGraceUntil, taskState.progress, runtimeApi, updateTask])
 
-  // 组件卸载时清理编辑轮询
-  React.useEffect(() => {
-    return () => { stopEditPoll() }
-  }, [stopEditPoll])
+  // 剪辑由全局 runtime 轮询，组件卸载不再停止
 
   const handleRetry = React.useCallback(() => {
     stopBackgroundPoll()

@@ -107,6 +107,10 @@ export type VideoTaskState = {
   resumeGraceUntil: number
   pollErrorCount: number
   lastPollError: string
+
+  /** IndexedDB 素材引用（跨刷新恢复） */
+  imageAssetId: string
+  audioAssetId: string
 }
 
 export type TaskStoreErrorKind = "quota-exceeded" | "storage-unavailable" | "unknown"
@@ -174,6 +178,8 @@ const DEFAULT_STATE: Omit<VideoTaskState, "taskId" | "createdAt" | "updatedAt"> 
   resumeGraceUntil: 0,
   pollErrorCount: 0,
   lastPollError: "",
+  imageAssetId: "",
+  audioAssetId: "",
 }
 
 /** 计算综合进度（权重：音色 25% + 视频 65% + 剪辑 10%） */
@@ -342,7 +348,9 @@ function toPersistent(state: VideoTaskState): Partial<VideoTaskState> {
  */
 export function isMaterialsLost(state: VideoTaskState | null): boolean {
   if (!state) return false
-  return !!(state.script || state.audioName) && !state.taskId && !state.isProcessing
+  const hasInputs = !!(state.script || state.audioName)
+  const hasAssets = !!(state.imageAssetId || state.audioAssetId)
+  return hasInputs && !state.taskId && !state.isProcessing && !hasAssets
 }
 
 function getTaskStoreErrorKind(error: unknown): TaskStoreErrorKind {

@@ -38,6 +38,10 @@ export function useTaskRuntimeApi() {
         getTaskRuntime().markFailed(kind, error, options),
       isRunning: (kind: TaskKind) => getTaskRuntime().isRunning(kind),
       getTask: (kind: TaskKind) => getTaskRuntime().getTask(kind),
+      patchTask: (
+        kind: TaskKind,
+        patch: Partial<Pick<RuntimeTask, "progress" | "stageLabel" | "meta" | "result" | "status">>,
+      ) => getTaskRuntime().patchTask(kind, patch),
     }),
     [],
   )

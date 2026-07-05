@@ -18,6 +18,10 @@ import { startCopyExtraction } from "@/lib/video/api"
 import type { ExtractCopyStatusResponse } from "@/lib/video/api"
 import { extractVideoUrlFromShareText } from "@/lib/video/utils"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
+import {
+  loadDraft,
+  saveDraft,
+} from "@/lib/workflow-draft-store"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -55,14 +59,20 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
   const runtimeTask = useRuntimeTask("copywriting-extract")
 
   /* ── State ── */
-  const [url, setUrl] = React.useState("")
+  const [url, setUrl] = React.useState(() => loadDraft("copywriting-extract")?.url ?? "")
   const [taskId, setTaskId] = React.useState("")
   const [status, setStatus] = React.useState<ExtractionStatus>("idle")
   const [progress, setProgress] = React.useState(0)
   const [result, setResult] = React.useState<ExtractCopyStatusResponse | null>(null)
   const [error, setError] = React.useState("")
   const [copied, setCopied] = React.useState(false)
-  const [editedText, setEditedText] = React.useState("")
+  const [editedText, setEditedText] = React.useState(
+    () => loadDraft("copywriting-extract")?.editedText ?? "",
+  )
+
+  React.useEffect(() => {
+    saveDraft("copywriting-extract", { url, editedText })
+  }, [url, editedText])
 
   const isRunning = status === "downloading" || status === "transcribing"
 
@@ -71,6 +81,9 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
     if (!runtimeTask) return
     setTaskId(runtimeTask.taskId)
     setProgress(runtimeTask.progress)
+    if (typeof runtimeTask.meta?.url === "string" && runtimeTask.meta.url) {
+      setUrl(runtimeTask.meta.url)
+    }
 
     if (runtimeTask.status === "running") {
       const step = (runtimeTask.stageLabel || "").includes("识别")

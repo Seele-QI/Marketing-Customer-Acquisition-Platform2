@@ -27,6 +27,20 @@ import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
 import { resolveMediaUrl, fileToBase64 } from "@/lib/video/utils"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
+import type { AssetRef } from "@/lib/workflow-draft-store"
+import {
+  clearDraft,
+  defaultPromoVideoDraft,
+  loadDraft,
+  saveDraft,
+} from "@/lib/workflow-draft-store"
+import {
+  blobToDataUrl,
+  clearWorkflowAssets,
+  getWorkflowAsset,
+  newAssetId,
+  putWorkflowAsset,
+} from "@/lib/workflow-asset-store"
 import {
   VideoWorkflowPage,
   WorkflowHero,
@@ -170,6 +184,103 @@ export default function PromoVideoWorkflow() {
   const [vidRhTaskIds, setVidRhTaskIds] = useState<string[]>([])
   const [vidSegmentCount, setVidSegmentCount] = useState(0)
   const [vidSegmentsCompleted, setVidSegmentsCompleted] = useState(0)
+  const [draftHydrating, setDraftHydrating] = useState(true)
+  const [imageRef, setImageRef] = useState<AssetRef | null>(null)
+  const [audioRef, setAudioRef] = useState<AssetRef | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const draft = loadDraft("promo-video") ?? defaultPromoVideoDraft()
+      if (cancelled) return
+      setStep(draft.step as Step)
+      setFormData({
+        productPrompt: draft.formData.productPrompt,
+        promoScript: draft.formData.promoScript,
+        productImage: "",
+        audioBase64: "",
+        duration: draft.formData.duration,
+        frameCount: draft.formData.frameCount as PromoFrameCount,
+        ratio: draft.formData.ratio,
+        channel: draft.formData.channel as PromoRhChannel,
+        resolution: draft.formData.resolution as PromoRhResolution,
+        imageMode: draft.formData.imageMode as PromoRhImageMode,
+        instanceType: draft.formData.instanceType as PromoRhInstanceType,
+      })
+      setStoryTaskId(draft.storyTaskId)
+      setSbStatus(draft.sbStatus as typeof sbStatus)
+      setSbProgress(draft.sbProgress)
+      setSbStageLabel(draft.sbStageLabel)
+      setVideoTaskId(draft.videoTaskId)
+      setVidStatus(draft.vidStatus as typeof vidStatus)
+      setVidProgress(draft.vidProgress)
+      setVidUrl(draft.videoUrl)
+      setImageRef(draft.imageRef)
+      setAudioRef(draft.audioRef)
+      if (draft.imageRef) {
+        const stored = await getWorkflowAsset(draft.imageRef.id)
+        if (stored) {
+          const preview = await blobToDataUrl(stored.blob)
+          setImagePreview(preview)
+          const base64 = await fileToBase64(new File([stored.blob], stored.name, { type: stored.mime }))
+          setFormData((p) => ({ ...p, productImage: base64 }))
+        }
+      }
+      if (draft.audioRef) {
+        const stored = await getWorkflowAsset(draft.audioRef.id)
+        if (stored) {
+          const base64 = await fileToBase64(new File([stored.blob], stored.name, { type: stored.mime }))
+          setAudioSample({ name: stored.name, base64 })
+          setFormData((p) => ({ ...p, audioBase64: base64 }))
+        }
+      }
+      setDraftHydrating(false)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (draftHydrating) return
+    saveDraft("promo-video", {
+      step,
+      formData: {
+        productPrompt: formData.productPrompt,
+        promoScript: formData.promoScript,
+        duration: formData.duration,
+        frameCount: formData.frameCount,
+        ratio: formData.ratio,
+        channel: formData.channel,
+        resolution: formData.resolution,
+        imageMode: formData.imageMode,
+        instanceType: formData.instanceType,
+      },
+      storyTaskId,
+      sbStatus,
+      sbProgress,
+      sbStageLabel,
+      videoTaskId,
+      vidStatus,
+      vidProgress,
+      vidStageLabel: "",
+      videoUrl: vidUrl,
+      imageRef,
+      audioRef,
+    })
+  }, [
+    draftHydrating,
+    step,
+    formData,
+    storyTaskId,
+    sbStatus,
+    sbProgress,
+    sbStageLabel,
+    videoTaskId,
+    vidStatus,
+    vidProgress,
+    vidUrl,
+    imageRef,
+    audioRef,
+  ])
 
   const availableResolutions = promoResolutionsForChannel(formData.channel)
   const videoSegmentCount = Math.max(1, Math.floor((formData.duration + 14) / 15))
@@ -261,6 +372,18 @@ export default function PromoVideoWorkflow() {
     }
     reader.readAsDataURL(file)
     const base64 = await fileToBase64(file)
+    const id = newAssetId("promo_img")
+    const put = await putWorkflowAsset({
+      id,
+      workflow: "promo-video",
+      name: file.name,
+      mime: file.type || "image/png",
+      kind: "image",
+      blob: file,
+    })
+    if (put.ok) {
+      setImageRef({ id, name: file.name, mime: file.type, size: file.size, kind: "image" })
+    }
     setFormData((p) => ({ ...p, productImage: base64 }))
   }, [])
 
@@ -270,6 +393,18 @@ export default function PromoVideoWorkflow() {
       return
     }
     const base64 = await fileToBase64(file)
+    const id = newAssetId("promo_audio")
+    const put = await putWorkflowAsset({
+      id,
+      workflow: "promo-video",
+      name: file.name,
+      mime: file.type || "audio/mpeg",
+      kind: "audio",
+      blob: file,
+    })
+    if (put.ok) {
+      setAudioRef({ id, name: file.name, mime: file.type, size: file.size, kind: "audio" })
+    }
     setAudioSample({ name: file.name, base64 })
     setFormData((p) => ({ ...p, audioBase64: base64 }))
   }, [])

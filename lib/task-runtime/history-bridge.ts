@@ -21,6 +21,7 @@ export async function writeHistoryFromTask(task: RuntimeTask): Promise<void> {
   const coverUrl = String(task.result?.coverUrl ?? "")
   // 宣传视频分镜阶段等中间成功态：无视频 URL 则不写历史
   if (task.status === "success" && !videoUrl) return
+  if (task.status === "failed" && !videoUrl) return
   if (task.meta?.skipHistory === true) return
   const gender = task.meta?.gender === "female" ? "female" : task.meta?.gender === "male" ? "male" : undefined
   const previewForThumb = typeof task.meta?.previewUrl === "string" ? task.meta.previewUrl : ""

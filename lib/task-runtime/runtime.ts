@@ -114,6 +114,32 @@ class TaskRuntime {
     this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
   }
 
+  /** 更新已登记任务（如进入剪辑子阶段） */
+  patchTask(
+    kind: TaskKind,
+    patch: Partial<Pick<RuntimeTask, "progress" | "stageLabel" | "meta" | "result" | "status">>,
+  ): RuntimeTask | undefined {
+    const t = this.tasks[kind]
+    if (!t) return undefined
+    const next: RuntimeTask = {
+      ...t,
+      progress: patch.progress ?? t.progress,
+      stageLabel: patch.stageLabel ?? t.stageLabel,
+      status: patch.status ?? t.status,
+      meta: patch.meta ? { ...t.meta, ...patch.meta } : t.meta,
+      result: patch.result ? { ...t.result, ...patch.result } : t.result,
+      updatedAt: Date.now(),
+    }
+    this.tasks[kind] = next
+    this.persist()
+    this.emit({ type: "task-updated", task: next })
+    this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
+    if (next.status === "running") {
+      this.schedulePoll(kind, 0)
+    }
+    return next
+  }
+
   /** 用户主动标记失败（如点停止） */
   markFailed(kind: TaskKind, error: string, options?: { writeHistory?: boolean }): void {
     const t = this.tasks[kind]

@@ -30,6 +30,22 @@ import { VideoClipOptions } from "@/components/video-clip-options"
 import { formatClipNetworkError } from "@/lib/image-video-task-runtime"
 import { fileToBase64, resolveMediaUrl } from "@/lib/video/utils"
 import type { ImageToVideoResponse } from "@/lib/video/types"
+import type { AssetRef } from "@/lib/workflow-draft-store"
+import {
+  clearDraft,
+  defaultImageVideoDraft,
+  loadDraft,
+  saveDraft,
+} from "@/lib/workflow-draft-store"
+import {
+  clearClipWorkflow,
+  hydrateClipAudio,
+  hydrateClipImages,
+  imageVideoDraftFromState,
+  persistClipAudio,
+  persistClipImage,
+} from "@/lib/workflow-clip-persist"
+import { deleteWorkflowAsset } from "@/lib/workflow-asset-store"
 
 /* ================================================================== */
 /*  Constants                                                          */
@@ -451,6 +467,9 @@ function StepVideoResult({
 export function ImageVideoWorkflow() {
   const runtimeApi = useTaskRuntimeApi()
   const runtimeTask = useRuntimeTask("image-video")
+  const [hydrating, setHydrating] = React.useState(true)
+  const [imageRefs, setImageRefs] = React.useState<AssetRef[]>([])
+  const [audioRef, setAudioRef] = React.useState<AssetRef | null>(null)
   const [state, setState] = React.useState<WorkflowState>({
     currentStep: 1,
     images: [],
@@ -467,6 +486,86 @@ export function ImageVideoWorkflow() {
     submittedAt: 0,
   })
   const toastedRef = React.useRef<string>("")
+
+  // 从 draft + IndexedDB 恢复素材与步骤
+  React.useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const draft = loadDraft("image-video") ?? defaultImageVideoDraft()
+      const images = await hydrateClipImages("image-video", draft.imageRefs)
+      const audioSample = await hydrateClipAudio(draft.audioRef)
+      if (cancelled) return
+      setImageRefs(draft.imageRefs)
+      setAudioRef(draft.audioRef)
+      setState({
+        currentStep: draft.currentStep,
+        images,
+        script: draft.script,
+        audioSample,
+        enableBgm: draft.enableBgm,
+        enableSubtitles: draft.enableSubtitles,
+        isProcessing: false,
+        taskId: draft.taskId,
+        stageLabel: draft.stageLabel,
+        progress: draft.progress,
+        result: null,
+        errorMessage: draft.errorMessage,
+        submittedAt: draft.submittedAt,
+      })
+      setHydrating(false)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // 持久化轻量草稿（素材引用 + 步骤）
+  React.useEffect(() => {
+    if (hydrating) return
+    saveDraft(
+      "image-video",
+      imageVideoDraftFromState({
+        ...state,
+        imageRefs,
+        audioRef,
+      }),
+    )
+  }, [state, imageRefs, audioRef, hydrating])
+
+  const handleImagesChange = React.useCallback(async (imgs: ImageItem[]) => {
+    setState((s) => ({ ...s, images: imgs }))
+    const nextRefs: AssetRef[] = []
+    for (const img of imgs) {
+      const existing = imageRefs.find((r) => r.id === img.id)
+      if (existing) {
+        nextRefs.push(existing)
+        continue
+      }
+      const saved = await persistClipImage("image-video", img.file, img.base64, img.previewUrl)
+      if (saved) {
+        nextRefs.push(saved.ref)
+        setState((s) => ({
+          ...s,
+          images: s.images.map((i) => (i.id === img.id ? { ...i, id: saved.id } : i)),
+        }))
+      }
+    }
+    setImageRefs(nextRefs)
+    const removed = imageRefs.filter((r) => !nextRefs.some((n) => n.id === r.id))
+    await Promise.all(removed.map((r) => deleteWorkflowAsset(r.id)))
+  }, [imageRefs])
+
+  const handleAudioChange = React.useCallback(async (a: AudioItem | null) => {
+    setState((s) => ({ ...s, audioSample: a }))
+    if (!a) {
+      if (audioRef) await deleteWorkflowAsset(audioRef.id)
+      setAudioRef(null)
+      return
+    }
+    const saved = await persistClipAudio("image-video", a.file, a.base64)
+    if (audioRef && audioRef.id !== saved?.id) {
+      await deleteWorkflowAsset(audioRef.id)
+    }
+    if (saved) setAudioRef(saved.ref)
+  }, [audioRef])
 
   // 从 runtime 恢复 / 同步进度
   React.useEffect(() => {
@@ -599,7 +698,11 @@ export function ImageVideoWorkflow() {
     }
   }
 
-  const handleReset = () => {
+  const handleReset = async () => {
+    await clearClipWorkflow("image-video")
+    clearDraft("image-video")
+    setImageRefs([])
+    setAudioRef(null)
     setState({
       currentStep: 1,
       images: [],
@@ -615,6 +718,19 @@ export function ImageVideoWorkflow() {
       errorMessage: "",
       submittedAt: 0,
     })
+  }
+
+  const handleBackToMaterials = () => {
+    setState((s) => ({
+      ...s,
+      currentStep: 1,
+      isProcessing: false,
+      errorMessage: "",
+      taskId: "",
+      stageLabel: "",
+      progress: 0,
+      result: null,
+    }))
   }
 
   const clipSteps = buildClipSteps(
@@ -644,9 +760,9 @@ export function ImageVideoWorkflow() {
           audioSample={state.audioSample}
           enableBgm={state.enableBgm}
           enableSubtitles={state.enableSubtitles}
-          onImagesChange={(imgs) => setState((s) => ({ ...s, images: imgs }))}
+          onImagesChange={(imgs) => { void handleImagesChange(imgs) }}
           onScriptChange={(text) => setState((s) => ({ ...s, script: text }))}
-          onAudioChange={(a) => setState((s) => ({ ...s, audioSample: a }))}
+          onAudioChange={(a) => { void handleAudioChange(a) }}
           onEnableBgmChange={(v) => setState((s) => ({ ...s, enableBgm: v }))}
           onEnableSubtitlesChange={(v) => setState((s) => ({ ...s, enableSubtitles: v }))}
           onSubmit={handleSubmit}
@@ -668,7 +784,12 @@ export function ImageVideoWorkflow() {
           />
           {!state.isProcessing && (
             <div className="flex justify-center gap-4 pt-4">
-              <Button variant="outline" onClick={handleReset} className="rounded-full">
+              {state.errorMessage ? (
+                <Button variant="outline" onClick={handleBackToMaterials} className="rounded-full">
+                  返回修改素材
+                </Button>
+              ) : null}
+              <Button variant="outline" onClick={() => { void handleReset() }} className="rounded-full">
                 重新创作
               </Button>
             </div>

@@ -30,6 +30,22 @@ import { formatClipNetworkError } from "@/lib/mashup-video-task-runtime"
 import { fileToBase64, resolveMediaUrl } from "@/lib/video/utils"
 import type { MashupVideoResponse } from "@/lib/video/types"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
+import type { AssetRef } from "@/lib/workflow-draft-store"
+import {
+  clearDraft,
+  defaultMashupDraft,
+  loadDraft,
+  saveDraft,
+} from "@/lib/workflow-draft-store"
+import {
+  clearClipWorkflow,
+  hydrateClipAudio,
+  hydrateMashupVideos,
+  mashupDraftFromState,
+  persistClipAudio,
+  persistClipImage,
+} from "@/lib/workflow-clip-persist"
+import { deleteWorkflowAsset } from "@/lib/workflow-asset-store"
 
 /* ================================================================== */
 /*  Constants                                                          */
@@ -384,6 +400,9 @@ function StepVideoResult({
 export function MashupVideoWorkflow() {
   const runtimeApi = useTaskRuntimeApi()
   const runtimeTask = useRuntimeTask("mashup")
+  const [hydrating, setHydrating] = React.useState(true)
+  const [videoRefs, setVideoRefs] = React.useState<AssetRef[]>([])
+  const [audioRef, setAudioRef] = React.useState<AssetRef | null>(null)
   const [state, setState] = React.useState<WorkflowState>({
     currentStep: 1,
     videos: [],
@@ -400,6 +419,77 @@ export function MashupVideoWorkflow() {
     submittedAt: 0,
   })
   const toastedRef = React.useRef("")
+
+  React.useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const draft = loadDraft("mashup") ?? defaultMashupDraft()
+      const videos = await hydrateMashupVideos(draft.videoRefs)
+      const audioSample = await hydrateClipAudio(draft.audioRef)
+      if (cancelled) return
+      setVideoRefs(draft.videoRefs)
+      setAudioRef(draft.audioRef)
+      setState({
+        currentStep: draft.currentStep,
+        videos,
+        script: draft.script,
+        audioSample,
+        enableBgm: draft.enableBgm,
+        enableSubtitles: draft.enableSubtitles,
+        isProcessing: false,
+        taskId: draft.taskId,
+        stageLabel: draft.stageLabel,
+        progress: draft.progress,
+        result: null,
+        errorMessage: draft.errorMessage,
+        submittedAt: draft.submittedAt,
+      })
+      setHydrating(false)
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  React.useEffect(() => {
+    if (hydrating) return
+    saveDraft("mashup", mashupDraftFromState({ ...state, videoRefs, audioRef }))
+  }, [state, videoRefs, audioRef, hydrating])
+
+  const handleVideosChange = React.useCallback(async (videos: VideoItem[]) => {
+    setState((s) => ({ ...s, videos }))
+    const nextRefs: AssetRef[] = []
+    for (const vid of videos) {
+      const existing = videoRefs.find((r) => r.id === vid.id)
+      if (existing) {
+        nextRefs.push(existing)
+        continue
+      }
+      const saved = await persistClipImage("mashup", vid.file, vid.base64, "")
+      if (saved) {
+        nextRefs.push(saved.ref)
+        setState((s) => ({
+          ...s,
+          videos: s.videos.map((v) => (v.id === vid.id ? { ...v, id: saved.id } : v)),
+        }))
+      }
+    }
+    setVideoRefs(nextRefs)
+    const removed = videoRefs.filter((r) => !nextRefs.some((n) => n.id === r.id))
+    await Promise.all(removed.map((r) => deleteWorkflowAsset(r.id)))
+  }, [videoRefs])
+
+  const handleAudioChange = React.useCallback(async (a: AudioItem | null) => {
+    setState((s) => ({ ...s, audioSample: a }))
+    if (!a) {
+      if (audioRef) await deleteWorkflowAsset(audioRef.id)
+      setAudioRef(null)
+      return
+    }
+    const saved = await persistClipAudio("mashup", a.file, a.base64)
+    if (audioRef && audioRef.id !== saved?.id) {
+      await deleteWorkflowAsset(audioRef.id)
+    }
+    if (saved) setAudioRef(saved.ref)
+  }, [audioRef])
 
   React.useEffect(() => {
     if (!runtimeTask) return
@@ -528,7 +618,11 @@ export function MashupVideoWorkflow() {
     }
   }
 
-  const handleReset = () => {
+  const handleReset = async () => {
+    await clearClipWorkflow("mashup")
+    clearDraft("mashup")
+    setVideoRefs([])
+    setAudioRef(null)
     setState({
       currentStep: 1,
       videos: [],
@@ -544,6 +638,19 @@ export function MashupVideoWorkflow() {
       errorMessage: "",
       submittedAt: 0,
     })
+  }
+
+  const handleBackToMaterials = () => {
+    setState((s) => ({
+      ...s,
+      currentStep: 1,
+      isProcessing: false,
+      errorMessage: "",
+      taskId: "",
+      stageLabel: "",
+      progress: 0,
+      result: null,
+    }))
   }
 
   const clipSteps = buildClipSteps(
@@ -573,9 +680,9 @@ export function MashupVideoWorkflow() {
           audioSample={state.audioSample}
           enableBgm={state.enableBgm}
           enableSubtitles={state.enableSubtitles}
-          onVideosChange={(vids) => setState((s) => ({ ...s, videos: vids }))}
+          onVideosChange={(vids) => { void handleVideosChange(vids) }}
           onScriptChange={(text) => setState((s) => ({ ...s, script: text }))}
-          onAudioChange={(a) => setState((s) => ({ ...s, audioSample: a }))}
+          onAudioChange={(a) => { void handleAudioChange(a) }}
           onEnableBgmChange={(v) => setState((s) => ({ ...s, enableBgm: v }))}
           onEnableSubtitlesChange={(v) => setState((s) => ({ ...s, enableSubtitles: v }))}
           onSubmit={handleSubmit}
@@ -597,7 +704,12 @@ export function MashupVideoWorkflow() {
           />
           {!state.isProcessing && (
             <div className="flex justify-center gap-4 pt-4">
-              <Button variant="outline" onClick={handleReset} className="rounded-full">
+              {state.errorMessage ? (
+                <Button variant="outline" onClick={handleBackToMaterials} className="rounded-full">
+                  返回修改素材
+                </Button>
+              ) : null}
+              <Button variant="outline" onClick={() => { void handleReset() }} className="rounded-full">
                 重新创作
               </Button>
             </div>
