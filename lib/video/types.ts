@@ -52,7 +52,7 @@ export type ClipItem = {
 /*  创作历史记录（VideoHistory）                                          */
 /* ================================================================== */
 
-export type HistoryVideoSource = "digital-human" | "image-video" | "mashup" | "promo-video"
+export type HistoryVideoSource = "digital-human" | "dh-video-v2" | "image-video" | "mashup" | "promo-video"
 
 export type HistoryRecord = {
   id: string

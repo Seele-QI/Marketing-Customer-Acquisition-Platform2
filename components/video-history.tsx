@@ -13,6 +13,7 @@ import type { HistoryRecord, HistoryVideoSource } from "@/lib/video/types"
 import { HISTORY_STORAGE_KEY } from "@/lib/video/types"
 import { getHistoryRecords, removeHistoryRecord, clearAllHistory } from "@/lib/video/storage"
 import { resolveMediaUrl } from "@/lib/video/utils"
+import { useHistoryUpdated } from "@/lib/task-runtime"
 
 export type { ShareVideo } from "@/lib/video/types"
 export { addHistoryRecord, addShareVideo, getShareVideos as loadShareVideos } from "@/lib/video/storage"
@@ -33,6 +34,7 @@ function getExcerpt(text: string, max = 50): string {
 
 const SOURCE_LABELS: Record<HistoryVideoSource, string> = {
   "digital-human": "数字人口播",
+  "dh-video-v2": "数字人视频创作（新）",
   "image-video": "图文视频",
   mashup: "视频混剪",
   "promo-video": "宣传视频",
@@ -55,15 +57,18 @@ function getCoverSrc(record: HistoryRecord): string | null {
 export function VideoHistory() {
   const [records, setRecords] = React.useState<HistoryRecord[]>([])
 
+  const refresh = React.useCallback(() => setRecords(getHistoryRecords()), [])
+
   React.useEffect(() => {
-    const refresh = () => setRecords(getHistoryRecords())
     refresh()
     const onStorage = (e: StorageEvent) => {
       if (e.key === HISTORY_STORAGE_KEY || e.key === null) refresh()
     }
     window.addEventListener("storage", onStorage)
     return () => window.removeEventListener("storage", onStorage)
-  }, [])
+  }, [refresh])
+
+  useHistoryUpdated(refresh)
 
   const handleDelete = (id: string) => {
     const next = removeHistoryRecord(id)
@@ -86,7 +91,7 @@ export function VideoHistory() {
               <h1 className="text-[28px] font-bold leading-tight tracking-tight text-slate-900 sm:text-[34px] dark:text-slate-50">
                 创作<span className="text-rose-500 dark:text-rose-400">历史</span>
               </h1>
-              <p className="mt-2 text-[14px] text-slate-500 dark:text-slate-400">最近 14 天的视频创作记录</p>
+              <p className="mt-2 text-[14px] text-slate-500 dark:text-slate-400">最近 7 天的视频创作记录</p>
             </div>
             {records.length > 0 && (
               <button onClick={handleClearAll}

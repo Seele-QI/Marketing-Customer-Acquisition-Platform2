@@ -43,6 +43,7 @@ type NavItem = {
     label: string
     icon: React.ComponentType<{ className?: string }>
     iconColor?: string
+    badge?: string
     /** 导航用的内部 key；不填则用 label */
     view?: string
   }[]
@@ -62,6 +63,7 @@ const mainNav: NavItem[] = [
   { label: "视频创作", icon: Clapperboard, badge: "NEW", iconColor: "text-rose-500", iconBg: "bg-rose-500/10",
     children: [
       { label: "数字人口播", view: VIDEO_VIEWS.DIGITAL_HUMAN, icon: Clapperboard, iconColor: "text-rose-500" },
+      { label: "数字人视频创作（新）", view: VIDEO_VIEWS.DH_VIDEO_V2, icon: Sparkles, iconColor: "text-amber-500", badge: "NEW" },
       { label: "图文视频", view: VIDEO_VIEWS.IMAGE_VIDEO, icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", view: VIDEO_VIEWS.MASHUP, icon: Scissors, iconColor: "text-violet-500" },
       { label: "宣传视频", view: VIDEO_VIEWS.PROMO, icon: Video, iconColor: "text-sky-500" },
@@ -248,6 +250,10 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
                                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 animate-pulse"
                                 title="进行中"
                               />
+                            ) : child.badge ? (
+                              <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
+                                {child.badge}
+                              </span>
                             ) : null}
                           </button>
                         </li>

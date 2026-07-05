@@ -4540,9 +4540,11 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
 
 from routes.promo_video_routes import router as promo_video_router
 from routes.geo_matrix_routes import router as geo_matrix_router
+from routes.dh_video_v2_routes import router as dh_video_v2_router
 
 app.include_router(promo_video_router)
 app.include_router(geo_matrix_router)
+app.include_router(dh_video_v2_router)
 
 
 # ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──
