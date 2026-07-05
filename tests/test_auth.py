@@ -207,7 +207,7 @@ def test_credit_consume_video_creation_unit_costs_250_points():
     assert data["balance"] == 850
 
 
-def test_credit_consume_video_clone_voice_costs_50_points():
+def test_credit_consume_video_clone_voice_costs_10_points():
     from lib.credit import refund
 
     user_id = auth.create_password_user("clone_cost_user", "Password123")
@@ -225,11 +225,11 @@ def test_credit_consume_video_clone_voice_costs_50_points():
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["scene"] == "video_clone_voice"
-    assert data["cost"] == 50
-    assert data["balance"] == 550
+    assert data["cost"] == 10
+    assert data["balance"] == 590
 
 
-def test_credit_consume_video_image_to_video_costs_100_points():
+def test_credit_consume_video_image_to_video_costs_40_points():
     from lib.credit import refund
 
     user_id = auth.create_password_user("iv_cost_user", "Password123")
@@ -247,11 +247,11 @@ def test_credit_consume_video_image_to_video_costs_100_points():
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["scene"] == "video_image_to_video"
-    assert data["cost"] == 100
-    assert data["balance"] == 500
+    assert data["cost"] == 40
+    assert data["balance"] == 560
 
 
-def test_credit_consume_video_mashup_costs_150_points():
+def test_credit_consume_video_mashup_costs_50_points():
     from lib.credit import refund
 
     user_id = auth.create_password_user("mv_cost_user", "Password123")
@@ -269,8 +269,8 @@ def test_credit_consume_video_mashup_costs_150_points():
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["scene"] == "video_mashup"
-    assert data["cost"] == 150
-    assert data["balance"] == 450
+    assert data["cost"] == 50
+    assert data["balance"] == 550
 
 
 def test_credit_consume_ignores_client_cost_and_rejects_unknown_scene():
