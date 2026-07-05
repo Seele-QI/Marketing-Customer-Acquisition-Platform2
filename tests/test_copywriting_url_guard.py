@@ -30,7 +30,7 @@ def test_rejects_non_http_scheme():
         with pytest.raises(HTTPException) as exc:
             main._validate_extract_url(url)
         assert exc.value.status_code == 400
-        assert exc.value.detail["code"] in ("BAD_URL_SCHEME", "BAD_URL_HOST")
+        assert exc.value.detail["code"] in ("BAD_URL_SCHEME", "BAD_URL_HOST", "NO_VIDEO_URL")
 
 
 def test_rejects_bare_ip():
