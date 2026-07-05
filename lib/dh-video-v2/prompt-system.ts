@@ -28,10 +28,11 @@ export const DH_V2_SEEDANCE_PROMPT_SYSTEM = `你是一位精通 Seedance 2.0 的
 - 有音频参考时注明 @音频1 驱动口型节奏
 
 时长规则：
-- 15 秒：核心描述 60~100 字，一条连贯镜头叙事
-- 30/45 秒：必须输出【时间轴】分段，例如：
+- 15 秒：须输出【时间轴】，按时间段拆分口播原文，格式 Xs-Ys：口播「原文字句」+ 动作/镜头
+- 30/45 秒：必须输出【时间轴】分段，每段须写明该时段口播原文，例如：
   【风格】…
-  【时间轴】0-15s：…；15-30s：…（30s）或再加 30-45s（45s）
+  【时间轴】0-5s：口播「……原文……」；5-10s：口播「……原文……」；10-15s：口播「……原文……」（15s）
+  或 0-15s / 15-30s / 30-45s（30s/45s），禁止只写语义概括不写原话
   【参考】Image1 人物外观…
   【约束】stable composition, sharp focus
 
@@ -54,7 +55,9 @@ export function buildDhV2AutoPromptUserMessage(req: DhV2AutoPromptRequest): stri
     lines.push("已上传参考音频：是，请在提示词中注明 @音频1 与口型节奏")
   }
   if (req.duration > 15) {
-    lines.push(`请按 ${req.duration} 秒输出【时间轴】分段提示词。`)
+    lines.push(`请按 ${req.duration} 秒输出【时间轴】分段提示词，每段须写出口播原文。`)
+  } else {
+    lines.push("请输出【时间轴】，按时间段拆分口播原文（口播「…」），覆盖 0-15s。")
   }
   lines.push("请生成 Seedance 2.0 视频提示词。")
   return lines.join("\n")

@@ -90,14 +90,14 @@ test("runtime store sanitizes invalid status to running", () => {
   })
 })
 
-test("HISTORY_MAX_AGE_MS is 7 days", () => {
-  assert.equal(HISTORY_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000)
+test("HISTORY_MAX_AGE_MS is 14 days", () => {
+  assert.equal(HISTORY_MAX_AGE_MS, 14 * 24 * 60 * 60 * 1000)
 })
 
-test("7-day cutoff filters old history records", () => {
+test("14-day cutoff filters old history records", () => {
   const now = Date.now()
   const records = [
-    { id: "old", createdAt: now - 8 * 24 * 60 * 60 * 1000 },
+    { id: "old", createdAt: now - 15 * 24 * 60 * 60 * 1000 },
     { id: "new", createdAt: now - 1 * 24 * 60 * 60 * 1000 },
   ]
   const cutoff = now - HISTORY_MAX_AGE_MS

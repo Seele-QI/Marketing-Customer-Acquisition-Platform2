@@ -17,7 +17,8 @@ def test_plan_15s_single_segment():
     assert len(plans) == 1
     assert len(plans[0].frame_paths) == 3
     assert plans[0].duration_sec == 15
-    assert "Image1" in plans[0].prompt
+    assert "@图1" in plans[0].prompt
+    assert "固定首帧" in plans[0].prompt
 
 
 def test_plan_30s_two_segments():
@@ -33,6 +34,7 @@ def test_plan_30s_two_segments():
     assert plans[0].frame_paths[0] == paths[0]
     assert "第 1/2 段" in plans[0].prompt
     assert "第 2/2 段" in plans[1].prompt
+    assert "@图1" in plans[0].prompt
 
 
 def test_plan_60s_four_segments_nine_images():
@@ -50,13 +52,26 @@ def test_plan_60s_four_segments_nine_images():
         assert len(p.frame_paths) <= 9
 
 
-def test_build_seedance_segment_prompt_renumbers():
+def test_build_seedance_segment_prompt_renumbers_to_tu_refs():
     out = build_seedance_segment_prompt(
         "@Image 3 结尾，@Image 1 开场",
         image_count=2,
         seg_idx=0,
         total_segs=1,
     )
-    assert "Image1" in out
-    assert "Image2" in out
+    assert "@图1" in out
+    assert "@图2" in out
+    assert "固定首帧" in out
     assert "@Image" not in out
+
+
+def test_build_seedance_segment_prompt_with_audio():
+    out = build_seedance_segment_prompt(
+        "产品特写运镜",
+        image_count=1,
+        seg_idx=0,
+        total_segs=1,
+        has_audio=True,
+    )
+    assert "@图1" in out
+    assert "@音频1" in out

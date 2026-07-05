@@ -1,4 +1,5 @@
 ﻿import asyncio
+import base64
 import io
 import json
 import logging
@@ -85,6 +86,8 @@ CROP_AI_APP_ID = "2037785424789245953"
 SEEDANCE_AI_APP_ID = "2037453629342355457"
 SEEDANCE_IMAGE_NODES = ["2", "7", "8", "9", "10", "11", "12", "13", "14"]
 SEEDANCE_AUDIO_NODE = "27"
+PROMO_AICOST_MAX_IMAGES = 9
+PROMO_AICOST_DEFAULT_BASE_URL = "https://www.aicost.xyz"
 SPARKVIDEO_ENDPOINT = "/rhart-video/sparkvideo-2.0/multimodal-video"
 
 # RH Seedance AI App node 1 fieldData（与 RH 文档一致）
@@ -740,8 +743,12 @@ def build_seedance_segment_prompt(
     seg_idx: int,
     total_segs: int,
     promo_script: str = "",
+    *,
+    has_audio: bool = False,
 ) -> str:
-    """Normalize image refs to Image1..ImageK (segment-local) and append segment context."""
+    """Normalize image refs to @图1..@图K and apply Seedance first-frame semantics."""
+    from lib.dh_video_v2_service import finalize_seedance_prompt
+
     prompt = (base_prompt or "").strip()
     if not prompt:
         prompt = "产品宣传视频，流畅运镜与转场。"
@@ -749,14 +756,27 @@ def build_seedance_segment_prompt(
     def _repl(m: re.Match) -> str:
         old_num = int(m.group(1) or m.group(2) or "1")
         new_num = min(max(old_num, 1), image_count)
-        return f"Image{new_num}"
+        return f"@图{new_num}"
 
     prompt = _IMAGE_REF_RE.sub(_repl, prompt)
     prompt = re.sub(
         r"@Image\s*(\d+)",
-        lambda m: f"Image{min(int(m.group(1)), image_count)}",
+        lambda m: f"@图{min(int(m.group(1)), image_count)}",
         prompt,
         flags=re.IGNORECASE,
+    )
+    prompt = re.sub(
+        r"Image\s*(\d+)",
+        lambda m: f"@图{min(int(m.group(1)), image_count)}",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+
+    prompt = finalize_seedance_prompt(
+        prompt,
+        mode="first_frame",
+        image_count=image_count,
+        has_audio=has_audio,
     )
 
     if total_segs > 1:
@@ -783,6 +803,7 @@ def plan_promo_video_segments(
     total_duration: int,
     video_prompt: str,
     promo_script: str,
+    has_audio: bool = False,
 ) -> list[VideoSegmentPlan]:
     if not selected_paths:
         raise ValueError("未选中有效分镜")
@@ -794,7 +815,7 @@ def plan_promo_video_segments(
     for seg_idx, paths in enumerate(path_slices):
         if not paths:
             raise ValueError(f"第 {seg_idx + 1} 段无分镜图")
-        if len(paths) > len(SEEDANCE_IMAGE_NODES):
+        if len(paths) > PROMO_AICOST_MAX_IMAGES:
             raise ValueError("请减少选中分镜或缩短时长（每段最多 9 张参考图）")
         seg_prompt = build_seedance_segment_prompt(
             video_prompt,
@@ -802,6 +823,7 @@ def plan_promo_video_segments(
             seg_idx,
             segment_count,
             promo_script,
+            has_audio=has_audio,
         )
         plans.append(
             VideoSegmentPlan(
@@ -973,15 +995,77 @@ async def download_crop_results(
     return paths
 
 
-PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION = {
-    "480p": 798,
-    "720p": 1528,
-    "1080p": 2289,
-}
+PROMO_VIDEO_SEGMENT_COST = 450
+
+
+def map_promo_aspect_ratio(ratio: str) -> str:
+    """宣传视频画面比例 → aicost Seedance aspect_ratio（model: seedance2.0）。"""
+    r = (ratio or "adaptive").strip().lower()
+    if r in ("adaptive", "auto"):
+        return "auto"
+    if r in ("16:9", "9:16", "1:1"):
+        return r
+    return "auto"
+
+
+def encode_file_base64(path: str) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
+
+
+def encode_files_base64(paths: list[str]) -> list[str]:
+    return [encode_file_base64(p) for p in paths]
+
+
+def strip_data_url_b64(raw: str) -> str:
+    s = (raw or "").strip()
+    if s.startswith("data:"):
+        idx = s.find(",")
+        if idx >= 0:
+            return s[idx + 1 :].strip()
+    return s
+
+
+def resolve_promo_audios_base64(story: dict) -> list[str] | None:
+    raw = (story.get("audio_base64") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("data:"):
+        return [raw]
+    return [raw]
+
+
+async def render_promo_segment_via_aicost(
+    *,
+    plan: "VideoSegmentPlan",
+    aspect_ratio: str,
+    audios_base64: list[str] | None,
+    dest_path: str,
+    client_task_id: str,
+    media_refs_dir: str | None = None,
+) -> str:
+    """宣传视频单段：Seedance（7tai 主渠道 + aicost 备用，见 SEEDANCE_* 环境变量）。"""
+    from lib.dh_video_v2_service import render_aicost_segment_to_file
+
+    if not (os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip():
+        raise RuntimeError("SEEDANCE_API_KEY 未配置")
+    images_b64 = encode_files_base64(plan.frame_paths)
+    if len(images_b64) > PROMO_AICOST_MAX_IMAGES:
+        raise ValueError(f"每段最多 {PROMO_AICOST_MAX_IMAGES} 张参考图")
+    return await render_aicost_segment_to_file(
+        prompt=plan.prompt,
+        images_base64=images_b64,
+        audios_base64=audios_base64,
+        aspect_ratio=map_promo_aspect_ratio(aspect_ratio),
+        dest_path=dest_path,
+        client_task_id=client_task_id,
+        mode="first_frame",
+        media_refs_dir=media_refs_dir,
+    )
 
 
 def calculate_promo_video_cost(duration: int, resolution: str = "720p") -> int:
+    """宣传视频扣费：每 15s 一段 × 450 积分（resolution 保留参数兼容旧调用）。"""
+    _ = resolution
     segments = max(1, (int(duration) + 14) // 15)
-    res = (resolution or "").strip()
-    per_15s = PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION.get(res, PROMO_VIDEO_COST_PER_15S_BY_RESOLUTION["1080p"])
-    return segments * per_15s
+    return segments * PROMO_VIDEO_SEGMENT_COST

@@ -182,11 +182,11 @@ def test_assert_task_owner_rejects_missing_owner(tmp_db):
     assert exc.value.status_code == 403
 
 
-def test_consume_voice_clone_costs_50(tmp_db):
+def test_consume_voice_clone_costs_10(tmp_db):
     auth_mod, credit_mod, uid = tmp_db
     bal = auth_mod.consume_voice_clone(user_id=uid, ref_id="vc-1")
-    assert bal == 10000 - 50
-    assert credit_mod.get_account(uid).balance == 9950
+    assert bal == 10000 - 10
+    assert credit_mod.get_account(uid).balance == 9990
 
 
 def test_consume_voice_clone_idempotent(tmp_db):
@@ -224,5 +224,56 @@ def test_consume_with_idempotency_rejects_invalid_variable_cost(tmp_db):
             scene="video_creation",
             ref_id="bad-cost",
             cost=251,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_geo_scenes_in_cost_table(tmp_db):
+    auth_mod, _, uid = tmp_db
+    for scene in (
+        "geo_matrix_gen",
+        "geo_skill_gen",
+        "geo_research",
+        "geo_authority_link",
+        "dh_v2_plan_script",
+        "dh_v2_video_retry",
+        "promo_storyboard",
+        "copy_extract",
+        "video_image_to_video",
+        "video_mashup",
+    ):
+        assert scene in auth_mod.SCENE_COST_TABLE
+        bal = auth_mod.consume_with_idempotency(user_id=uid, scene=scene, ref_id=f"test-{scene}")
+        assert bal < 10000
+
+
+def test_consume_dh_v2_video_segments_variable_cost(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    bal = auth_mod.consume_dh_v2_video_segments(
+        user_id=uid, ref_id="dhv2-1:video", segment_count=2
+    )
+    assert bal == 10000 - 900
+    assert credit_mod.get_account(uid).balance == 9100
+
+
+def test_consume_dh_v2_video_segments_idempotent(tmp_db):
+    auth_mod, _, uid = tmp_db
+    bal1 = auth_mod.consume_dh_v2_video_segments(
+        user_id=uid, ref_id="dhv2-dup:video", segment_count=1
+    )
+    bal2 = auth_mod.consume_dh_v2_video_segments(
+        user_id=uid, ref_id="dhv2-dup:video", segment_count=1
+    )
+    assert bal1 == bal2
+
+
+def test_consume_dh_v2_video_segments_rejects_invalid_cost(tmp_db):
+    auth_mod, _, uid = tmp_db
+    with pytest.raises(HTTPException) as exc:
+        auth_mod.consume_with_idempotency(
+            user_id=uid,
+            scene="dh_v2_video_segment",
+            ref_id="bad-dhv2",
+            cost=451,
         )
     assert exc.value.status_code == 400

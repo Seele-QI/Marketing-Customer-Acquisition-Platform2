@@ -14,6 +14,7 @@ export type DhV2SegmentSubmit = {
   dialogue: string
   shot_details: string
   video_prompt: string
+  dialogue_warning?: "ok" | "too_short" | "too_long" | "empty"
 }
 
 export type DhVideoV2SubmitPayload = {
@@ -40,6 +41,15 @@ export type DhVideoV2SubmitResponse = {
   provider?: DhVideoV2Provider
 }
 
+export type DhV2SegmentRuntimeStatus = {
+  index: number
+  status: "pending" | "submitting" | "processing" | "completed" | "failed" | "timeout"
+  video_url?: string
+  error?: string
+  time_range?: string
+  dialogue?: string
+}
+
 export type DhVideoV2Status = {
   task_id: string
   status: string
@@ -54,14 +64,17 @@ export type DhVideoV2Status = {
   model?: string
   segment_count?: number
   segments_completed?: number
+  segments?: DhV2SegmentRuntimeStatus[]
 }
 
 export type DhV2PlanScriptRequest = {
   script: string
   creative_idea: string
-  image_count: number
+  image_count?: number
+  images_base64?: string[]
   has_audio_ref: boolean
-  dialogue_slices: string[]
-  plan_duration: number
-  segment_count: number
+  /** @deprecated AI 自行语义拆段 */
+  dialogue_slices?: string[]
+  plan_duration?: number
+  segment_count?: number
 }

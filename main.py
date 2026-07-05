@@ -14,7 +14,7 @@ from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lib.runninghub_client import RunningHubClient, RunningHubError, build_motion_prompt, build_cover_prompt
 from lib.video_postprocess import render_video_with_template, probe_audio_duration, _FFMPEG_EXE
@@ -672,6 +672,12 @@ class CreditConsumeRequest(BaseModel):
     cost: int | None = None
     ref_id: str = ""
     note: str = ""
+
+
+class CreditBillingRequest(BaseModel):
+    billing_key: str
+    params: dict = Field(default_factory=dict)
+    ref_id: str = ""
 
 
 class RedeemCodeRequest(BaseModel):
@@ -2980,6 +2986,43 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
     }
 
 
+@app.post("/api/credit/consume-billing")
+async def credit_consume_billing(req: CreditBillingRequest, request: Request):
+    """定价注册表解析 + 幂等扣费。客户端只传 billing_key + params，不传 cost。"""
+    from lib.api_auth import consume_billing_event
+    from lib.credit import CreditError
+
+    user = require_user(request)
+    billing_key = (req.billing_key or "").strip()
+    ref_id = (req.ref_id or "").strip()
+    if not billing_key:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": "billing_key 不能为空"},
+        )
+    if not ref_id:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_REF_ID", "message": "缺少幂等键 ref_id"},
+        )
+    try:
+        balance, cost, scene = consume_billing_event(
+            user_id=user.id,
+            billing_key=billing_key,
+            params=req.params or {},
+            ref_id=ref_id,
+        )
+    except CreditError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    return {
+        "balance": balance,
+        "cost": cost,
+        "scene": scene,
+        "ref_id": ref_id,
+        "billing_key": billing_key,
+    }
+
+
 class CreditMeteredRequest(BaseModel):
     user_id: int
     scene: str = "ai_llm"
@@ -3356,6 +3399,20 @@ async def copywriting_extract(req: CopyExtractRequest, request: Request):
     """
     user = require_user(request)
     safe_url = _validate_extract_url(req.url or "")
+
+    ref_id = f"copy-extract:{_uuid.uuid4().hex}"
+    try:
+        consume_with_idempotency(
+            user_id=user.id,
+            scene="copy_extract",
+            ref_id=ref_id,
+            note="文案提取",
+        )
+    except Exception as e:
+        from lib.credit import CreditError
+        if isinstance(e, CreditError):
+            raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+        raise
 
     try:
         task = create_extract_task(safe_url)
@@ -3928,9 +3985,10 @@ from lib.promo_video_service import (
     pick_first_valid_url,
     plan_promo_video_segments,
     query_runninghub_task,
+    render_promo_segment_via_aicost,
     resolve_frame_paths,
+    resolve_promo_audios_base64,
     submit_grid_crop_to_rh,
-    submit_seedance_video_to_rh,
     submit_storyboard_to_rh,
     upload_to_runninghub,
     wait_for_runninghub_task,
@@ -4390,9 +4448,9 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
 
     try:
         _promo_patch_task(task_id, status="video_processing", progress=5, error="")
-        rh_key = (os.getenv("RUNNINGHUB_API_KEY") or "").strip()
-        if not rh_key:
-            raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
+        seedance_key = (os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip()
+        if not seedance_key:
+            raise RuntimeError("SEEDANCE_API_KEY 未配置（宣传视频成片走 aicost Seedance 2.0）")
 
         selected_paths = resolve_frame_paths(
             story,
@@ -4405,24 +4463,21 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
         duration = int(story.get("duration") or 15)
         ratio = (gen_req.ratio or "").strip() or story.get("ratio") or "adaptive"
         video_resolution = (gen_req.video_resolution or "720p").strip()
-        real_person_mode = bool(gen_req.real_person_mode)
-        instance_type = (gen_req.instance_type or "default").strip()
+        if video_resolution != "720p":
+            logger.warning(
+                "promo video %s: aicost Seedance 仅支持 720p，已按 720p 提交（UI 选择 %s）",
+                task_id,
+                video_resolution,
+            )
         promo_script = (story.get("promo_script") or "").strip()
-
-        voice_rh_url = (story.get("voice_rh_url") or "").strip()
-        if not voice_rh_url:
-            audio_b64 = (story.get("audio_base64") or "").strip()
-            if audio_b64:
-                voice_path = os.path.join(output_dir, "voice_sample.mp3")
-                await _decode_b64_file(audio_b64, voice_path)
-                voice_rh_url = await upload_to_runninghub(rh_key, voice_path)
-                story["voice_rh_url"] = voice_rh_url
+        audios_base64 = resolve_promo_audios_base64(story)
 
         segment_plans = plan_promo_video_segments(
             selected_paths=selected_paths,
             total_duration=duration,
             video_prompt=gen_req.video_prompt.strip(),
             promo_script=promo_script,
+            has_audio=bool(audios_base64),
         )
         segment_count = len(segment_plans)
         _promo_patch_task(
@@ -4438,59 +4493,21 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
         async def _render_segment(plan) -> tuple[int, str, str]:
             nonlocal segments_completed
             seg_idx = plan.segment_index
-            seg_output = os.path.join(output_dir, f"segment_{seg_idx}")
-            os.makedirs(seg_output, exist_ok=True)
+            seg_path = os.path.join(output_dir, f"segment_{seg_idx}.mp4")
 
-            rh_image_urls: list[str] = []
-            for fp in plan.frame_paths:
-                rh_image_urls.append(await upload_to_runninghub(rh_key, fp))
-
-            rh_id = await submit_seedance_video_to_rh(
-                rh_key,
-                rh_image_urls,
-                plan.prompt,
-                duration=plan.duration_sec,
-                resolution=video_resolution,
-                ratio=ratio,
-                real_person_mode=real_person_mode,
-                audio_rh_url=voice_rh_url or None,
-                instance_type=instance_type,
-                output_dir=seg_output,
+            upstream_id = await render_promo_segment_via_aicost(
+                plan=plan,
+                aspect_ratio=ratio,
+                audios_base64=audios_base64,
+                dest_path=seg_path,
+                client_task_id=f"{task_id}:seg{seg_idx}",
+                media_refs_dir=os.path.join(output_dir, "refs"),
             )
-            rh_ids.append(rh_id)
+            rh_ids.append(upstream_id)
             _promo_patch_task(
                 task_id,
                 rh_video_task_ids=list(rh_ids),
                 progress=15 + int((seg_idx / max(segment_count, 1)) * 10),
-            )
-
-            def _on_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
-                base = 15 + int((segments_completed / max(segment_count, 1)) * 70)
-                seg_part = int(min(elapsed / 600.0, 1.0) * (70 / max(segment_count, 1)))
-                _promo_patch_task(
-                    task_id,
-                    progress=min(84, base + seg_part),
-                    rh_video_task_ids=list(rh_ids),
-                )
-
-            try:
-                result = await wait_for_runninghub_task(
-                    rh_key,
-                    rh_id,
-                    max_wait=900,
-                    on_poll=_on_poll,
-                    task_label="视频",
-                )
-            except Exception as e:
-                raise RuntimeError(f"第 {seg_idx + 1}/{segment_count} 段生成失败：{e}") from e
-
-            video_url = pick_first_valid_url(result.get("results"))
-            if not video_url:
-                raise RuntimeError(f"第 {seg_idx + 1}/{segment_count} 段无有效视频输出")
-            seg_path = await download_file(
-                video_url,
-                output_dir,
-                f"segment_{seg_idx}.mp4",
             )
 
             async with completed_lock:
@@ -4501,7 +4518,7 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
                     rh_video_task_ids=list(rh_ids),
                     progress=15 + int((segments_completed / max(segment_count, 1)) * 70),
                 )
-            return seg_idx, rh_id, seg_path
+            return seg_idx, upstream_id, seg_path
 
         segment_results = await asyncio.gather(
             *[_render_segment(plan) for plan in segment_plans]

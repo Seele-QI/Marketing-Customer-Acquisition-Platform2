@@ -4,10 +4,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import os
+import re
+import subprocess
+import tempfile
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import httpx
 
@@ -16,12 +22,94 @@ from lib.video_concat import concatenate_videos_ffmpeg
 logger = logging.getLogger("dh_video_v2_service")
 
 DEFAULT_BASE_URL = "https://www.aicost.xyz"
+SEEDANCE_AICOST_MODEL = "seedance2.0-fast"
+DEFAULT_PRIMARY_MODEL = "sd2-福利"
 SEGMENT_SEC = 15
 POLL_INTERVAL = 5.0
-MAX_POLL_WAIT = 1800.0  # 单段最长 30 分钟（上游偶发排队）
+SEEDANCE_FIRST_FRAME_SUFFIX = "\n\n@图1 当前图片为视频固定首帧"
+SEEDANCE_MAX_IMAGES = 9
+SEEDANCE_MAX_AUDIOS = 3
 
 TERMINAL_OK = {"completed", "succeeded", "success", "SUCCESS"}
 TERMINAL_FAIL = {"failed", "failure", "error", "cancelled", "rejected", "timeout", "expired"}
+
+
+@dataclass(frozen=True)
+class SeedanceEndpoint:
+    """Seedance 上游渠道：首选 NewAPI + aicost 备选。"""
+
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+    media_mode: str = "base64"  # url：先 /v1/assets/uploads；base64：直传 images_base64
+
+
+def _is_fast_seedance_model(model: str) -> bool:
+    m = (model or "").strip()
+    if m == "seedance2.0-fast":
+        return True
+    if m.startswith("sd2-"):
+        return True
+    return False
+
+
+def list_seedance_endpoints() -> list[SeedanceEndpoint]:
+    """首选 SEEDANCE_PRIMARY_*，备选 SEEDANCE_* / aicost。"""
+    out: list[SeedanceEndpoint] = []
+    primary_base = (os.getenv("SEEDANCE_PRIMARY_BASE_URL") or "").strip().rstrip("/")
+    primary_key = (os.getenv("SEEDANCE_PRIMARY_API_KEY") or "").strip()
+    primary_model = (os.getenv("SEEDANCE_PRIMARY_MODEL") or DEFAULT_PRIMARY_MODEL).strip()
+    primary_media = (os.getenv("SEEDANCE_PRIMARY_MEDIA_MODE") or "url").strip().lower()
+    if primary_media not in ("url", "base64"):
+        primary_media = "url"
+    if primary_base and primary_key:
+        out.append(
+            SeedanceEndpoint(
+                name="primary",
+                base_url=primary_base,
+                api_key=primary_key,
+                model=primary_model or DEFAULT_PRIMARY_MODEL,
+                media_mode=primary_media,
+            )
+        )
+
+    fallback_key = (os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip()
+    fallback_base = (os.getenv("SEEDANCE_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/")
+    if fallback_key:
+        out.append(
+            SeedanceEndpoint(
+                name="fallback",
+                base_url=fallback_base,
+                api_key=fallback_key,
+                model=SEEDANCE_AICOST_MODEL,
+                media_mode="base64",
+            )
+        )
+    return out
+
+
+def get_seedance_endpoint(name: str | None = None) -> SeedanceEndpoint:
+    endpoints = list_seedance_endpoints()
+    if not endpoints:
+        raise RuntimeError("SEEDANCE_API_KEY 未配置")
+    if name:
+        for ep in endpoints:
+            if ep.name == name:
+                return ep
+    return endpoints[0]
+
+
+def segment_poll_timeout() -> float:
+    raw = (os.getenv("DH_V2_SEGMENT_POLL_TIMEOUT") or "900").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 900.0
+
+
+# 兼容旧引用
+MAX_POLL_WAIT = segment_poll_timeout()
 
 
 def _api_key() -> str:
@@ -71,48 +159,575 @@ def _normalize_status(raw: str) -> str:
     return (raw or "unknown").strip().lower()
 
 
+def _ensure_data_url(raw: str, default_mime: str) -> str:
+    """纯 base64 → data URL（接口两种格式均支持，data URL 与 verify 脚本一致）。"""
+    s = (raw or "").strip()
+    if not s:
+        return s
+    if s.startswith("data:"):
+        return s
+    return f"data:{default_mime};base64,{s}"
+
+
+def _normalize_images_base64(items: list[str] | None) -> list[str] | None:
+    if not items:
+        return None
+    out: list[str] = []
+    for item in items:
+        s = (item or "").strip()
+        if not s:
+            continue
+        out.append(_ensure_data_url(s, "image/jpeg"))
+    return out or None
+
+
+def _normalize_audios_base64(items: list[str] | None) -> list[str] | None:
+    if not items:
+        return None
+    out: list[str] = []
+    for item in items:
+        s = (item or "").strip()
+        if not s:
+            continue
+        mp3_bytes = _prepare_audio_mp3_bytes(s)
+        b64 = base64.b64encode(mp3_bytes).decode("ascii")
+        out.append(f"data:audio/mpeg;base64,{b64}")
+    return out or None
+
+
+def resolve_seedance_mode(
+    mode: str | None,
+    *,
+    image_count: int,
+    has_audio: bool = False,
+) -> str:
+    """数字人视频创作：有参考图一律首帧图生（可叠加音频参考），禁止误走文生。"""
+    del mode, has_audio  # dh-v2 产品固定首帧语义
+    if image_count < 1:
+        return "text"
+    return "first_frame"
+
+
+def finalize_seedance_prompt(
+    prompt: str,
+    *,
+    mode: str,
+    image_count: int,
+    has_audio: bool = False,
+) -> str:
+    """按 seedance 文档补全 @图1 / 首帧 / @音频1 语义，避免上游判为文生视频。"""
+    p = (prompt or "").strip()
+    if image_count < 1 or mode == "text":
+        return p
+
+    if mode == "first_frame":
+        if "@图1" not in p:
+            p = f"参考 @图1 中的人物形象与场景，{p}" if p else "参考 @图1 中的人物形象与场景"
+        if "当前图片为视频固定首帧" not in p and "固定首帧" not in p:
+            p += SEEDANCE_FIRST_FRAME_SUFFIX
+    elif mode == "multimodal":
+        if "@图1" not in p:
+            p = f"参考 @图1 中的人物与场景，{p}" if p else "参考 @图1 中的人物与场景"
+
+    if has_audio and "@音频1" not in p:
+        p += " @音频1 驱动口型节奏"
+
+    return p
+
+
+def _attach_seedance_base64_fields(
+    payload: dict[str, Any],
+    *,
+    images_base64: list[str] | None,
+    audios_base64: list[str] | None,
+) -> None:
+    """aicost 等渠道：直传 base64（勿写入 reference_images/images 别名，避免网关误判）。"""
+    imgs = _normalize_images_base64(images_base64)
+    if imgs:
+        payload["images_base64"] = imgs[:SEEDANCE_MAX_IMAGES]
+
+    auds = _normalize_audios_base64(audios_base64)
+    if auds:
+        payload["audios_base64"] = auds[:SEEDANCE_MAX_AUDIOS]
+
+
+def _attach_seedance_url_fields(
+    payload: dict[str, Any],
+    *,
+    image_urls: list[str] | None,
+    audio_urls: list[str] | None,
+) -> None:
+    """7tai 等渠道：仅公网 URL（须先 POST /v1/assets/uploads）。"""
+    imgs = [u.strip() for u in (image_urls or []) if str(u or "").strip().startswith(("http://", "https://"))]
+    if imgs:
+        imgs = imgs[:SEEDANCE_MAX_IMAGES]
+        payload["reference_image_urls"] = imgs
+        payload["image_urls"] = imgs
+        if len(imgs) == 1:
+            payload["image_url"] = imgs[0]
+
+    auds = [u.strip() for u in (audio_urls or []) if str(u or "").strip().startswith(("http://", "https://"))]
+    if auds:
+        auds = auds[:SEEDANCE_MAX_AUDIOS]
+        payload["audio_urls"] = auds
+        payload["reference_audio_urls"] = auds
+        payload["reference_audios"] = auds
+        if len(auds) == 1:
+            payload["audio_url"] = auds[0]
+            payload["reference_audio"] = auds[0]
+
+
+def _strip_inline_media_fields(payload: dict[str, Any]) -> None:
+    """URL 模式：移除一切 base64/内联字段，避免 7tai 误判为本地素材。"""
+    for key in (
+        "images_base64",
+        "image_base64",
+        "audios_base64",
+        "audio_base64",
+        "audio_base64s",
+        "reference_images",
+        "images",
+    ):
+        payload.pop(key, None)
+
+
+def _mime_to_ext(mime: str, default: str) -> str:
+    m = (mime or "").lower()
+    if "png" in m:
+        return "png"
+    if "webp" in m:
+        return "webp"
+    if "gif" in m:
+        return "gif"
+    if "mp4" in m or "m4a" in m or "x-m4a" in m:
+        return "m4a"
+    if "wav" in m:
+        return "wav"
+    if "mpeg" in m or "mp3" in m:
+        return "mp3"
+    if "jpeg" in m or "jpg" in m:
+        return "jpg"
+    return default
+
+
+def _decode_media_item(raw: str, *, default_mime: str, default_ext: str) -> tuple[bytes, str, str]:
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("素材为空")
+    m = re.match(r"^data:([^;]+);base64,(.+)$", s, re.I | re.S)
+    if m:
+        mime = m.group(1).strip() or default_mime
+        data = base64.b64decode(m.group(2).strip())
+        return data, mime, _mime_to_ext(mime, default_ext)
+    data = base64.b64decode(s)
+    return data, default_mime, default_ext
+
+
+def _default_audio_mime_ext(raw: str) -> tuple[str, str]:
+    s = (raw or "").strip().lower()
+    if "audio/mp4" in s or "audio/x-m4a" in s or "audio/m4a" in s:
+        return "audio/mp4", "m4a"
+    if "audio/wav" in s or "audio/x-wav" in s:
+        return "audio/wav", "wav"
+    if "audio/mpeg" in s or "audio/mp3" in s:
+        return "audio/mpeg", "mp3"
+    return "audio/mpeg", "mp3"
+
+
+def _looks_like_mp3(data: bytes) -> bool:
+    if len(data) < 4:
+        return False
+    if data[:3] == b"ID3":
+        return True
+    return data[0] == 0xFF and (data[1] & 0xE0) == 0xE0
+
+
+def _prepare_audio_mp3_bytes(raw: str) -> bytes:
+    """Seedance audio_url 仅稳定支持 MP3；m4a/wav 等先 ffmpeg 转码再上传/提交。"""
+    data, mime, ext = _decode_media_item(raw, default_mime="audio/mpeg", default_ext="mp3")
+    if ext == "mp3" and mime in ("audio/mpeg", "audio/mp3") and _looks_like_mp3(data):
+        return data
+
+    ffmpeg = _ffmpeg_exe()
+    with tempfile.TemporaryDirectory(prefix="dhv2_audio_") as tmp:
+        src_path = os.path.join(tmp, f"input.{ext}")
+        dst_path = os.path.join(tmp, "output.mp3")
+        with open(src_path, "wb") as f:
+            f.write(data)
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            src_path,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            dst_path,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(f"未找到 ffmpeg，无法转换参考音频: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError("参考音频转 MP3 超时") from e
+        if proc.returncode != 0 or not os.path.isfile(dst_path):
+            err = (proc.stderr or proc.stdout or "ffmpeg 失败").strip()[:400]
+            raise RuntimeError(f"参考音频转 MP3 失败: {err}")
+        mp3_data = open(dst_path, "rb").read()
+        if len(mp3_data) < 128:
+            raise RuntimeError("参考音频转 MP3 后文件过小")
+        logger.info(
+            "参考音频已转 MP3 (%s → mp3, %s bytes → %s bytes)",
+            ext,
+            len(data),
+            len(mp3_data),
+        )
+        return mp3_data
+
+
+UPLOAD_CACHE_AUDIO_CODEC = "mp3"
+
+
+def _uploaded_media_cache_path(refs_dir: str) -> str:
+    return os.path.join(refs_dir, "seedance_uploaded_urls.json")
+
+
+def _load_uploaded_media_cache(
+    refs_dir: str,
+    endpoint_name: str,
+    *,
+    image_count: int,
+    audio_count: int,
+) -> tuple[list[str], list[str]] | None:
+    path = _uploaded_media_cache_path(refs_dir)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import json
+
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        block = data.get(endpoint_name) if isinstance(data, dict) else None
+        if not isinstance(block, dict):
+            return None
+        if block.get("audio_codec") != UPLOAD_CACHE_AUDIO_CODEC:
+            return None
+        image_urls = block.get("image_urls") or []
+        audio_urls = block.get("audio_urls") or []
+        if not isinstance(image_urls, list) or not isinstance(audio_urls, list):
+            return None
+        if len(image_urls) != image_count or len(audio_urls) != audio_count:
+            return None
+        if image_count and not all(str(u).startswith(("http://", "https://")) for u in image_urls):
+            return None
+        if audio_count and not all(str(u).startswith(("http://", "https://")) for u in audio_urls):
+            return None
+        return [str(u) for u in image_urls], [str(u) for u in audio_urls]
+    except Exception:
+        return None
+
+
+def _save_uploaded_media_cache(
+    refs_dir: str,
+    endpoint_name: str,
+    *,
+    image_urls: list[str],
+    audio_urls: list[str],
+) -> None:
+    import json
+
+    os.makedirs(refs_dir, exist_ok=True)
+    path = _uploaded_media_cache_path(refs_dir)
+    data: dict[str, Any] = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+    data[endpoint_name] = {
+        "image_urls": image_urls,
+        "audio_urls": audio_urls,
+        "audio_codec": UPLOAD_CACHE_AUDIO_CODEC,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def _media_fingerprint(raw: str) -> str:
+    data, _, _ = _decode_media_item(raw, default_mime="application/octet-stream", default_ext="bin")
+    return hashlib.sha256(data).hexdigest()[:24]
+
+
+def _pick_asset_url(data: dict[str, Any]) -> str:
+    for key in ("url", "file_url", "public_url", "download_url", "asset_url"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
+            return v.strip()
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        for key in ("url", "file_url", "public_url", "download_url", "asset_url"):
+            v = inner.get(key)
+            if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
+                return v.strip()
+    if isinstance(inner, str) and inner.strip().startswith(("http://", "https://")):
+        return inner.strip()
+    raise RuntimeError(f"素材上传响应无公网 URL: {str(data)[:400]}")
+
+
+_asset_url_cache: dict[tuple[str, str, str], str] = {}
+
+
+async def upload_seedance_asset_to_url(
+    ep: SeedanceEndpoint,
+    *,
+    raw: str,
+    kind: str,
+    default_mime: str,
+    default_ext: str,
+) -> str:
+    """7tai：POST /v1/assets/uploads → 公网 URL（同任务内缓存，避免多段重复上传）。"""
+    if kind == "audio":
+        data = _prepare_audio_mp3_bytes(raw)
+        mime, ext = "audio/mpeg", "mp3"
+        fingerprint = hashlib.sha256(data).hexdigest()[:24]
+    else:
+        fingerprint = _media_fingerprint(raw)
+        data, mime, ext = _decode_media_item(raw, default_mime=default_mime, default_ext=default_ext)
+
+    cache_key = (ep.name, kind, fingerprint)
+    cached = _asset_url_cache.get(cache_key)
+    if cached:
+        return cached
+
+    filename = f"dhv2_{kind}_{fingerprint[:8]}.{ext}"
+    upload_url = f"{ep.base_url}/v1/assets/uploads"
+    headers = {"Authorization": f"Bearer {ep.api_key}"}
+
+    async with _http_client(timeout=180.0) as client:
+        resp = await client.post(
+            upload_url,
+            headers=headers,
+            files={"file": (filename, data, mime)},
+            data={"type": kind, "asset_type": kind},
+        )
+        if resp.status_code >= 400:
+            resp2 = await client.post(
+                upload_url,
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "filename": filename,
+                    "content_type": mime,
+                    "type": kind,
+                    "asset_type": kind,
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+            )
+            if resp2.status_code >= 400:
+                raise RuntimeError(
+                    f"素材上传失败 multipart({resp.status_code}): {resp.text[:300]}; "
+                    f"json({resp2.status_code}): {resp2.text[:300]}"
+                )
+            public_url = _pick_asset_url(resp2.json())
+        else:
+            public_url = _pick_asset_url(resp.json())
+
+    _asset_url_cache[cache_key] = public_url
+    logger.info("Seedance 素材已上传 %s kind=%s url=%s", ep.name, kind, public_url[:80])
+    return public_url
+
+
+async def _upload_reference_media_urls(
+    ep: SeedanceEndpoint,
+    *,
+    images_base64: list[str] | None,
+    audios_base64: list[str] | None,
+    refs_dir: str | None = None,
+) -> tuple[list[str], list[str]]:
+    image_items = [str(x) for x in (images_base64 or []) if str(x or "").strip()]
+    audio_items = [str(x) for x in (audios_base64 or []) if str(x or "").strip()]
+
+    if refs_dir:
+        cached = _load_uploaded_media_cache(
+            refs_dir,
+            ep.name,
+            image_count=len(image_items),
+            audio_count=len(audio_items),
+        )
+        if cached:
+            return cached
+
+    image_urls: list[str] = []
+    for raw in image_items:
+        image_urls.append(
+            await upload_seedance_asset_to_url(
+                ep,
+                raw=raw,
+                kind="image",
+                default_mime="image/jpeg",
+                default_ext="jpg",
+            )
+        )
+    audio_urls: list[str] = []
+    for raw in audio_items:
+        audio_urls.append(
+            await upload_seedance_asset_to_url(
+                ep,
+                raw=raw,
+                kind="audio",
+                default_mime="audio/mpeg",
+                default_ext="mp3",
+            )
+        )
+
+    if refs_dir:
+        _save_uploaded_media_cache(
+            refs_dir,
+            ep.name,
+            image_urls=image_urls,
+            audio_urls=audio_urls,
+        )
+    return image_urls, audio_urls
+
+
+async def build_seedance_submit_payload_for_endpoint(
+    ep: SeedanceEndpoint,
+    *,
+    model: str,
+    prompt: str,
+    aspect_ratio: str,
+    segment_sec: int,
+    images_base64: list[str] | None,
+    audios_base64: list[str] | None,
+    client_task_id: str | None,
+    mode: str | None,
+    media_refs_dir: str | None = None,
+) -> dict[str, Any]:
+    if ep.media_mode == "url":
+        image_urls, audio_urls = await _upload_reference_media_urls(
+            ep,
+            images_base64=images_base64,
+            audios_base64=audios_base64,
+            refs_dir=media_refs_dir,
+        )
+        return build_seedance_submit_payload(
+            model=model,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            segment_sec=segment_sec,
+            image_urls=image_urls,
+            audio_urls=audio_urls or None,
+            client_task_id=client_task_id,
+            mode=mode,
+            media_mode="url",
+        )
+    return build_seedance_submit_payload(
+        model=model,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        segment_sec=segment_sec,
+        images_base64=images_base64,
+        audios_base64=audios_base64,
+        client_task_id=client_task_id,
+        mode=mode,
+        media_mode="base64",
+    )
+
+
+def build_seedance_submit_payload(
+    *,
+    model: str,
+    prompt: str,
+    aspect_ratio: str = "9:16",
+    segment_sec: int = SEGMENT_SEC,
+    images_base64: list[str] | None = None,
+    audios_base64: list[str] | None = None,
+    image_urls: list[str] | None = None,
+    audio_urls: list[str] | None = None,
+    client_task_id: str | None = None,
+    mode: str | None = "first_frame",
+    media_mode: str = "base64",
+) -> dict[str, Any]:
+    """按 seedance系列接口文档 组装 POST /v1/videos 请求体（图生/首帧+参考图）。"""
+    media_mode = (media_mode or "base64").strip().lower()
+    img_count = len(image_urls or []) or len([x for x in (images_base64 or []) if str(x or "").strip()])
+    has_audio = bool(
+        (audio_urls and any(str(x or "").strip() for x in audio_urls))
+        or (audios_base64 and any(str(x or "").strip() for x in audios_base64))
+    )
+    seedance_mode = resolve_seedance_mode(mode, image_count=img_count, has_audio=has_audio)
+    final_prompt = finalize_seedance_prompt(
+        prompt,
+        mode=seedance_mode,
+        image_count=img_count,
+        has_audio=has_audio,
+    )
+
+    payload: dict[str, Any] = {
+        "model": model or SEEDANCE_AICOST_MODEL,
+        "prompt": final_prompt,
+        "aspect_ratio": aspect_ratio or "9:16",
+        "resolution": "720p",
+    }
+    if _is_fast_seedance_model(payload["model"]):
+        payload["duration"] = "auto"
+        payload["seconds"] = str(segment_sec)
+    else:
+        sec = max(4, min(int(segment_sec), 15))
+        payload["duration"] = sec
+
+    if media_mode == "url":
+        if not image_urls:
+            raise ValueError("URL 模式需至少 1 张已上传参考图")
+        _attach_seedance_url_fields(payload, image_urls=image_urls, audio_urls=audio_urls)
+        _strip_inline_media_fields(payload)
+    else:
+        _attach_seedance_base64_fields(payload, images_base64=images_base64, audios_base64=audios_base64)
+
+    if img_count < 1 and seedance_mode != "text":
+        raise ValueError("Seedance 图生视频需至少 1 张参考图")
+
+    if client_task_id:
+        payload["client_task_id"] = client_task_id
+    return payload
+
+
 def _http_client(**kwargs) -> httpx.AsyncClient:
     """直连 aicost，避免 Windows 系统代理导致 ConnectError。"""
     return httpx.AsyncClient(trust_env=False, **kwargs)
 
 
-async def submit_aicost_seedance(
+async def _post_seedance_json(
     *,
-    prompt: str,
-    images_base64: list[str] | None = None,
-    audios_base64: list[str] | None = None,
-    aspect_ratio: str = "9:16",
-    client_task_id: str | None = None,
-    retries: int = 4,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    retries: int,
 ) -> dict[str, Any]:
-    key = _api_key()
-    if not key:
-        raise RuntimeError("SEEDANCE_API_KEY 未配置")
-
-    payload: dict[str, Any] = {
-        "model": "seedance2.0-fast",
-        "prompt": (prompt or "").strip(),
-        "aspect_ratio": aspect_ratio or "9:16",
-        "resolution": "720p",
-        "duration": "auto",
-        "seconds": str(SEGMENT_SEC),
-    }
-    if images_base64:
-        payload["images_base64"] = images_base64
-    if audios_base64:
-        payload["audios_base64"] = audios_base64
-    if client_task_id:
-        payload["client_task_id"] = client_task_id
-
-    url = f"{_base_url()}/v1/videos"
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
             async with _http_client(timeout=120.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code >= 400:
-                    raise RuntimeError(f"Seedance 提交失败 ({resp.status_code}): {resp.text[:500]}")
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                 return resp.json()
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
             last_err = e
@@ -122,7 +737,104 @@ async def submit_aicost_seedance(
                 await asyncio.sleep(wait)
                 continue
             raise
+        except RuntimeError:
+            raise
     raise RuntimeError(f"Seedance 提交失败: {last_err}")
+
+
+async def submit_aicost_seedance(
+    *,
+    prompt: str,
+    images_base64: list[str] | None = None,
+    audios_base64: list[str] | None = None,
+    aspect_ratio: str = "9:16",
+    client_task_id: str | None = None,
+    model: str | None = None,
+    segment_sec: int = SEGMENT_SEC,
+    mode: str | None = None,
+    retries: int = 4,
+    media_refs_dir: str | None = None,
+) -> dict[str, Any]:
+    endpoints = list_seedance_endpoints()
+    if not endpoints:
+        raise RuntimeError("SEEDANCE_API_KEY 未配置")
+
+    imgs = _normalize_images_base64(images_base64)
+    if not imgs:
+        raise RuntimeError("Seedance 图生视频需至少 1 张参考图（images_base64）")
+
+    errors: list[str] = []
+    for i, ep in enumerate(endpoints):
+        use_model = ep.model
+        if model and ep.name == "fallback":
+            use_model = model.strip()
+        payload = await build_seedance_submit_payload_for_endpoint(
+            ep,
+            model=use_model,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            segment_sec=segment_sec,
+            images_base64=images_base64,
+            audios_base64=audios_base64,
+            client_task_id=client_task_id,
+            mode=mode,
+            media_refs_dir=media_refs_dir,
+        )
+        url = f"{ep.base_url}/v1/videos"
+        headers = {"Authorization": f"Bearer {ep.api_key}", "Content-Type": "application/json"}
+        attempt_retries = retries if i == len(endpoints) - 1 else min(2, retries)
+        img_n = len(
+            payload.get("image_urls")
+            or payload.get("reference_image_urls")
+            or payload.get("images_base64")
+            or []
+        )
+        aud_n = len(
+            payload.get("audio_urls")
+            or payload.get("reference_audio_urls")
+            or payload.get("audios_base64")
+            or []
+        )
+        logger.info(
+            "Seedance 提交 %s model=%s media=%s mode=%s images=%s audios=%s prompt_len=%s",
+            ep.name,
+            use_model,
+            ep.media_mode,
+            resolve_seedance_mode(mode, image_count=img_n, has_audio=aud_n > 0),
+            img_n,
+            aud_n,
+            len(str(payload.get("prompt") or "")),
+        )
+        try:
+            data = await _post_seedance_json(
+                url=url,
+                headers=headers,
+                payload=payload,
+                retries=attempt_retries,
+            )
+            upstream_id = str(data.get("id") or data.get("task_id") or "").strip()
+            if not upstream_id:
+                errors.append(f"{ep.name}: 未返回任务 ID")
+                logger.warning("Seedance %s 响应无任务 ID，尝试下一渠道", ep.name)
+                continue
+            data["_seedance_endpoint"] = ep.name
+            if i > 0:
+                logger.warning(
+                    "Seedance 已回退到 %s (%s, model=%s)",
+                    ep.name,
+                    ep.base_url,
+                    use_model,
+                )
+            return data
+        except Exception as e:
+            msg = str(e) or ep.name
+            errors.append(f"{ep.name}: {msg}")
+            if i + 1 < len(endpoints):
+                logger.warning("Seedance %s 失败，尝试备选渠道: %s", ep.name, msg)
+                continue
+            raise RuntimeError(f"Seedance 全部渠道失败: {'; '.join(errors)}") from e
+
+    raise RuntimeError(f"Seedance 全部渠道失败: {'; '.join(errors)}")
 
 
 def _extract_status(data: dict) -> str:
@@ -134,13 +846,16 @@ def _extract_status(data: dict) -> str:
     return _normalize_status(str(raw or ""))
 
 
-async def poll_aicost_task(task_id: str, *, max_wait: float = MAX_POLL_WAIT) -> dict[str, Any]:
-    key = _api_key()
-    if not key:
-        raise RuntimeError("SEEDANCE_API_KEY 未配置")
-    headers = {"Authorization": f"Bearer {key}"}
-    url = f"{_base_url()}/v1/videos/{task_id}"
-    deadline = time.monotonic() + max_wait
+async def poll_aicost_task(
+    task_id: str,
+    *,
+    max_wait: float | None = None,
+    endpoint_name: str | None = None,
+) -> dict[str, Any]:
+    ep = get_seedance_endpoint(endpoint_name)
+    headers = {"Authorization": f"Bearer {ep.api_key}"}
+    url = f"{ep.base_url}/v1/videos/{task_id}"
+    deadline = time.monotonic() + (max_wait if max_wait is not None else segment_poll_timeout())
     network_blips = 0
     max_network_blips = 120
 
@@ -171,19 +886,27 @@ async def poll_aicost_task(task_id: str, *, max_wait: float = MAX_POLL_WAIT) -> 
     raise TimeoutError(f"Seedance 任务超时 ({task_id})")
 
 
-def _normalize_download_url(url: str, upstream_id: str = "") -> str:
+def _normalize_download_url(url: str, upstream_id: str = "", *, base_url: str | None = None) -> str:
+    base = (base_url or _base_url()).rstrip("/")
     u = (url or "").strip()
     if not u and upstream_id:
-        return f"{_base_url()}/v1/videos/{upstream_id}/content"
+        return f"{base}/v1/videos/{upstream_id}/content"
     if "/v1/videos/" in u and not u.rstrip("/").endswith("/content"):
         return f"{u.rstrip('/')}/content"
     return u
 
 
-async def download_video_file(url: str, dest_path: str, *, upstream_id: str = "", retries: int = 4) -> str:
-    key = _api_key()
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    fetch_url = _normalize_download_url(url, upstream_id)
+async def download_video_file(
+    url: str,
+    dest_path: str,
+    *,
+    upstream_id: str = "",
+    endpoint_name: str | None = None,
+    retries: int = 4,
+) -> str:
+    ep = get_seedance_endpoint(endpoint_name)
+    headers = {"Authorization": f"Bearer {ep.api_key}"}
+    fetch_url = _normalize_download_url(url, upstream_id, base_url=ep.base_url)
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -203,14 +926,338 @@ async def download_video_file(url: str, dest_path: str, *, upstream_id: str = ""
     raise RuntimeError(f"视频下载失败（已重试 {retries} 次）: {last_err}")
 
 
-def build_segment_prompt(base_prompt: str, seg_index: int, total_segs: int, dialogue: str) -> str:
+def build_segment_prompt(
+    base_prompt: str,
+    seg_index: int,
+    total_segs: int,
+    dialogue: str,
+    *,
+    mode: str = "first_frame",
+    image_count: int = 1,
+    has_audio: bool = False,
+) -> str:
     prompt = (base_prompt or "").strip()
     if total_segs > 1 and seg_index > 0:
         prompt += f"（第 {seg_index + 1}/{total_segs} 段，15 秒，承接前段叙事）"
     dlg = (dialogue or "").strip().replace("\n", " ")[:80]
     if dlg:
         prompt += f" 本段口播：{dlg}"
-    return prompt
+    return finalize_seedance_prompt(
+        prompt,
+        mode=resolve_seedance_mode(mode, image_count=image_count, has_audio=has_audio),
+        image_count=image_count,
+        has_audio=has_audio,
+    )
+
+
+def _max_parallel_segments() -> int:
+    raw = (os.getenv("DH_V2_MAX_PARALLEL_SEGMENTS") or "4").strip()
+    try:
+        n = int(raw)
+        return max(1, min(n, 8))
+    except ValueError:
+        return 4
+
+
+def _filter_active_segments(segments: list[dict]) -> list[dict]:
+    return [s for s in segments if str(s.get("dialogue") or "").strip()]
+
+
+SegmentUpdateFn = Callable[[int, str, dict[str, Any]], None]
+
+
+async def _submit_one_segment(
+    *,
+    seg: dict,
+    seg_index: int,
+    total_segs: int,
+    images_base64: list[str],
+    audios_base64: list[str] | None,
+    aspect_ratio: str,
+    client_task_id: str,
+    sem: asyncio.Semaphore,
+    on_segment_update: SegmentUpdateFn | None,
+    mode: str = "first_frame",
+    media_refs_dir: str | None = None,
+) -> tuple[int, str | None, str | None, str | None]:
+    """返回 (index, upstream_id, endpoint_name, error)。"""
+    if on_segment_update:
+        on_segment_update(seg_index, "submitting", {})
+    has_audio = bool(audios_base64)
+    prompt = build_segment_prompt(
+        str(seg.get("video_prompt") or ""),
+        seg_index,
+        total_segs,
+        str(seg.get("dialogue") or ""),
+        mode=mode,
+        image_count=len(images_base64),
+        has_audio=has_audio,
+    )
+    try:
+        async with sem:
+            submit_res = await submit_aicost_seedance(
+                prompt=prompt,
+                images_base64=images_base64,
+                audios_base64=audios_base64,
+                aspect_ratio=aspect_ratio,
+                client_task_id=f"{client_task_id}:seg{seg_index}",
+                mode=mode,
+                media_refs_dir=media_refs_dir,
+            )
+        upstream_id = str(submit_res.get("id") or submit_res.get("task_id") or "").strip()
+        endpoint_name = str(submit_res.get("_seedance_endpoint") or "fallback")
+        if not upstream_id:
+            err = "Seedance 未返回任务 ID"
+            if on_segment_update:
+                on_segment_update(seg_index, "failed", {"error": err})
+            return seg_index, None, None, err
+        if on_segment_update:
+            on_segment_update(
+                seg_index,
+                "processing",
+                {"upstream_id": upstream_id, "seedance_endpoint": endpoint_name},
+            )
+        return seg_index, upstream_id, endpoint_name, None
+    except Exception as e:
+        err = str(e) or "提交失败"
+        if on_segment_update:
+            on_segment_update(seg_index, "failed", {"error": err})
+        return seg_index, None, None, err
+
+
+async def _poll_download_one_segment(
+    *,
+    seg_index: int,
+    upstream_id: str,
+    output_dir: str,
+    sem: asyncio.Semaphore,
+    on_segment_update: SegmentUpdateFn | None,
+    on_done=None,
+    endpoint_name: str | None = None,
+) -> tuple[int, str | None, str | None]:
+    """返回 (index, local_path, error)。"""
+    try:
+        async with sem:
+            result = await poll_aicost_task(
+                upstream_id,
+                max_wait=segment_poll_timeout(),
+                endpoint_name=endpoint_name,
+            )
+            video_url = _pick_video_url(result)
+            if not video_url:
+                err = f"段 {seg_index + 1} 完成但无视频地址"
+                if on_segment_update:
+                    on_segment_update(seg_index, "failed", {"error": err})
+                return seg_index, None, err
+            out_path = os.path.join(output_dir, f"segment_{seg_index}.mp4")
+            await download_video_file(
+                video_url,
+                out_path,
+                upstream_id=upstream_id,
+                endpoint_name=endpoint_name,
+            )
+        if on_segment_update:
+            on_segment_update(seg_index, "completed", {"local_path": out_path})
+        if on_done:
+            await on_done(seg_index)
+        return seg_index, out_path, None
+    except TimeoutError as e:
+        err = str(e) or "Seedance 任务超时"
+        if on_segment_update:
+            on_segment_update(seg_index, "timeout", {"error": err})
+        return seg_index, None, err
+    except Exception as e:
+        err = str(e) or "段生成失败"
+        if on_segment_update:
+            on_segment_update(seg_index, "failed", {"error": err})
+        return seg_index, None, err
+
+
+def concat_segment_videos(paths: list[str], output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    final_path = os.path.join(output_dir, "final.mp4")
+    concatenate_videos_ffmpeg(paths, final_path, ffmpeg_path=_ffmpeg_exe())
+    return final_path
+
+
+async def retry_single_segment(
+    *,
+    seg: dict,
+    seg_index: int,
+    total_segs: int,
+    images_base64: list[str],
+    audios_base64: list[str] | None,
+    aspect_ratio: str,
+    output_dir: str,
+    client_task_id: str,
+    on_segment_update: SegmentUpdateFn | None = None,
+    mode: str = "first_frame",
+) -> tuple[str | None, str | None]:
+    """单段重试：submit → poll → download。返回 (local_path, error)。"""
+    sem = asyncio.Semaphore(1)
+    media_refs_dir = os.path.join(output_dir, "refs")
+    _, upstream_id, endpoint_name, submit_err = await _submit_one_segment(
+        seg=seg,
+        seg_index=seg_index,
+        total_segs=total_segs,
+        images_base64=images_base64,
+        audios_base64=audios_base64,
+        aspect_ratio=aspect_ratio,
+        client_task_id=client_task_id,
+        sem=sem,
+        on_segment_update=on_segment_update,
+        mode=mode,
+        media_refs_dir=media_refs_dir,
+    )
+    if submit_err or not upstream_id:
+        return None, submit_err or "提交失败"
+    _, local_path, poll_err = await _poll_download_one_segment(
+        seg_index=seg_index,
+        upstream_id=upstream_id,
+        output_dir=output_dir,
+        sem=sem,
+        on_segment_update=on_segment_update,
+        endpoint_name=endpoint_name,
+    )
+    if poll_err or not local_path:
+        return None, poll_err or "下载失败"
+    return local_path, None
+
+
+async def run_multi_segment_pipeline(
+    *,
+    segments: list[dict],
+    images_base64: list[str],
+    audios_base64: list[str] | None,
+    aspect_ratio: str,
+    output_dir: str,
+    client_task_id: str,
+    on_progress=None,
+    on_segment_update: SegmentUpdateFn | None = None,
+    mode: str = "first_frame",
+) -> str | None:
+    """并发提交各段 → 并发轮询下载 → 全部成功则拼接。有失败段时返回 None。"""
+    os.makedirs(output_dir, exist_ok=True)
+    ordered_segs = sorted(segments, key=lambda s: int(s.get("index", 0)))
+    active = _filter_active_segments(ordered_segs)
+    if not active:
+        raise ValueError("无有效台词段")
+    if not images_base64:
+        raise ValueError("Seedance 图生视频需至少 1 张参考图")
+
+    total = len(active)
+    resolved_mode = resolve_seedance_mode(
+        mode,
+        image_count=len(images_base64),
+        has_audio=bool(audios_base64),
+    )
+    media_refs_dir = os.path.join(output_dir, "refs")
+    sem = asyncio.Semaphore(_max_parallel_segments())
+    completed_lock = asyncio.Lock()
+    done_count = 0
+
+    async def _on_one_done(seg_idx: int) -> None:
+        nonlocal done_count
+        async with completed_lock:
+            done_count += 1
+            if on_progress:
+                on_progress(done_count, total, seg_idx)
+
+    # 阶段 1：并发提交
+    submit_jobs = [
+        _submit_one_segment(
+            seg=seg,
+            seg_index=int(seg.get("index", i)),
+            total_segs=total,
+            images_base64=images_base64,
+            audios_base64=audios_base64,
+            aspect_ratio=aspect_ratio,
+            client_task_id=client_task_id,
+            sem=sem,
+            on_segment_update=on_segment_update,
+            mode=resolved_mode,
+            media_refs_dir=media_refs_dir,
+        )
+        for i, seg in enumerate(active)
+    ]
+    submit_results = await asyncio.gather(*submit_jobs)
+
+    task_map: list[tuple[int, str, str]] = []
+    for idx, upstream_id, endpoint_name, err in submit_results:
+        if upstream_id and endpoint_name:
+            task_map.append((idx, upstream_id, endpoint_name))
+
+    if not task_map:
+        return None
+
+    # 阶段 2：并发轮询 + 下载（失败段不 raise，记入状态）
+    poll_jobs = [
+        _poll_download_one_segment(
+            seg_index=idx,
+            upstream_id=upstream_id,
+            output_dir=output_dir,
+            sem=sem,
+            on_segment_update=on_segment_update,
+            on_done=_on_one_done,
+            endpoint_name=endpoint_name,
+        )
+        for idx, upstream_id, endpoint_name in task_map
+    ]
+    poll_results = await asyncio.gather(*poll_jobs)
+
+    paths_by_index: dict[int, str] = {}
+    for idx, local_path, _err in poll_results:
+        if local_path:
+            paths_by_index[idx] = local_path
+
+    if len(paths_by_index) < total:
+        return None
+
+    ordered_paths = [paths_by_index[i] for i in sorted(paths_by_index.keys())]
+    return concat_segment_videos(ordered_paths, output_dir)
+
+
+async def render_aicost_segment_to_file(
+    *,
+    prompt: str,
+    images_base64: list[str],
+    audios_base64: list[str] | None,
+    aspect_ratio: str,
+    dest_path: str,
+    client_task_id: str,
+    mode: str = "first_frame",
+    media_refs_dir: str | None = None,
+) -> str:
+    """提交 Seedance → 轮询 → 下载到 dest_path。返回 upstream task id。"""
+    submit_res = await submit_aicost_seedance(
+        prompt=prompt,
+        images_base64=images_base64,
+        audios_base64=audios_base64,
+        aspect_ratio=aspect_ratio,
+        client_task_id=client_task_id,
+        mode=mode,
+        media_refs_dir=media_refs_dir,
+    )
+    upstream_id = str(submit_res.get("id") or submit_res.get("task_id") or "").strip()
+    endpoint_name = str(submit_res.get("_seedance_endpoint") or "fallback")
+    if not upstream_id:
+        raise RuntimeError("Seedance 未返回任务 ID")
+    result = await poll_aicost_task(
+        upstream_id,
+        max_wait=segment_poll_timeout(),
+        endpoint_name=endpoint_name,
+    )
+    video_url = _pick_video_url(result)
+    if not video_url:
+        raise RuntimeError("Seedance 完成但无视频地址")
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    await download_video_file(
+        video_url,
+        dest_path,
+        upstream_id=upstream_id,
+        endpoint_name=endpoint_name,
+    )
+    return upstream_id
 
 
 async def render_segment(
@@ -226,66 +1273,18 @@ async def render_segment(
     client_task_id: str,
 ) -> tuple[int, str]:
     os.makedirs(output_dir, exist_ok=True)
-    prompt = build_segment_prompt(video_prompt, seg_index, total_segs, dialogue)
-    submit_res = await submit_aicost_seedance(
-        prompt=prompt,
+    seg = {"video_prompt": video_prompt, "dialogue": dialogue, "index": seg_index}
+    local_path, err = await retry_single_segment(
+        seg=seg,
+        seg_index=seg_index,
+        total_segs=total_segs,
         images_base64=images_base64,
         audios_base64=audios_base64,
         aspect_ratio=aspect_ratio,
-        client_task_id=f"{client_task_id}:seg{seg_index}",
+        output_dir=output_dir,
+        client_task_id=client_task_id,
+        mode="first_frame",
     )
-    upstream_id = str(submit_res.get("id") or submit_res.get("task_id") or "").strip()
-    if not upstream_id:
-        raise RuntimeError("Seedance 未返回任务 ID")
-
-    result = await poll_aicost_task(upstream_id)
-    video_url = _pick_video_url(result)
-    if not video_url:
-        raise RuntimeError(f"段 {seg_index + 1} 完成但无视频地址")
-
-    out_path = os.path.join(output_dir, f"segment_{seg_index}.mp4")
-    await download_video_file(video_url, out_path, upstream_id=upstream_id)
-    return seg_index, out_path
-
-
-async def run_multi_segment_pipeline(
-    *,
-    segments: list[dict],
-    images_base64: list[str],
-    audios_base64: list[str] | None,
-    aspect_ratio: str,
-    output_dir: str,
-    client_task_id: str,
-    on_progress=None,
-) -> str:
-    """顺序渲染各段并拼接，返回最终 mp4 路径。"""
-    os.makedirs(output_dir, exist_ok=True)
-    total = len(segments)
-    if total < 1:
-        raise ValueError("segments 为空")
-
-    ordered_segs = sorted(segments, key=lambda s: int(s.get("index", 0)))
-    ordered_paths: list[str] = []
-    for done_count, seg in enumerate(ordered_segs, start=1):
-        idx = int(seg.get("index", done_count - 1))
-        if done_count > 1:
-            # 多段之间短暂间隔，降低上游限流与连接抖动
-            await asyncio.sleep(2.0)
-        _, path = await render_segment(
-            seg_index=idx,
-            total_segs=total,
-            video_prompt=str(seg.get("video_prompt") or ""),
-            dialogue=str(seg.get("dialogue") or ""),
-            images_base64=images_base64,
-            audios_base64=audios_base64,
-            aspect_ratio=aspect_ratio,
-            output_dir=output_dir,
-            client_task_id=client_task_id,
-        )
-        ordered_paths.append(path)
-        if on_progress:
-            on_progress(done_count, total, idx)
-
-    final_path = os.path.join(output_dir, "final.mp4")
-    concatenate_videos_ffmpeg(ordered_paths, final_path, ffmpeg_path=_ffmpeg_exe())
-    return final_path
+    if err or not local_path:
+        raise RuntimeError(err or "段生成失败")
+    return seg_index, local_path

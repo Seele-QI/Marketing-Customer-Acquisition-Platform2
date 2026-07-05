@@ -1,11 +1,25 @@
 /**
- * 数字人视频创作（新）轮询适配器 — 一阶段桩（二阶段接入 queryDhVideoV2Status）
+ * 数字人视频创作（新）轮询适配器
  */
 import { queryDhVideoV2Status } from "@/lib/dh-video-v2/api"
+import type { DhV2SegmentRuntimeStatus } from "@/lib/dh-video-v2/types"
 import type { PollOutcome, RuntimeTask, TaskAdapter } from "@/lib/task-runtime/types"
 
 const TERMINAL_OK = new Set(["completed", "succeeded", "success", "SUCCESS"])
-const TERMINAL_FAIL = new Set(["failed", "failure", "error", "cancelled", "rejected", "timeout", "expired"])
+const TERMINAL_FAIL = new Set(["failed", "failure", "error", "cancelled", "rejected"])
+const KEEP_POLLING = new Set(["partial_failed", "concatenating", "processing", "queued", "running"])
+
+function mapSegments(segments: DhV2SegmentRuntimeStatus[] | undefined) {
+  if (!Array.isArray(segments)) return undefined
+  return segments.map((s) => ({
+    index: s.index,
+    status: s.status,
+    videoUrl: s.video_url,
+    error: s.error,
+    timeRange: s.time_range,
+    dialogue: s.dialogue,
+  }))
+}
 
 export const dhVideoV2Adapter: TaskAdapter = {
   kind: "dh-video-v2",
@@ -30,6 +44,12 @@ export const dhVideoV2Adapter: TaskAdapter = {
         sd.result_url ||
         ""
 
+      const segmentResult = {
+        segmentCount: sd.segment_count,
+        segmentsCompleted: sd.segments_completed,
+        segments: mapSegments(sd.segments),
+      }
+
       if (TERMINAL_OK.has(status) || status === "completed") {
         if (!videoUrl) {
           return {
@@ -37,6 +57,7 @@ export const dhVideoV2Adapter: TaskAdapter = {
             error: sd.error || "任务完成但未返回视频地址",
             progress,
             stageLabel,
+            result: segmentResult,
           }
         }
         return {
@@ -46,18 +67,30 @@ export const dhVideoV2Adapter: TaskAdapter = {
           result: {
             videoUrl,
             resultUrl: videoUrl,
-            segmentCount: sd.segment_count,
-            segmentsCompleted: sd.segments_completed ?? sd.segment_count,
+            ...segmentResult,
           },
         }
       }
 
-      if (TERMINAL_FAIL.has(status)) {
+      if (status === "partial_failed" || KEEP_POLLING.has(status)) {
+        return {
+          type: "progress",
+          progress: Math.max(progress, task.progress),
+          stageLabel,
+          result: {
+            ...(videoUrl ? { videoUrl } : {}),
+            ...segmentResult,
+          },
+        }
+      }
+
+      if (TERMINAL_FAIL.has(status) || status === "timeout" || status === "expired") {
         return {
           type: "failed",
           error: sd.error || sd.detail || `任务失败（${sd.status}）`,
           progress,
           stageLabel,
+          result: segmentResult,
         }
       }
 
@@ -67,8 +100,7 @@ export const dhVideoV2Adapter: TaskAdapter = {
         stageLabel,
         result: {
           ...(videoUrl ? { videoUrl } : {}),
-          segmentCount: sd.segment_count,
-          segmentsCompleted: sd.segments_completed,
+          ...segmentResult,
         },
       }
     } catch (e) {

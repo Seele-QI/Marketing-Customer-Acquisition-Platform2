@@ -1,29 +1,8 @@
-"""统一鉴权 + 积分扣减 + 任务归属 + payload 大小校验。
-
-所有视频/AI/账号路由都应经过此模块，避免每个 endpoint 自己写一遍：
-
-    from lib.api_auth import (
-        require_user,
-        assert_task_owner,
-        consume_with_idempotency,
-        safe_refund,
-        check_base64_size,
-        SCENE_COST_TABLE,
-    )
-
-    @app.post("/api/video/generate")
-    async def video_generate(req: VideoGenerateRequest, request: Request):
-        user = require_user(request)
-        check_base64_size(req.image_base64, max_mb=10, name="image")
-        ...
-        consume_with_idempotency(
-            user_id=user.id, scene="video_creation", ref_id=local_task_id,
-        )
-"""
+"""统一鉴权 + 积分扣减 + 任务归属 + payload 大小校验。"""
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 
@@ -31,7 +10,24 @@ from lib.auth import CurrentUser, get_current_user
 from lib.credit import (
     AI_LLM_COST_PLACEHOLDER,
     CHAT_COST,
+    COPYWRITING_LLM_COST_PLACEHOLDER,
+    COPYWRITING_LLM_ECONOMY,
+    COPYWRITING_LLM_PREMIUM,
+    COPY_EXTRACT_COST,
+    DH_V2_PLAN_SCRIPT_COST,
+    DH_V2_VIDEO_RETRY_COST,
+    DH_V2_VIDEO_SEGMENT_UNIT,
+    GEO_ARTICLE_COST_PLACEHOLDER,
+    GEO_ARTICLE_ECONOMY,
+    GEO_ARTICLE_PREMIUM,
+    GEO_AUTHORITY_LINK_COST,
+    GEO_MATRIX_GEN_COST,
+    GEO_RESEARCH_COST,
+    GEO_SKILL_GEN_COST,
     MAX_LLM_COST,
+    PROMO_STORYBOARD_COST,
+    PROMO_VIDEO_SEGMENT_PLACEHOLDER,
+    PROMO_VIDEO_SEGMENT_COST,
     VIDEO_CLONE_VOICE_COST,
     VIDEO_IMAGE_TO_VIDEO_COST,
     VIDEO_MASHUP_COST,
@@ -39,12 +35,12 @@ from lib.credit import (
     consume,
     refund,
 )
+from lib.credit_pricing import resolve_billing_cost, segment_cost_for_provider
 from lib.db import transaction
 
 logger = logging.getLogger(__name__)
 
-# 服务端固定定价表；客户端不允许覆盖。
-# ai_llm 为计量场景占位：公开 /api/credit/consume 仍走固定表，变价仅 consume-metered。
+# 服务端固定定价表；可变价 scene 为占位，实际 cost 由 registry / helper 传入。
 SCENE_COST_TABLE: dict[str, int] = {
     "video_creation": VIDEO_SEGMENT_COST,
     "video_image_to_video": VIDEO_IMAGE_TO_VIDEO_COST,
@@ -55,15 +51,27 @@ SCENE_COST_TABLE: dict[str, int] = {
     "ai_ip_positioning": 20,
     "ai_ark_image": 20,
     "ai_llm": AI_LLM_COST_PLACEHOLDER,
+    "copywriting_llm": COPYWRITING_LLM_COST_PLACEHOLDER,
+    "geo_article": GEO_ARTICLE_COST_PLACEHOLDER,
+    "geo_matrix_gen": GEO_MATRIX_GEN_COST,
+    "geo_skill_gen": GEO_SKILL_GEN_COST,
+    "geo_research": GEO_RESEARCH_COST,
+    "geo_authority_link": GEO_AUTHORITY_LINK_COST,
+    "dh_v2_plan_script": DH_V2_PLAN_SCRIPT_COST,
+    "dh_v2_video_segment": DH_V2_VIDEO_SEGMENT_UNIT,
+    "dh_v2_video_retry": DH_V2_VIDEO_RETRY_COST,
+    "promo_video_segment": PROMO_VIDEO_SEGMENT_PLACEHOLDER,
+    "promo_storyboard": PROMO_STORYBOARD_COST,
+    "copy_extract": COPY_EXTRACT_COST,
+}
+
+_VARIABLE_SCENE_ALLOWED_COSTS: dict[str, frozenset[int]] = {
+    "copywriting_llm": frozenset({COPYWRITING_LLM_ECONOMY, COPYWRITING_LLM_PREMIUM}),
+    "geo_article": frozenset({GEO_ARTICLE_ECONOMY, GEO_ARTICLE_PREMIUM}),
 }
 
 
 def ensure_credit_idempotency_index() -> None:
-    """为 credit_ledger 加唯一索引，防止同一 ref_id 重复扣费（重放攻击）。
-
-    历史数据兼容：仅当 ref_id 非空时强制唯一；旧的空 ref_id 行不受影响。
-    幂等：CREATE UNIQUE INDEX IF NOT EXISTS。
-    """
     with transaction() as conn:
         conn.execute(
             """
@@ -75,7 +83,6 @@ def ensure_credit_idempotency_index() -> None:
 
 
 def require_user(request: Request) -> CurrentUser:
-    """登录态校验。未登录抛 401。所有敏感 endpoint 必须先调本函数。"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(
@@ -86,7 +93,6 @@ def require_user(request: Request) -> CurrentUser:
 
 
 def assert_task_owner(task_dict: Optional[dict], user: CurrentUser, *, task_id: str) -> None:
-    """校验 task 归属。owner 为空（旧数据）或不匹配 → 403。"""
     owner = (task_dict or {}).get("user_id")
     if owner is None or int(owner) != int(user.id):
         logger.warning(
@@ -100,7 +106,6 @@ def assert_task_owner(task_dict: Optional[dict], user: CurrentUser, *, task_id: 
 
 
 def _query_existing_consume(user_id: int, ref_id: str) -> Optional[int]:
-    """查询是否已对 (user_id, ref_id) 扣过 → 返回扣后余额。"""
     with transaction() as conn:
         row = conn.execute(
             "SELECT balance_after FROM credit_ledger "
@@ -113,6 +118,67 @@ def _query_existing_consume(user_id: int, ref_id: str) -> Optional[int]:
     return None
 
 
+def _validate_variable_cost(scene: str, cost: int) -> None:
+    if scene in _VARIABLE_SCENE_ALLOWED_COSTS:
+        allowed = _VARIABLE_SCENE_ALLOWED_COSTS[scene]
+        if cost not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": f"场景 {scene} 扣费金额无效"},
+            )
+        return
+
+    if scene == "video_clone_voice":
+        if cost != VIDEO_CLONE_VOICE_COST:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "音色克隆扣费金额无效"},
+            )
+        return
+
+    if scene == "video_creation":
+        if cost <= 0 or cost % VIDEO_SEGMENT_COST != 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "视频段扣费金额无效"},
+            )
+        return
+
+    if scene in ("dh_v2_video_segment", "promo_video_segment"):
+        if cost <= 0 or cost % DH_V2_VIDEO_SEGMENT_UNIT != 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": f"场景 {scene} 扣费须为 {DH_V2_VIDEO_SEGMENT_UNIT} 的整数倍"},
+            )
+        return
+
+    if scene == "dh_v2_video_retry":
+        if cost <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "dh-v2 重试扣费金额无效"},
+            )
+        return
+
+    if scene == "ai_llm":
+        if not isinstance(cost, int) or cost < 1 or cost > MAX_LLM_COST:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_COST",
+                    "message": f"ai_llm 扣费须为 1–{MAX_LLM_COST} 的整数",
+                },
+            )
+        return
+
+    expected = SCENE_COST_TABLE.get(scene)
+    if expected is not None and cost != expected:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_COST", "message": f"场景 {scene} 扣费金额无效"},
+        )
+
+
 def consume_with_idempotency(
     *,
     user_id: int,
@@ -121,14 +187,6 @@ def consume_with_idempotency(
     note: str = "",
     cost: int | None = None,
 ) -> int:
-    """带幂等保护的扣费。同一 (user_id, ref_id) 只会扣一次。
-
-    用于防止：
-    1. 网络重试导致客户端重复 POST consume；
-    2. 攻击者爆破 ref_id 试图刷扣或刷返。
-
-    cost 仅由服务端 helper 传入（变价场景）；None 时使用 SCENE_COST_TABLE 固定价。
-    """
     if scene not in SCENE_COST_TABLE:
         raise HTTPException(
             status_code=400,
@@ -147,38 +205,32 @@ def consume_with_idempotency(
 
     if cost is None:
         cost = SCENE_COST_TABLE[scene]
-    elif scene == "video_clone_voice":
-        if cost != VIDEO_CLONE_VOICE_COST:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "INVALID_COST", "message": "音色克隆扣费金额无效"},
-            )
-    elif scene == "video_creation":
-        if cost <= 0 or cost % VIDEO_SEGMENT_COST != 0:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "INVALID_COST", "message": "视频段扣费金额无效"},
-            )
-    elif scene == "ai_llm":
-        if not isinstance(cost, int) or cost < 1 or cost > MAX_LLM_COST:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "INVALID_COST",
-                    "message": f"ai_llm 扣费须为 1–{MAX_LLM_COST} 的整数",
-                },
-            )
-    elif cost != SCENE_COST_TABLE[scene]:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_COST", "message": f"场景 {scene} 扣费金额无效"},
-        )
+    else:
+        _validate_variable_cost(scene, cost)
 
     return consume(user_id, cost, ref_id=ref_id, note=note or scene)
 
 
+def consume_billing_event(
+    *,
+    user_id: int,
+    billing_key: str,
+    params: dict[str, Any] | None,
+    ref_id: str,
+) -> tuple[int, int, str]:
+    """解析 billing_key 并扣费。返回 (balance_after, cost, scene)。"""
+    result = resolve_billing_cost(billing_key, params)
+    balance = consume_with_idempotency(
+        user_id=user_id,
+        scene=result.scene,
+        ref_id=ref_id,
+        note=result.note,
+        cost=result.cost,
+    )
+    return balance, result.cost, result.scene
+
+
 def consume_ai_llm(*, user_id: int, ref_id: str, cost: int, note: str = "") -> int:
-    """Sonetto 计量扣费（幂等）。仅服务端 metered 入口调用。"""
     return consume_with_idempotency(
         user_id=user_id,
         scene="ai_llm",
@@ -189,7 +241,6 @@ def consume_ai_llm(*, user_id: int, ref_id: str, cost: int, note: str = "") -> i
 
 
 def consume_voice_clone(*, user_id: int, ref_id: str, note: str = "") -> int:
-    """扣 50 积分 / 次音色克隆（幂等）。"""
     return consume_with_idempotency(
         user_id=user_id,
         scene="video_clone_voice",
@@ -202,7 +253,6 @@ def consume_voice_clone(*, user_id: int, ref_id: str, note: str = "") -> int:
 def consume_video_creation_segments(
     *, user_id: int, ref_id: str, segment_count: int, note: str = ""
 ) -> int:
-    """扣 250×段数 积分 / 次口播视频生成（幂等）。"""
     if segment_count < 1:
         raise HTTPException(
             status_code=400,
@@ -218,13 +268,48 @@ def consume_video_creation_segments(
     )
 
 
-def safe_refund(*, user_id: int, scene: str, ref_id: str, reason: str = "") -> None:
-    """任务失败 / 取消时退款。
+def consume_dh_v2_video_segments(
+    *,
+    user_id: int,
+    ref_id: str,
+    segment_count: int,
+    provider: str = "seedance",
+    note: str = "",
+) -> int:
+    if segment_count < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SEGMENT_COUNT", "message": "段数至少为 1"},
+        )
+    unit = segment_cost_for_provider(provider)
+    total = unit * segment_count
+    return consume_with_idempotency(
+        user_id=user_id,
+        scene="dh_v2_video_segment",
+        ref_id=ref_id,
+        note=note or f"dh-v2 视频生成 {segment_count} 段",
+        cost=total,
+    )
 
-    - 退款金额按 SCENE_COST_TABLE 取值（与扣费金额对齐，不依赖原始扣款记录）
-    - 退款 ref_id 加 'refund:' 前缀，与原扣款互不冲突
-    - 多次调用幂等：通过 ref_id 唯一索引 + 显式查询双保险
-    """
+
+def consume_dh_v2_video_retry(
+    *,
+    user_id: int,
+    ref_id: str,
+    provider: str = "seedance",
+    note: str = "",
+) -> int:
+    unit = segment_cost_for_provider(provider)
+    return consume_with_idempotency(
+        user_id=user_id,
+        scene="dh_v2_video_retry",
+        ref_id=ref_id,
+        note=note or "dh-v2 重试单段",
+        cost=unit,
+    )
+
+
+def safe_refund(*, user_id: int, scene: str, ref_id: str, reason: str = "") -> None:
     if scene not in SCENE_COST_TABLE:
         return
     if not ref_id:
@@ -253,10 +338,6 @@ def safe_refund(*, user_id: int, scene: str, ref_id: str, reason: str = "") -> N
 
 
 def check_base64_size(b64: str, *, max_mb: int, name: str) -> None:
-    """对 base64 字符串做大小上限校验。
-
-    base64 → 二进制约为 3/4 长度。不需要先解码即可粗略判断。
-    """
     if not b64:
         return
     approx_bytes = (len(b64) * 3) // 4
@@ -272,5 +353,4 @@ def check_base64_size(b64: str, *, max_mb: int, name: str) -> None:
 
 
 def safe_error_message(e: BaseException) -> str:
-    """脱敏错误：仅返回错误类型，不暴露 stack/路径/原始 stderr。"""
     return f"{type(e).__name__}: 系统繁忙，请稍后重试"

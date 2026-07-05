@@ -329,66 +329,16 @@ class RunningHubClient:
             "usePersonalQueue": "false",
         }
 
-        # #region agent log
-        def _dbg_submit(msg: str, data: dict, hyp: str = "H1") -> None:
-            try:
-                import json as _json, time as _time
-                with open("debug-014260.log", "a", encoding="utf-8") as _f:
-                    _f.write(_json.dumps({
-                        "sessionId": "014260",
-                        "hypothesisId": hyp,
-                        "location": "runninghub_client.py:submit_video",
-                        "message": msg,
-                        "data": data,
-                        "timestamp": int(_time.time() * 1000),
-                    }, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        # #endregion
-
-        # #region agent log
-        _dbg_submit("submit_video request", {
-            "url": url,
-            "workflow_id": VIDEO_WORKFLOW_ID,
-            "instance_type": instance_type,
-            "image_url_prefix": (image_url or "")[:80],
-            "audio_url_prefix": (audio_url or "")[:80],
-            "prompt_lines": len([ln for ln in (motion_prompt or "").split("\n") if ln.strip()]),
-            "prompt_len": len(motion_prompt or ""),
-            "node_ids": [VIDEO_NODE_IMAGE, VIDEO_NODE_AUDIO, VIDEO_NODE_PROMPT],
-        }, "H1")
-        # #endregion
-
         try:
             resp = await client.post(url, json=payload)
         except httpx.RequestError as e:
-            # #region agent log
-            _dbg_submit("submit_video network error", {"error": str(e)}, "H4")
-            # #endregion
             raise RunningHubError(f"视频生成任务提交网络错误: {e}") from e
-
-        # #region agent log
-        _dbg_submit("submit_video response", {
-            "http_status": resp.status_code,
-            "is_success": resp.is_success,
-            "body_prefix": (resp.text or "")[:800],
-        }, "H1")
-        # #endregion
 
         if not resp.is_success:
             raise self._build_http_error("视频生成任务提交", resp)
 
         data = resp.json()
         task_id = data.get("taskId", "") or data.get("task_id", "")
-        # #region agent log
-        _dbg_submit("submit_video parsed", {
-            "task_id": task_id,
-            "status": data.get("status"),
-            "error_code": data.get("errorCode") or data.get("code"),
-            "error_message": data.get("errorMessage") or data.get("message"),
-            "keys": list(data.keys()) if isinstance(data, dict) else [],
-        }, "H2")
-        # #endregion
         if not task_id:
             raise RunningHubError(f"视频生成返回缺少 taskId: {resp.text[:500]}")
 

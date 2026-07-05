@@ -432,14 +432,15 @@
 | `APP_PUBLIC_BASE` | `lib/email.py` | ✅ | 邮件中拼接的公网回调地址 |
 | `DEV_EMAIL_MODE` | `lib/email.py` | ✅ | `1` = 邮件链接打到日志（开发期），`0` = 真实发送 |
 | **`VIDEO_BGM_DIR`** | **`main.py:_resolve_bgm_dir`** | **✅** | **视频剪辑 BGM 素材目录，存放 mp3 / wav / aac / m4a** |
-| `SEEDANCE_API_KEY` | `routes/dh_video_v2_routes.py`（二阶段） | 数字人视频创作（新） | aicost.xyz Seedance 2.0 Fast，`POST /v1/videos` |
-| `XINGHE_API_KEY` | 同上 | 数字人视频创作（新） | aicost.xyz 星河系列，`POST /v1/video/create` |
+| `SEEDANCE_PRIMARY_BASE_URL` / `SEEDANCE_PRIMARY_API_KEY` / `SEEDANCE_PRIMARY_MODEL` | `lib/dh_video_v2_service.py` | 数字人视频创作（新）首选 | 默认 model `sd2-福利`，如 `https://api.7tai.cc`；失败回退 aicost |
+| `SEEDANCE_API_KEY` | `lib/dh_video_v2_service.py` | 数字人视频创作（新）备选 | aicost.xyz Seedance 2.0 Fast，`POST /v1/videos` |
+| `XINGHE_API_KEY` | 同上 | 星河系列 | aicost.xyz，`POST /v1/video/create` |
 | `SEEDANCE_BASE_URL` / `XINGHE_BASE_URL` | 同上 | 可选 | 默认 `https://www.aicost.xyz` |
-| `SONETTO_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | Sonetto NewAPI 基址（须含 `/v1`），默认 `https://tok.sonetto.top/v1` |
-| `SONETTO_GPT_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | ChatGPT 渠道 Key（与 Claude 分离） |
-| `SONETTO_CLAUDE_API_KEY` | `lib/llm/sonetto-client.ts` | 可选 | Claude 渠道 Key |
-| `SONETTO_GPT_MODEL` | `lib/geo/llm/router.ts` | 可选 | GEO 默认 GPT 模型，默认 `gpt-5.5` |
-| `SONETTO_CLAUDE_MODEL` | `lib/geo/llm/router.ts` | 可选 | GEO 默认 Claude 模型，默认 `[kiro]claude-opus-4-7` |
+| `NEWAPI_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | aicost NewAPI 基址，默认 `https://www.aicost.xyz`（自动补 `/v1`） |
+| `NEWAPI_KEY` | `lib/llm/sonetto-client.ts` | 可选 | GPT + Claude 统一 Key |
+| `NEWAPI_GPT_MODEL` | `lib/geo/llm/router.ts` | 可选 | 默认 GPT 模型，默认 `gpt-5.5` |
+| `NEWAPI_CLAUDE_MODEL` | `lib/geo/llm/router.ts` | 可选 | 默认 Claude 模型，默认 `claude-opus-4-8`（按次） |
+| `SONETTO_*` | 同上 | 已废弃 | 兼容别名，优先读 `NEWAPI_*` |
 | `CREDIT_METERED_KEY` | `main.py:consume-metered` / `lib/api/with-auth.ts` | Sonetto 启用时必填 | 计量扣费服务端密钥（浏览器不可见） |
 | `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` / GEO 豆包 | 可选 | 火山方舟 API Key |
 | `ARK_CHAT_MODEL` | `lib/geo/llm/router.ts` / chat-stream | 可选 | 豆包预置模型，默认 `doubao-seed-2-1-pro-260628` |

@@ -1,5 +1,6 @@
 /** 数字人视频创作（新）— 常量（对齐 aicost.xyz Seedance / Xinghe 文档） */
 
+import { segmentCostForProvider } from "@/lib/credit-pricing/registry"
 import type {
   DhVideoV2Mode,
   DhVideoV2Provider,
@@ -9,6 +10,7 @@ import type {
   DhVideoV2XingheModel,
   DhV2SegmentSubmit,
 } from "./types"
+import { filterActiveSegments, reindexSegments } from "./script-plan"
 
 export const DH_V2_UPSTREAM_BASE_URL = "https://www.aicost.xyz"
 
@@ -74,6 +76,8 @@ export const DH_V2_MODES: { value: DhVideoV2Mode; label: string; hint: string }[
   },
 ]
 
+export const DH_V2_SEEDANCE_MODEL = "seedance2.0-fast" as const
+
 export const DH_V2_PROVIDERS: { value: DhVideoV2Provider; label: string; desc: string }[] = [
   { value: "seedance", label: "Seedance 2.0 Fast", desc: "POST /v1/videos · 固定 720p · 15s" },
   { value: "xinghe", label: "星河 2.0", desc: "POST /v1/video/create · 4-15s" },
@@ -101,13 +105,16 @@ export const DH_V2_MOCK_ENABLED =
   process.env.NEXT_PUBLIC_DH_VIDEO_V2_MOCK === "1"
 
 export function estimateDhVideoV2Cost(
-  _provider: DhVideoV2Provider,
+  provider: DhVideoV2Provider,
   planDuration: number,
-  resolution: DhVideoV2Resolution,
+  _resolution: DhVideoV2Resolution,
+  segmentCount?: number,
 ): number {
-  const sec = Math.max(DH_V2_SEGMENT_SEC, planDuration)
-  const perSecond = resolution === "1080p" ? 18 : 12
-  return perSecond * sec
+  const segments =
+    segmentCount && segmentCount > 0
+      ? segmentCount
+      : Math.max(1, Math.floor((Math.max(DH_V2_SEGMENT_SEC, planDuration) + 14) / 15))
+  return segments * segmentCostForProvider(provider)
 }
 
 export function validateDhVideoV2Compose(input: {
@@ -120,11 +127,14 @@ export function validateDhVideoV2Compose(input: {
 }
 
 export function validateDhVideoV2ScriptPlan(plan: {
-  segments: Array<{ video_prompt?: string }>
+  segments: Array<{ dialogue?: string; video_prompt?: string }>
 }): string | null {
-  if (!plan.segments.length) return "分镜脚本为空"
-  for (let i = 0; i < plan.segments.length; i++) {
-    if (!plan.segments[i].video_prompt?.trim()) {
+  const active = filterActiveSegments(
+    plan.segments.map((s) => ({ dialogue: s.dialogue ?? "", ...s })),
+  )
+  if (!active.length) return "分镜脚本为空或均无有效台词"
+  for (let i = 0; i < active.length; i++) {
+    if (!active[i].video_prompt?.trim()) {
       return `段 ${i + 1} 缺少视频提示词`
     }
   }
@@ -184,12 +194,22 @@ export function buildSubmitPayload(input: {
     clientTaskId,
   } = input
 
+  const activeSegs = reindexSegments(
+    filterActiveSegments(segments).map((s) => ({
+      index: s.index,
+      time_range: s.time_range,
+      dialogue: s.dialogue,
+      shot_details: s.shot_details,
+      video_prompt: s.video_prompt,
+    })),
+  )
+
   if (provider === "seedance") {
     return {
       provider,
       mode,
-      model: "seedance2.0-fast",
-      segments,
+      model: DH_V2_SEEDANCE_MODEL,
+      segments: activeSegs,
       images_base64: imagesDataUrl.length ? imagesDataUrl : undefined,
       audios_base64: audiosDataUrl.length ? audiosDataUrl : undefined,
       aspect_ratio: aspectRatio,
@@ -204,7 +224,7 @@ export function buildSubmitPayload(input: {
     provider,
     mode,
     model: xingheModel,
-    segments,
+    segments: activeSegs,
     images_base64: imagesDataUrl.length ? imagesDataUrl : undefined,
     audio_urls: audiosDataUrl.length ? audiosDataUrl : undefined,
     ratio: xingheRatio,

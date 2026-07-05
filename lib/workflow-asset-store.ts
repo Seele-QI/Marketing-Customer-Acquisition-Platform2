@@ -3,6 +3,9 @@
  */
 import type { DraftKind } from "@/lib/workflow-draft-store"
 
+/** IndexedDB 工作流命名空间（含非 draft-store 模块） */
+export type AssetWorkflowNamespace = DraftKind | "ip-positioning" | "digital-human"
+
 const DB_NAME = "agenthub-workflow-assets"
 const DB_VERSION = 1
 const STORE_NAME = "assets"
@@ -12,11 +15,11 @@ export const WORKFLOW_ASSET_QUOTA_BYTES = 200 * 1024 * 1024
 
 export type StoredAsset = {
   id: string
-  workflow: DraftKind
+  workflow: AssetWorkflowNamespace
   name: string
   mime: string
   size: number
-  kind: "image" | "audio" | "video"
+  kind: "image" | "audio" | "video" | "document"
   meta?: string
   blob: Blob
   updatedAt: number
@@ -63,12 +66,12 @@ function txStore(mode: IDBTransactionMode): Promise<IDBObjectStore> {
   )
 }
 
-export async function getWorkflowAssetBytes(workflow: DraftKind): Promise<number> {
+export async function getWorkflowAssetBytes(workflow: AssetWorkflowNamespace): Promise<number> {
   const all = await listWorkflowAssetMeta(workflow)
   return all.reduce((sum, a) => sum + a.size, 0)
 }
 
-export async function listWorkflowAssetMeta(workflow: DraftKind): Promise<AssetMetaRow[]> {
+export async function listWorkflowAssetMeta(workflow: AssetWorkflowNamespace): Promise<AssetMetaRow[]> {
   if (!isBrowser()) return []
   const store = await txStore("readonly")
   return new Promise((resolve, reject) => {
@@ -94,10 +97,10 @@ export async function getWorkflowAsset(id: string): Promise<StoredAsset | null> 
 
 export async function putWorkflowAsset(input: {
   id: string
-  workflow: DraftKind
+  workflow: AssetWorkflowNamespace
   name: string
   mime: string
-  kind: "image" | "audio" | "video"
+  kind: "image" | "audio" | "video" | "document"
   meta?: string
   blob: Blob
 }): Promise<{ ok: true } | { ok: false; reason: "quota" | "error" }> {
@@ -142,7 +145,7 @@ export async function deleteWorkflowAsset(id: string): Promise<void> {
   })
 }
 
-export async function clearWorkflowAssets(workflow: DraftKind): Promise<void> {
+export async function clearWorkflowAssets(workflow: AssetWorkflowNamespace): Promise<void> {
   const metas = await listWorkflowAssetMeta(workflow)
   await Promise.all(metas.map((m) => deleteWorkflowAsset(m.id)))
 }

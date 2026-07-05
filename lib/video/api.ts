@@ -173,9 +173,8 @@ export async function startCopyExtraction(
     headers: JSON_HEADERS,
     body: JSON.stringify(req),
   })
-  const data = await res.json()
   if (!res.ok) await readError(res, "提交提取任务失败")
-  return data as ExtractCopyResponse
+  return (await res.json()) as ExtractCopyResponse
 }
 
 export async function queryExtractStatus(

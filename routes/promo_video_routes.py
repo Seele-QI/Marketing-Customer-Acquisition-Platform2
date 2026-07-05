@@ -150,6 +150,19 @@ async def promo_video_submit(req: Request):
 
     public_base = str(req.base_url).rstrip("/")
 
+    from lib.api_auth import consume_with_idempotency
+    from lib.credit import CreditError
+
+    try:
+        consume_with_idempotency(
+            user_id=user.id,
+            scene="promo_storyboard",
+            ref_id=f"{task_id}:storyboard",
+            note="宣传分镜图生成",
+        )
+    except CreditError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+
     _promo_video_task_store[task_id] = {
 
         "task_id": task_id,
@@ -347,13 +360,15 @@ async def promo_video_generate(req: Request):
 
         _promo_video_task_store, _new_promo_video_task_id,
 
-        _run_promo_video, get_current_user, consume,
+        _run_promo_video, get_current_user,
 
         calculate_promo_video_cost,
 
         PromoVideoGenerateRequest, PromoVideoStatusResponse,
 
     )
+    from lib.api_auth import consume_with_idempotency
+    from lib.credit import CreditError
 
     body = await req.json()
 
@@ -392,17 +407,15 @@ async def promo_video_generate(req: Request):
     cost = calculate_promo_video_cost(duration, resolution)
 
     try:
-
-        consume(
-            user.id,
-            cost,
+        consume_with_idempotency(
+            user_id=user.id,
+            scene="promo_video_segment",
             ref_id=gen_req.storyboard_task_id,
-            note=f"Promo video {duration}s {resolution or '1080p'}",
+            note=f"宣传视频 {duration}s {resolution or 'default'}",
+            cost=cost,
         )
-
-    except Exception as e:
-
-        raise HTTPException(status_code=402, detail={"code": "INSUFFICIENT_CREDIT", "message": "Need " + str(cost)})
+    except CreditError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
 
 
 

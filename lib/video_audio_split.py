@@ -2,42 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import subprocess
-import time
 from pathlib import Path
 
-from lib.video_postprocess import _FFMPEG_EXE, _FFPROBE_EXE, probe_audio_duration
+from lib.video_postprocess import _FFMPEG_EXE, probe_audio_duration
 
 SEGMENT_DURATION_SEC = 20
 MAX_DH_SEGMENTS = 30
 SPLIT_IMPL_VERSION = "dh-split-v3"
-
-# #region agent log
-_DEBUG_LOG = Path(__file__).resolve().parent.parent / "debug-014260.log"
-
-
-def _dbg(message: str, data: dict, hyp: str = "H7") -> None:
-    try:
-        payload = {
-            "sessionId": "014260",
-            "runId": "post-fix",
-            "hypothesisId": hyp,
-            "location": "video_audio_split.py",
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        print(f"[dh-split] {message} {json.dumps(data, ensure_ascii=False)[:500]}", flush=True)
-    except Exception as e:
-        print(f"[dh-split] log failed: {e}", flush=True)
-
-
-# #endregion
 
 
 class SegmentLimitExceeded(ValueError):
@@ -87,35 +61,6 @@ def _run_ffmpeg_to_files(
     return rc, err_text
 
 
-def _probe_format(media_path: str, ffprobe: str) -> dict:
-    cmd = [
-        ffprobe,
-        "-v",
-        "error",
-        "-show_entries",
-        "format=format_name,duration,size:stream=codec_type,codec_name,sample_rate,channels",
-        "-of",
-        "json",
-        media_path,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return {"error": (proc.stderr or "")[:300], "rc": proc.returncode}
-        return json.loads(proc.stdout or "{}")
-    except Exception as e:
-        return {"error": str(e)}
-
-
 def _normalize_to_wav(
     *,
     ffmpeg: str,
@@ -143,27 +88,12 @@ def _normalize_to_wav(
         "wav",
         wav_path,
     ]
-    # #region agent log
-    _dbg("normalize start", {"cmd": cmd, "input_path": input_path}, "H7")
-    # #endregion
     rc, err_text = _run_ffmpeg_to_files(cmd, stderr_path=stderr_path, timeout=180)
     ok = (
         rc == 0
         and os.path.isfile(wav_path)
         and os.path.getsize(wav_path) > 44
     )
-    # #region agent log
-    _dbg(
-        "normalize result",
-        {
-            "rc": rc,
-            "ok": ok,
-            "wav_size": os.path.getsize(wav_path) if os.path.isfile(wav_path) else -1,
-            "stderr": err_text[:800],
-        },
-        "H7",
-    )
-    # #endregion
     if not ok:
         raise RuntimeError(
             f"[{SPLIT_IMPL_VERSION}] ffmpeg 规范化克隆音频失败 (rc={rc}): {err_text.strip()[:500]}"
@@ -198,21 +128,6 @@ def _cut_wav_segment(
     ]
     rc, err_text = _run_ffmpeg_to_files(cmd, stderr_path=stderr_path, timeout=120)
     ok = rc == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 44
-    # #region agent log
-    _dbg(
-        "cut segment result",
-        {
-            "idx": idx,
-            "rc": rc,
-            "ok": ok,
-            "out_size": os.path.getsize(out_path) if os.path.isfile(out_path) else -1,
-            "start_sec": start_sec,
-            "chunk_duration": chunk_duration,
-            "stderr": err_text[:400],
-        },
-        "H7",
-    )
-    # #endregion
     if not ok:
         # Re-encode fallback (should rarely be needed for wav)
         cmd2 = [
@@ -242,13 +157,6 @@ def _cut_wav_segment(
             timeout=120,
         )
         ok2 = rc2 == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 44
-        # #region agent log
-        _dbg(
-            "cut segment reencode",
-            {"idx": idx, "rc": rc2, "ok": ok2, "stderr": err2[:400]},
-            "H7",
-        )
-        # #endregion
         if not ok2:
             raise RuntimeError(
                 f"[{SPLIT_IMPL_VERSION}] ffmpeg 音频切段失败 (segment {idx}): "
@@ -270,7 +178,6 @@ def split_audio_segments(
     Returns ``[(segment_index, local_wav_path), ...]`` in time order.
     """
     ffmpeg = ffmpeg_exe or _FFMPEG_EXE
-    ffprobe = os.environ.get("FFPROBE_EXE") or _FFPROBE_EXE
 
     if not input_path or not os.path.isfile(input_path):
         raise RuntimeError(
@@ -282,26 +189,8 @@ def split_audio_segments(
             f"[{SPLIT_IMPL_VERSION}] 克隆音频过小 ({input_size} bytes)，可能下载损坏"
         )
 
-    fmt = _probe_format(input_path, ffprobe)
     duration = probe_audio_duration(input_path)
     segment_count = plan_segment_count(duration, segment_sec=segment_sec)
-
-    # #region agent log
-    _dbg(
-        "split_audio_segments start",
-        {
-            "version": SPLIT_IMPL_VERSION,
-            "input_path": input_path,
-            "input_size": input_size,
-            "duration": duration,
-            "segment_count": segment_count,
-            "ffmpeg": ffmpeg,
-            "ffprobe": ffprobe,
-            "format": fmt,
-        },
-        "H7",
-    )
-    # #endregion
 
     if segment_count > MAX_DH_SEGMENTS:
         raise SegmentLimitExceeded(
@@ -347,16 +236,4 @@ def split_audio_segments(
             f"[{SPLIT_IMPL_VERSION}] 未生成任何音频分段 (duration={duration})"
         )
 
-    # #region agent log
-    _dbg(
-        "split_audio_segments done",
-        {
-            "version": SPLIT_IMPL_VERSION,
-            "count": len(results),
-            "paths": [p for _, p in results],
-            "sizes": [os.path.getsize(p) for _, p in results],
-        },
-        "H7",
-    )
-    # #endregion
     return results

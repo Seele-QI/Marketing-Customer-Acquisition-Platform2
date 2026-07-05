@@ -45,7 +45,6 @@ def test_split_raises_segment_limit_exceeded(mock_isfile, mock_getsize, mock_pro
 
 @patch("lib.video_audio_split._cut_wav_segment")
 @patch("lib.video_audio_split._normalize_to_wav")
-@patch("lib.video_audio_split._probe_format", return_value={"format": {"duration": "35.0"}})
 @patch("lib.video_audio_split.probe_audio_duration")
 @patch("lib.video_audio_split.os.path.getsize", return_value=4096)
 @patch("lib.video_audio_split.os.path.isfile", return_value=True)
@@ -53,7 +52,6 @@ def test_split_audio_segments_last_segment_uses_remaining_duration(
     mock_isfile,
     mock_getsize,
     mock_probe,
-    _mock_fmt,
     mock_normalize,
     mock_cut,
 ):
@@ -85,7 +83,6 @@ def test_split_audio_segments_last_segment_uses_remaining_duration(
 
 @patch("lib.video_audio_split._cut_wav_segment")
 @patch("lib.video_audio_split._normalize_to_wav")
-@patch("lib.video_audio_split._probe_format", return_value={})
 @patch("lib.video_audio_split.probe_audio_duration")
 @patch("lib.video_audio_split.os.path.getsize", return_value=4096)
 @patch("lib.video_audio_split.os.path.isfile", return_value=True)
@@ -93,7 +90,6 @@ def test_split_single_short_segment(
     mock_isfile,
     mock_getsize,
     mock_probe,
-    _mock_fmt,
     mock_normalize,
     mock_cut,
 ):

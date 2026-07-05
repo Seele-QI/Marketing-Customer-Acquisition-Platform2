@@ -1,5 +1,7 @@
 /** 数字人视频创作（新）API 客户端 — Next.js 代理 /api/dh-video-v2/* */
 
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
+import { promptLoginRequired } from "@/lib/auth/prompt-login"
 import type {
   DhV2PlanScriptRequest,
   DhVideoV2Status,
@@ -7,9 +9,11 @@ import type {
   DhVideoV2SubmitResponse,
 } from "./types"
 import type { DhV2ScriptPlan } from "./script-plan"
-import { buildLocalScriptPlan } from "./script-plan"
 
 export type { DhV2PlanScriptRequest, DhV2ScriptPlan }
+
+/** 分镜 AI 慢速阈值（毫秒） */
+export const PLAN_SCRIPT_SLOW_MS = 120_000
 
 const JSON_HEADERS = { "Content-Type": "application/json" }
 const FETCH_OPTS: RequestInit = { credentials: "include" }
@@ -39,6 +43,15 @@ function parseDetail(data: { detail?: unknown; error?: { message?: string } }): 
     if (o.code) return o.code
   }
   return "请求失败"
+}
+
+function throwDhV2ApiError(
+  status: number,
+  data: { detail?: unknown; error?: { message?: string } },
+): never {
+  const msg = parseApiErrorResponse(status, { detail: data.detail ?? data.error }, parseDetail(data))
+  if (status === 401) promptLoginRequired(msg)
+  throw new Error(formatDhVideoV2Error(msg))
 }
 
 export function formatDhVideoV2Error(raw: string): string {
@@ -97,7 +110,7 @@ export async function submitDhVideoV2(
   const data = (await r.json().catch(() => ({}))) as DhVideoV2SubmitResponse &
     Record<string, unknown> & { detail?: unknown; error?: { message?: string } }
   if (!r.ok) {
-    throw new Error(formatDhVideoV2Error(parseDetail(data)))
+    throwDhV2ApiError(r.status, data)
   }
   const taskId = data.task_id || extractDhVideoV2TaskId(data)
   if (!taskId) {
@@ -113,7 +126,7 @@ export async function queryDhVideoV2Status(taskId: string): Promise<DhVideoV2Sta
   const data = (await r.json().catch(() => ({}))) as DhVideoV2Status &
     Record<string, unknown> & { detail?: unknown; error?: { message?: string } }
   if (!r.ok) {
-    throw new Error(formatDhVideoV2Error(parseDetail(data)))
+    throwDhV2ApiError(r.status, data)
   }
   const videoUrl = data.video_url || extractDhVideoV2VideoUrl(data)
   return {
@@ -130,31 +143,55 @@ export async function queryDhVideoV2Status(taskId: string): Promise<DhVideoV2Sta
     segment_count: typeof data.segment_count === "number" ? data.segment_count : undefined,
     segments_completed:
       typeof data.segments_completed === "number" ? data.segments_completed : undefined,
+    segments: Array.isArray(data.segments)
+      ? (data.segments as DhVideoV2Status["segments"])
+      : undefined,
+  }
+}
+
+export async function retryDhVideoV2Segment(
+  taskId: string,
+  segmentIndex: number,
+): Promise<{ ok: boolean; task_id: string; segment_index: number }> {
+  const r = await dhV2Fetch("/api/dh-video-v2/retry-segment", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ taskId, segmentIndex }),
+  })
+  const data = (await r.json().catch(() => ({}))) as {
+    ok?: boolean
+    task_id?: string
+    segment_index?: number
+    detail?: unknown
+  }
+  if (!r.ok) {
+    throwDhV2ApiError(r.status, data)
+  }
+  return {
+    ok: Boolean(data.ok),
+    task_id: data.task_id || taskId,
+    segment_index: typeof data.segment_index === "number" ? data.segment_index : segmentIndex,
   }
 }
 
 export async function requestDhVideoV2ScriptPlan(
   body: DhV2PlanScriptRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<{ plan: DhV2ScriptPlan }> {
-  try {
-    const r = await dhV2Fetch("/api/dh-video-v2/plan-script", {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(body),
-    })
-    const data = (await r.json().catch(() => ({}))) as { plan?: DhV2ScriptPlan; detail?: unknown }
-    if (!r.ok) {
-      throw new Error(formatDhVideoV2Error(parseDetail(data)))
-    }
-    if (!data.plan?.segments?.length) {
-      throw new Error("AI 未返回有效分镜脚本")
-    }
-    return { plan: data.plan }
-  } catch (e) {
-    const local = buildLocalScriptPlan(body.script, body.creative_idea, body.has_audio_ref)
-    if (!local.segments.length) throw e
-    return { plan: local }
+  const r = await dhV2Fetch("/api/dh-video-v2/plan-script", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  })
+  const data = (await r.json().catch(() => ({}))) as { plan?: DhV2ScriptPlan; detail?: unknown }
+  if (!r.ok) {
+    throwDhV2ApiError(r.status, data)
   }
+  if (!data.plan?.segments?.length) {
+    throw new Error("AI 未返回有效分镜脚本")
+  }
+  return { plan: data.plan }
 }
 
 export async function requestDhVideoV2AutoPrompt(
@@ -167,7 +204,7 @@ export async function requestDhVideoV2AutoPrompt(
   })
   const data = (await r.json().catch(() => ({}))) as { prompt?: string; detail?: unknown }
   if (!r.ok) {
-    throw new Error(formatDhVideoV2Error(parseDetail(data)))
+    throwDhV2ApiError(r.status, data)
   }
   if (!data.prompt?.trim()) {
     throw new Error("AI 未返回有效提示词")
