@@ -3,18 +3,90 @@
 #  - web（Next.js）: localhost:3000
 #  - api（FastAPI）: localhost:8000
 #  公网部署详见 docs/deploy/PAAS.md
+#
+#  使用前：cp .env.example .env  并填入真实密钥
 # ────────────────────────────────────────────────────────────────
 services:
   web:
     build:
       context: .
-      dockerfile: web/Dockerfile.web
+      dockerfile: Dockerfile.web
+      args:
+        # NEXT_PUBLIC_* 构建时烘焙进 bundle，必须在此传入
+        NEXT_PUBLIC_FASTAPI_URL: ${NEXT_PUBLIC_FASTAPI_URL:-}
+        NEXT_PUBLIC_DH_VIDEO_V2_MOCK: ${NEXT_PUBLIC_DH_VIDEO_V2_MOCK:-0}
+        NEXT_PUBLIC_CLOUD_API_URL: ${NEXT_PUBLIC_CLOUD_API_URL:-}
     ports:
       - "3000:3000"
     environment:
+      # ── Next.js 服务端 proxy（内网 DNS）──
       - FASTAPI_URL=http://api:8000
-      - NEXT_PUBLIC_FASTAPI_URL=https://api.example.com
       - NODE_ENV=production
+
+      # ── DeepSeek（Next.js API Routes 直连）──
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_CHAT_MODEL=${DEEPSEEK_CHAT_MODEL:-deepseek-v4-pro}
+
+      # ── 火山方舟 / 豆包 ──
+      - ARK_API_KEY=${ARK_API_KEY:-}
+      - ARK_BASE_URL=${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      - ARK_CHAT_MODEL=${ARK_CHAT_MODEL:-doubao-seed-2-1-pro-260628}
+      - ARK_ENDPOINT_ID=${ARK_ENDPOINT_ID:-}
+      - ARK_IMAGE_ENDPOINT_ID=${ARK_IMAGE_ENDPOINT_ID:-}
+      - ARK_IMAGE_API_KEY=${ARK_IMAGE_API_KEY:-}
+      - POSITIONING_PRODUCT_ARK_ENDPOINT_ID=${POSITIONING_PRODUCT_ARK_ENDPOINT_ID:-}
+      - POSITIONING_PRODUCT_ARK_API_KEY=${POSITIONING_PRODUCT_ARK_API_KEY:-}
+
+      # ── NewAPI / aicost.xyz ──
+      - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:-https://www.aicost.xyz}
+      - NEWAPI_KEY=${NEWAPI_KEY:-}
+      - NEWAPI_GPT_MODEL=${NEWAPI_GPT_MODEL:-gpt-5.5}
+      - NEWAPI_CLAUDE_MODEL=${NEWAPI_CLAUDE_MODEL:-claude-opus-4-8}
+      - CREDIT_METERED_KEY=${CREDIT_METERED_KEY:-}
+
+      # ── 邮箱登录 ──
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - RESEND_FROM=${RESEND_FROM:-中台 <noreply@example.com>}
+      - APP_PUBLIC_BASE=${APP_PUBLIC_BASE:-http://localhost:3000}
+      - DEV_EMAIL_MODE=${DEV_EMAIL_MODE:-0}
+
+      # ── 安全相关 ──
+      - EMAIL_HASH_SALT=${EMAIL_HASH_SALT}
+      - CREDIT_ADMIN_ACCESS_KEY=${CREDIT_ADMIN_ACCESS_KEY}
+      - ADMIN_LOGIN_NAME=${ADMIN_LOGIN_NAME:-}
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
+      - ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_SALT:-}
+
+      # ── 积分系统 ──
+      - CREDIT_REGISTER_BONUS=${CREDIT_REGISTER_BONUS:-100}
+      - CREDIT_SESSION_TTL_DAYS=${CREDIT_SESSION_TTL_DAYS:-30}
+      - CREDIT_EMAIL_TOKEN_TTL_SECONDS=${CREDIT_EMAIL_TOKEN_TTL_SECONDS:-900}
+
+      # ── 天行数据 ──
+      - TIANAPI_KEY=${TIANAPI_KEY:-}
+
+      # ── GEO 多模型 ──
+      - KIMI_API_KEY=${KIMI_API_KEY:-}
+      - KIMI_MODEL=${KIMI_MODEL:-moonshot-v1-32k}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_CHAT_MODEL=${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_CHAT_MODEL=${ANTHROPIC_CHAT_MODEL:-claude-3-5-haiku-20241022}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_CHAT_MODEL=${GEMINI_CHAT_MODEL:-gemini-2.0-flash}
+
+      # ── GEO 检索 ──
+      - JUSTONEAPI_TOKEN=${JUSTONEAPI_TOKEN:-}
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+
+      # ── 分享分发 ──
+      - SHARE_BASE_URL=${SHARE_BASE_URL:-}
+      - SHARE_API_TOKEN=${SHARE_API_TOKEN:-}
+
+      # ── 桌面云端接口 ──
+      - CLOUD_API_URL=${CLOUD_API_URL:-}
+
     depends_on:
       api:
         condition: service_healthy
@@ -29,7 +101,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: api/Dockerfile.api
+      dockerfile: Dockerfile.api
     ports:
       - "8000:8000"
     volumes:
@@ -45,28 +117,109 @@ services:
       - VIDEO_BGM_DIR=/app/assets/bgm
       - DATA_DIR=/data
       - CREDIT_DB_OVERRIDE=/data/accounts.db
+      - VIDEO_POSTPROCESS_DIR=/data/video-postprocess
       - PYTHONUNBUFFERED=1
-      - CORS_ALLOW_ORIGINS=https://www.example.com,https://example.com
-      # ── 以下从 .env 文件读取 ──
+
+      # ── AI 服务密钥 ──
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_CHAT_MODEL=${DEEPSEEK_CHAT_MODEL:-deepseek-v4-pro}
       - RUNNINGHUB_API_KEY=${RUNNINGHUB_API_KEY}
+
+      # ── Seedance 数字人视频（首选）──
+      - SEEDANCE_PRIMARY_BASE_URL=${SEEDANCE_PRIMARY_BASE_URL:-https://api.7tai.cc}
+      - SEEDANCE_PRIMARY_API_KEY=${SEEDANCE_PRIMARY_API_KEY:-}
+      - SEEDANCE_PRIMARY_MODEL=${SEEDANCE_PRIMARY_MODEL:-sd2-福利}
+      - SEEDANCE_PRIMARY_MEDIA_MODE=${SEEDANCE_PRIMARY_MEDIA_MODE:-url}
+
+      # ── Seedance 备选 ──
+      - SEEDANCE_API_KEY=${SEEDANCE_API_KEY:-}
+      - SEEDANCE_BASE_URL=${SEEDANCE_BASE_URL:-https://www.aicost.xyz}
+      - XINGHE_API_KEY=${XINGHE_API_KEY:-}
+      - XINGHE_BASE_URL=${XINGHE_BASE_URL:-https://www.aicost.xyz}
+
+      # ── 数字人视频 V2 控制 ──
+      - DH_VIDEO_V2_DEFAULT_PROVIDER=${DH_VIDEO_V2_DEFAULT_PROVIDER:-seedance}
+      - DH_V2_MAX_PARALLEL_SEGMENTS=${DH_V2_MAX_PARALLEL_SEGMENTS:-4}
+      - DH_V2_SEGMENT_POLL_TIMEOUT=${DH_V2_SEGMENT_POLL_TIMEOUT:-900}
+      - RH_VIDEO_INSTANCE_TYPE=${RH_VIDEO_INSTANCE_TYPE:-default}
+
+      # ── 阿里云 ASR ──
       - ALIYUN_ACCESS_KEY_ID=${ALIYUN_ACCESS_KEY_ID:-}
       - ALIYUN_ACCESS_KEY_SECRET=${ALIYUN_ACCESS_KEY_SECRET:-}
       - ALIYUN_ASR_APP_KEY=${ALIYUN_ASR_APP_KEY:-}
+
+      # ── 智凌文案提取 ──
+      - ZHILING_API_KEY=${ZHILING_API_KEY:-}
+
+      # ── 邮箱登录 ──
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - RESEND_FROM=${RESEND_FROM:-中台 <noreply@example.com>}
+      - APP_PUBLIC_BASE=${APP_PUBLIC_BASE:-http://localhost:3000}
+      - DEV_EMAIL_MODE=${DEV_EMAIL_MODE:-0}
+
+      # ── 安全相关 ──
       - EMAIL_HASH_SALT=${EMAIL_HASH_SALT}
+      - CREDIT_ADMIN_ACCESS_KEY=${CREDIT_ADMIN_ACCESS_KEY}
+      - ADMIN_LOGIN_NAME=${ADMIN_LOGIN_NAME:-}
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
+      - ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_SALT:-}
+
+      # ── 积分系统 ──
       - CREDIT_REGISTER_BONUS=${CREDIT_REGISTER_BONUS:-100}
       - CREDIT_SESSION_TTL_DAYS=${CREDIT_SESSION_TTL_DAYS:-30}
       - CREDIT_EMAIL_TOKEN_TTL_SECONDS=${CREDIT_EMAIL_TOKEN_TTL_SECONDS:-900}
-      - CREDIT_ADMIN_ACCESS_KEY=${CREDIT_ADMIN_ACCESS_KEY}
-      - RESEND_API_KEY=${RESEND_API_KEY}
-      - RESEND_FROM=${RESEND_FROM:-AgentHub <onboarding@resend.dev>}
-      - APP_PUBLIC_BASE=${APP_PUBLIC_BASE:-http://localhost:3000}
-      - DEV_EMAIL_MODE=${DEV_EMAIL_MODE:-1}
-      - TIANAPI_KEY=${TIANAPI_KEY:-}
+      - CREDIT_METERED_KEY=${CREDIT_METERED_KEY:-}
+
+      # ── 火山方舟 / 豆包 ──
       - ARK_API_KEY=${ARK_API_KEY:-}
-      - ARK_BASE_URL=${ARK_BASE_URL:-}
+      - ARK_BASE_URL=${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      - ARK_CHAT_MODEL=${ARK_CHAT_MODEL:-doubao-seed-2-1-pro-260628}
       - ARK_ENDPOINT_ID=${ARK_ENDPOINT_ID:-}
       - ARK_IMAGE_ENDPOINT_ID=${ARK_IMAGE_ENDPOINT_ID:-}
+      - ARK_IMAGE_API_KEY=${ARK_IMAGE_API_KEY:-}
+      - POSITIONING_PRODUCT_ARK_ENDPOINT_ID=${POSITIONING_PRODUCT_ARK_ENDPOINT_ID:-}
+      - POSITIONING_PRODUCT_ARK_API_KEY=${POSITIONING_PRODUCT_ARK_API_KEY:-}
+
+      # ── NewAPI / aicost.xyz ──
+      - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:-https://www.aicost.xyz}
+      - NEWAPI_KEY=${NEWAPI_KEY:-}
+      - NEWAPI_GPT_MODEL=${NEWAPI_GPT_MODEL:-gpt-5.5}
+      - NEWAPI_CLAUDE_MODEL=${NEWAPI_CLAUDE_MODEL:-claude-opus-4-8}
+
+      # ── 天行数据 ──
+      - TIANAPI_KEY=${TIANAPI_KEY:-}
+
+      # ── GEO 检索 ──
+      - JUSTONEAPI_TOKEN=${JUSTONEAPI_TOKEN:-}
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+
+      # ── GEO 多模型 ──
+      - KIMI_API_KEY=${KIMI_API_KEY:-}
+      - KIMI_MODEL=${KIMI_MODEL:-moonshot-v1-32k}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_CHAT_MODEL=${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_CHAT_MODEL=${ANTHROPIC_CHAT_MODEL:-claude-3-5-haiku-20241022}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_CHAT_MODEL=${GEMINI_CHAT_MODEL:-gemini-2.0-flash}
+
+      # ── 公网部署 ──
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-}
+      - SHARE_BASE_URL=${SHARE_BASE_URL:-}
+      - SHARE_API_TOKEN=${SHARE_API_TOKEN:-}
+
+      # ── ffmpeg ──
+      - FFMPEG_MAX_CONCURRENT=${FFMPEG_MAX_CONCURRENT:-2}
+
+      # ── 桌面客户端中央激活 ──
+      - CENTRAL_SIGNING_PRIVATE_KEY=${CENTRAL_SIGNING_PRIVATE_KEY:-}
+      - CENTRAL_SIGNING_KEY_ID=${CENTRAL_SIGNING_KEY_ID:-v1}
+      - CENTRAL_KEY_POOL_JSON=${CENTRAL_KEY_POOL_JSON:-}
+      - CENTRAL_LATEST_VERSION=${CENTRAL_LATEST_VERSION:-}
+      - CENTRAL_FORCE_UPDATE_BELOW=${CENTRAL_FORCE_UPDATE_BELOW:-0.0.1}
+      - CENTRAL_UPDATE_URL=${CENTRAL_UPDATE_URL:-}
+
     restart: unless-stopped
 
 volumes:
