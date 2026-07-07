@@ -10,7 +10,7 @@ import {
   reindexSegments,
   type DhV2ScriptPlan,
   type DhV2SegmentPlan,
-} from "./script-plan.ts"
+} from "./script-plan"
 
 /** 从 AI 文本中提取 JSON */
 export function extractPlanJsonBlock(text: string): { segments?: unknown[] } {

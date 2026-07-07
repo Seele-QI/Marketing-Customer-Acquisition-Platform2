@@ -1288,7 +1288,7 @@ export default function DhVideoV2Workflow() {
             <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
               <Button
                 variant="outline"
-                onClick={goBackFromGenerating}
+                onClick={() => goBackFromGenerating()}
                 className={cn("min-w-[140px]", tokens.btnOutline)}
               >
                 <ArrowLeft className="mr-1.5 h-4 w-4" />

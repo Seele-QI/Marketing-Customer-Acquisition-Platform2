@@ -33,7 +33,7 @@ export type AiProbeResponse = {
   topic: string
   brand?: string
   simulated: true
-  engine: "deepseek-proxy"
+  engine: string
   mentionLikelihood: "low" | "medium" | "high"
   citedSources: string[]
   gaps: AiProbeGap[]

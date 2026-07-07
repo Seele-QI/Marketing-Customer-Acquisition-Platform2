@@ -105,7 +105,7 @@ export async function retryArticleGenerate(
 
   if (!resp.ok) {
     if (data.article) return data.article
-    throw new Error(parseApiErrorResponse(resp.status, data, "重试失败"))
+    throw new Error(parseApiErrorResponse(resp.status, data as { detail?: unknown }, "重试失败"))
   }
 
   if (!data.article) {
