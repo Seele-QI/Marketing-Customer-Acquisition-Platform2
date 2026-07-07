@@ -294,59 +294,13 @@ async def promo_video_storyboard_status(taskId: str):
 
 async def promo_video_auto_prompt(req: Request):
 
-    from main import (
+    raise HTTPException(
 
-        _promo_video_task_store, DEEPSEEK_API_KEY,
+        status_code=501,
 
-        generate_video_prompt, get_current_user,
-
-        PromoAutoPromptRequest,
+        detail="请使用 Next.js /api/promo-video/auto-prompt（ChatGPT + Seedance 提示词 skill）",
 
     )
-
-    body = await req.json()
-
-    auto_req = PromoAutoPromptRequest(**body)
-
-    
-
-    user = get_current_user(req)
-
-    if not user:
-
-        raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN"})
-
-
-
-    story_task = _promo_video_task_store.get(auto_req.storyboard_task_id)
-
-    if not story_task:
-
-        raise HTTPException(status_code=404, detail="Storyboard task not found")
-
-
-
-    try:
-
-        prompt = await generate_video_prompt(
-
-            DEEPSEEK_API_KEY,
-
-            story_task.get("promo_script") or story_task.get("creative_prompt") or "",
-
-            story_task.get("style", "科技感"),
-
-            auto_req.selected_count,
-
-            story_task.get("duration", 15),
-
-        )
-
-        return {"prompt": prompt}
-
-    except Exception as e:
-
-        raise HTTPException(status_code=502, detail={"code": "AI_ERROR", "message": str(e)})
 
 
 
@@ -387,8 +341,24 @@ async def promo_video_generate(req: Request):
     story_task = _promo_video_task_store.get(gen_req.storyboard_task_id)
 
     if not story_task:
+        from main import POST_PROCESS_ROOT
+        from lib.promo_video_service import recover_storyboard_task_from_disk
 
-        raise HTTPException(status_code=404, detail="Storyboard not found")
+        recovered = recover_storyboard_task_from_disk(
+            gen_req.storyboard_task_id,
+            POST_PROCESS_ROOT,
+            promo_script=(gen_req.promo_script or "").strip(),
+            duration=int(gen_req.duration or 15),
+            ratio=(gen_req.ratio or "").strip(),
+        )
+        if recovered:
+            story_task = recovered
+            _promo_video_task_store[gen_req.storyboard_task_id] = recovered
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="分镜任务不存在或已过期，请返回步骤 2 重新生成分镜",
+            )
 
 
 
@@ -400,9 +370,9 @@ async def promo_video_generate(req: Request):
 
         raise HTTPException(status_code=400, detail="Enter prompt")
 
-
-
-    duration = story_task.get("duration", 15)
+    duration = int(gen_req.duration or story_task.get("duration") or 15)
+    if duration < 15 or duration % 15 != 0:
+        raise HTTPException(status_code=400, detail="成片时长须为 15 秒的整数倍")
     resolution = (gen_req.video_resolution or "").strip()
     cost = calculate_promo_video_cost(duration, resolution)
 
@@ -458,6 +428,8 @@ async def promo_video_generate(req: Request):
         "instance_type": gen_req.instance_type,
 
         "ratio": gen_req.ratio or story_task.get("ratio", "adaptive"),
+
+        "duration": duration,
 
     }
 

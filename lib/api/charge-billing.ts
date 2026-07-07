@@ -1,4 +1,4 @@
-import { getServerFastapiBase } from "@/lib/fastapi-base"
+import { getCloudApiBase } from "@/lib/fastapi-base"
 import {
   resolveBillingCost,
   type BillingKey,
@@ -11,7 +11,7 @@ export async function chargeBillingEvent(opts: {
   params?: BillingParams
   refId: string
 }): Promise<{ balance: number; cost: number; scene: string }> {
-  const base = getServerFastapiBase()
+  const base = getCloudApiBase()
   if (!base) throw new Error("FASTAPI_UNAVAILABLE")
 
   const resp = await fetch(`${base}/api/credit/consume-billing`, {

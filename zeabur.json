@@ -3,21 +3,20 @@
     {
       "name": "web",
       "build": {
-        "dockerfile": "Dockerfile.web",
+        "dockerfile": "web/Dockerfile.web",
         "context": "."
       },
       "port": 3000,
       "env": {
-        "FASTAPI_URL": "http://api:8000",
-        "NEXT_PUBLIC_FASTAPI_URL": "https://api.example.com",
-        "NODE_ENV": "production",
-        "NEXT_PUBLIC_OPEN_SOURCE_REPO_URL": "https://github.com/your-org/your-repo"
+        "FASTAPI_URL": "http://api.zeabur.internal:8000",
+        "NEXT_PUBLIC_FASTAPI_URL": "https://zhongtaiapi.zeabur.app",
+        "NODE_ENV": "production"
       }
     },
     {
       "name": "api",
       "build": {
-        "dockerfile": "Dockerfile.api",
+        "dockerfile": "api/Dockerfile.api",
         "context": "."
       },
       "port": 8000,
@@ -29,9 +28,11 @@
         "DATA_DIR": "/data",
         "CREDIT_DB_OVERRIDE": "/data/accounts.db",
         "PYTHONUNBUFFERED": "1",
-        "CORS_ALLOW_ORIGINS": "https://www.example.com,https://example.com",
-        "APP_PUBLIC_BASE": "https://www.example.com",
-        "DEV_EMAIL_MODE": "0"
+        "CORS_ALLOW_ORIGINS": "https://zhongtai.zeabur.app",
+        "APP_PUBLIC_BASE": "https://zhongtai.zeabur.app",
+        "DEV_EMAIL_MODE": "0",
+        "CENTRAL_LATEST_VERSION": "0.1.0",
+        "CENTRAL_FORCE_UPDATE_BELOW": "0.0.1"
       }
     }
   ]

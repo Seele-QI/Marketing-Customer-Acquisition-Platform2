@@ -247,14 +247,6 @@ function buildItems(): GlobalSearchItem[] {
       searchBlob: "GEO 生成式引擎优化 文章创作 深度优化 FAQ 语义",
       action: { type: "goView", view: "深度优化文章创作" },
     },
-    {
-      id: "nav-geo-push",
-      kind: "导航",
-      title: "多平台一键推送",
-      subtitle: "GEO优化 · 跨平台发布队列",
-      searchBlob: "GEO 生成式引擎优化 多平台 推送 发布 一键推送",
-      action: { type: "goView", view: "多平台一键推送" },
-    },
   ]
 
   return [...shortcuts, ...team, ...tpl]

@@ -308,6 +308,87 @@ def list_redeem_codes_by_batch(batch_id: str) -> list[dict]:
         conn.close()
 
 
+def admin_list_users(page: int = 1, limit: int = 20, search: str = "") -> dict:
+    """管理员：分页列出用户及积分余额。"""
+    limit = max(1, min(100, int(limit)))
+    page = max(1, int(page))
+    offset = (page - 1) * limit
+    conn = connect()
+    try:
+        where = ""
+        params: list = []
+        q = (search or "").strip()
+        if q:
+            where = "WHERE u.login_name LIKE ? OR u.email_masked LIKE ?"
+            pattern = f"%{q}%"
+            params = [pattern, pattern]
+        total_row = conn.execute(f"SELECT COUNT(*) AS c FROM users u {where}", params).fetchone()
+        total = int(total_row["c"]) if total_row else 0
+        rows = conn.execute(
+            f"""SELECT u.id, u.login_name, u.email_masked, u.status, u.created_at,
+                       COALESCE(c.balance, 0) AS balance
+                FROM users u
+                LEFT JOIN credit_accounts c ON c.user_id = u.id
+                {where}
+                ORDER BY u.created_at DESC, u.id DESC
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        ).fetchall()
+        return {
+            "items": [dict(r) for r in rows],
+            "total": total,
+            "page": page,
+            "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+def admin_adjust_balance(user_id: int, delta: int, note: str = "") -> int:
+    """管理员手动调整积分。delta 正数为加，负数为减。返回调整后余额。"""
+    delta = int(delta)
+    if delta == 0:
+        raise CreditError("INVALID_DELTA", "调整金额不能为 0", status=400)
+    now_ms = int(time.time() * 1000)
+    with transaction() as conn:
+        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            raise CreditError("USER_NOT_FOUND", "用户不存在", status=404)
+        row = conn.execute(
+            "SELECT balance FROM credit_accounts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            raise CreditError("ACCOUNT_NOT_FOUND", "账户不存在", status=404)
+        current = int(row["balance"])
+        new_balance = current + delta
+        if new_balance < 0:
+            raise CreditError(
+                "INSUFFICIENT_CREDIT",
+                "调整后余额不能为负",
+                status=402,
+                have=current,
+                need=-delta,
+            )
+        if delta > 0:
+            conn.execute(
+                """UPDATE credit_accounts
+                   SET balance = ?, total_bonus = total_bonus + ?, updated_at = ?
+                   WHERE user_id = ?""",
+                (new_balance, delta, now_ms, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE credit_accounts SET balance = ?, updated_at = ? WHERE user_id = ?",
+                (new_balance, now_ms, user_id),
+            )
+        conn.execute(
+            """INSERT INTO credit_ledger (user_id, type, delta, balance_after, ref_id, note, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, TYPE_ADMIN_ADJUST, delta, new_balance, "", (note or "").strip() or "管理员调整", now_ms),
+        )
+        return new_balance
+
+
 def recompute_balance(user_id: int) -> int:
     """从流水重算余额，返回新余额；与缓存不匹配时报警。"""
     conn = connect()

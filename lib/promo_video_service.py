@@ -116,6 +116,11 @@ RH_QUERY_MAX_RETRIES = 5
 RH_TRANSIENT_RETRIES = 3
 
 
+def _promo_http_client(**kwargs) -> httpx.AsyncClient:
+    """直连 RH / COS，避免 Windows 系统代理导致九宫格图下载 ConnectError。"""
+    return httpx.AsyncClient(trust_env=False, **kwargs)
+
+
 def _is_transient_http_error(exc: BaseException) -> bool:
     if isinstance(exc, (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.WriteError)):
         return True
@@ -158,7 +163,7 @@ async def _rh_post_json(api_key: str, url: str, payload: dict, *, retries: int =
     last_err: BaseException | None = None
     for attempt in range(retries):
         try:
-            async with httpx.AsyncClient(timeout=RH_HTTP_TIMEOUT) as client:
+            async with _promo_http_client(timeout=RH_HTTP_TIMEOUT) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if not resp.is_success:
                     raise RuntimeError(
@@ -507,7 +512,7 @@ async def upload_to_runninghub(api_key, file_path):
     last_resp_text = ""
     for attempt in range(RH_TRANSIENT_RETRIES):
         try:
-            async with httpx.AsyncClient(timeout=RH_HTTP_TIMEOUT) as client:
+            async with _promo_http_client(timeout=RH_HTTP_TIMEOUT) as client:
                 with open(file_path, "rb") as f:
                     resp = await client.post(url, headers=headers, files={"file": (os.path.basename(file_path), f)})
                     last_resp_text = resp.text or ""
@@ -573,7 +578,16 @@ def _image_ext_from_bytes(data: bytes) -> str:
 
 def _is_rh_cdn_url(url: str) -> bool:
     lower = url.lower()
-    return "runninghub" in lower
+    return any(
+        token in lower
+        for token in (
+            "runninghub",
+            "rh-images",
+            "myqcloud.com",
+            "aliyuncs.com",
+            "qcloud.com",
+        )
+    )
 
 
 async def download_file(
@@ -594,7 +608,7 @@ async def download_file(
         headers = {}
         if with_bearer and api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        async with httpx.AsyncClient(timeout=RH_HTTP_TIMEOUT) as client:
+        async with _promo_http_client(timeout=RH_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers or None)
             status = resp.status_code
             if not resp.is_success:
@@ -622,10 +636,14 @@ async def download_file(
             break
         except Exception as e:
             last_err = e
+            logger.warning("promo grid download attempt %s/%s failed: %s", attempt + 1, RH_TRANSIENT_RETRIES, e)
             if attempt < RH_TRANSIENT_RETRIES - 1 and _is_transient_http_error(e):
                 await asyncio.sleep(min(2**attempt, 8))
                 continue
-            raise
+            detail = (str(e) or "").strip() or type(e).__name__
+            raise RuntimeError(
+                f"下载九宫格图失败: {detail}（URL: {url[:80]}…）"
+            ) from e
     if content is None:
         raise last_err or RuntimeError(f"下载失败（URL: {url[:80]}…, HTTP {last_status}）")
     if validate_as_image:
@@ -698,6 +716,57 @@ def slice_images_for_segments(image_urls, segment_count):
         result.append(image_urls[start:end])
         start = end
     return result
+
+
+def recover_storyboard_task_from_disk(
+    task_id: str,
+    post_process_root: str,
+    *,
+    promo_script: str = "",
+    duration: int = 15,
+    ratio: str = "adaptive",
+) -> dict | None:
+    """FastAPI 重启后从磁盘恢复分镜任务（帧文件仍在 video-postprocess 目录）。"""
+    tid = (task_id or "").strip()
+    if not tid:
+        return None
+    frames_dir = os.path.join(post_process_root, tid, "frames")
+    if not os.path.isdir(frames_dir):
+        return None
+
+    names = sorted(
+        f
+        for f in os.listdir(frames_dir)
+        if f.lower().startswith("frame_") and f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    )
+    if not names:
+        return None
+
+    frame_paths = [os.path.abspath(os.path.join(frames_dir, n)) for n in names]
+    frame_urls = [f"/static/video-postprocess/{tid}/frames/{n}" for n in names]
+    audio_path = os.path.join(post_process_root, tid, "reference_audio.bin")
+    audio_b64 = ""
+    if os.path.isfile(audio_path):
+        try:
+            with open(audio_path, "rb") as af:
+                import base64
+
+                audio_b64 = base64.b64encode(af.read()).decode("ascii")
+        except OSError:
+            audio_b64 = ""
+
+    return {
+        "task_id": tid,
+        "status": "storyboard_ready",
+        "frame_paths": frame_paths,
+        "frame_urls": frame_urls,
+        "frame_count": len(frame_paths),
+        "promo_script": (promo_script or "").strip(),
+        "duration": max(15, int(duration or 15)),
+        "ratio": (ratio or "adaptive").strip() or "adaptive",
+        "audio_base64": audio_b64,
+        "recovered_from_disk": True,
+    }
 
 
 def resolve_frame_paths(

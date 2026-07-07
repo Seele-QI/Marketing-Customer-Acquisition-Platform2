@@ -516,10 +516,19 @@ export default function PromoVideoWorkflow() {
     })
 
   const autoPrompt = async () => {
-    if (!storyTaskId) return
+    if (!formData.promoScript.trim()) {
+      toast({ title: "请先填写宣传文案", variant: "destructive" })
+      return
+    }
     setAutoPrompting(true)
     try {
-      const d = await requestPromoAutoPrompt(storyTaskId, selected.size || 1)
+      const d = await requestPromoAutoPrompt({
+        promo_script: formData.promoScript,
+        duration: formData.duration,
+        selected_count: selected.size || 1,
+        visual_style: formData.productPrompt.trim() || undefined,
+        has_audio_ref: Boolean(formData.audioBase64),
+      })
       if (d.prompt) setVidPrompt(d.prompt)
       toast({ title: "提示词已生成" })
     } catch (e: unknown) {
@@ -553,9 +562,10 @@ export default function PromoVideoWorkflow() {
         storyboard_task_id: storyTaskId,
         selected_indices: Array.from(selected).sort((a, b) => a - b),
         video_prompt: vidPrompt,
+        duration: formData.duration,
+        promo_script: formData.promoScript,
         video_resolution: videoResolution,
         real_person_mode: realPersonMode,
-        instance_type: videoInstanceType,
         ratio: videoRatio,
       })
       setVideoTaskId(tid)
@@ -1140,19 +1150,15 @@ export default function PromoVideoWorkflow() {
                 </div>
                 <div>
                   <label className={fieldLabelClass}>成片时长</label>
-                  <div className={cn(selectClass, "bg-slate-50 text-slate-600 dark:bg-white/5")}>
-                    {formData.duration} 秒
-                  </div>
-                </div>
-                <div>
-                  <label className={fieldLabelClass}>算力实例</label>
                   <select
-                    value={videoInstanceType}
-                    onChange={(e) => setVideoInstanceType(e.target.value as PromoRhInstanceType)}
+                    value={formData.duration}
+                    onChange={(e) =>
+                      setFormData((p) => ({ ...p, duration: Number(e.target.value) }))
+                    }
                     className={selectClass}
                   >
-                    {PROMO_RH_INSTANCE_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
+                    {PROMO_DURATIONS.map((d) => (
+                      <option key={d} value={d}>{d} 秒</option>
                     ))}
                   </select>
                 </div>
@@ -1288,9 +1294,24 @@ export default function PromoVideoWorkflow() {
               <XCircle className="mb-4 h-12 w-12 text-red-400" />
               <h3 className="mb-2 text-lg font-semibold text-red-600 dark:text-red-400">视频生成失败</h3>
               <p className="mb-6 max-w-sm text-center text-[13px] text-slate-500">{formatPromoError(vidErr)}</p>
-              <Button onClick={reset} className="rounded-full bg-sky-500 hover:bg-sky-600">
-                重新开始
-              </Button>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setStep("prompt")
+                    setVidStatus("idle")
+                    setVidErr("")
+                    setVideoTaskId("")
+                  }}
+                  className="rounded-full"
+                >
+                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+                  返回上一步
+                </Button>
+                <Button onClick={reset} className="rounded-full bg-sky-500 hover:bg-sky-600">
+                  重新开始
+                </Button>
+              </div>
             </div>
           )}
         </div>

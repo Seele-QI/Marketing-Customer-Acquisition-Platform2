@@ -41,3 +41,19 @@ export type RedeemCodeItem = {
   status: "active" | "redeemed"
   redeemed_at?: number | null
 }
+
+export type AdminUserItem = {
+  id: number
+  login_name: string
+  email_masked: string
+  status: string
+  created_at: number
+  balance: number
+}
+
+export type AdminUserListResponse = {
+  items: AdminUserItem[]
+  total: number
+  page: number
+  limit: number
+}

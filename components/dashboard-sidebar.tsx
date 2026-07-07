@@ -12,12 +12,10 @@ import {
   Sparkles,
   ChevronDown,
   ChevronRight,
-  Link,
   FileText,
   Bot,
   Clapperboard,
   Clock,
-  Share2,
   TicketPercent,
   Image,
   Scissors,
@@ -25,7 +23,6 @@ import {
   Database,
   Grid3x3,
   FileEdit,
-  Send,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserMenu } from "@/components/user-menu"
@@ -75,16 +72,13 @@ const mainNav: NavItem[] = [
       { label: "企业知识库搭建", view: GEO_VIEWS.KNOWLEDGE_BASE, icon: Database, iconColor: "text-cyan-500" },
       { label: "内容矩阵规划", view: GEO_VIEWS.CONTENT_MATRIX, icon: Grid3x3, iconColor: "text-cyan-600" },
       { label: "深度优化文章创作", view: GEO_VIEWS.ARTICLE_EDITOR, icon: FileEdit, iconColor: "text-teal-500" },
-      { label: "多平台一键推送", view: GEO_VIEWS.MULTI_PLATFORM_PUSH, icon: Send, iconColor: "text-sky-500" },
     ],
   },
-  { label: "一键分发", icon: Share2, badge: "开发中", iconColor: "text-sky-500", iconBg: "bg-sky-500/10" },
   { label: "充值兑换", icon: TicketPercent, iconColor: "text-amber-500", iconBg: "bg-amber-500/10" },
   { label: "智能体中心", icon: Bot, iconColor: "text-indigo-500", iconBg: "bg-indigo-500/10" },
 ]
 
 const bottomNav: NavItem[] = [
-  { label: "账号绑定", icon: Link, iconColor: "text-blue-500", iconBg: "bg-blue-500/10" },
   { label: "帮助中心", icon: LifeBuoy, iconColor: "text-sky-500", iconBg: "bg-sky-500/10" },
 ]
 

@@ -10,14 +10,12 @@ import { CopywritingChatWorkspace } from "@/components/copywriting-chat-workspac
 import CopywritingExtractView from "@/components/copywriting-extract-view"
 import { VideoWorkspace } from "@/components/video/video-workspace"
 import { GeoWorkspace } from "@/components/geo/geo-workspace"
-import { ShareDistribute } from "@/components/share-distribute"
 import {
   VIDEO_VIEWS,
   getVideoBreadcrumb,
   isVideoView,
 } from "@/lib/video/workspace"
 import { getGeoBreadcrumb, isGeoView } from "@/lib/geo/workspace"
-import { AccountBinding } from "@/components/account-binding"
 import { AgentCenter } from "@/components/agent-center"
 import { AccountPositioning } from "@/components/account-positioning"
 import { SettingsView } from "@/components/settings-view"
@@ -161,11 +159,6 @@ function ContentArea({
     return <GeoWorkspace activeView={activeView} />
   }
 
-  // 一键分发
-  if (activeView === "一键分发") {
-    return <ShareDistribute />
-  }
-
   // 文案提取 — extract copy from video URL
   if (activeView === "文案提取") {
     return (
@@ -222,10 +215,6 @@ function ContentArea({
 
   if (activeView === "自动保存图片") {
     return <SettingsView />
-  }
-
-  if (activeView === "账号绑定") {
-    return <AccountBinding />
   }
 
   if (activeView === "帮助中心") {

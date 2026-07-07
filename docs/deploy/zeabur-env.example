@@ -1,0 +1,46 @@
+# Zeabur 云端部署环境变量模板
+# 1. 运行 node scripts/generate-zeabur-secrets.mjs --admin-password "你的密码"
+# 2. 将输出填入 Zeabur 控制台（api / web 服务分别配置）
+# 3. 部署后把下方 ZEABUR_* 占位符替换为控制台实际域名
+
+# ── api 服务 ─────────────────────────────────────────────
+DATA_DIR=/data
+CREDIT_DB_OVERRIDE=/data/accounts.db
+VIDEO_BGM_DIR=/app/assets/bgm
+DEV_EMAIL_MODE=0
+PYTHONUNBUFFERED=1
+
+# 域名（部署后在 Zeabur 绑定域名并替换）
+APP_PUBLIC_BASE=https://mcap-prod-test1-web.zeabur.app
+CORS_ALLOW_ORIGINS=https://mcap-prod-test1-web.zeabur.app
+
+# 安全（generate-zeabur-secrets.mjs 生成）
+EMAIL_HASH_SALT=
+CREDIT_ADMIN_ACCESS_KEY=
+
+# AI Key（必填）
+DEEPSEEK_API_KEY=
+RUNNINGHUB_API_KEY=
+
+# 中央激活 / 版本（与桌面端共用同一 api 服务时可合并）
+CENTRAL_SIGNING_PRIVATE_KEY=
+CENTRAL_SIGNING_KEY_ID=v1
+CENTRAL_LATEST_VERSION=0.1.0
+CENTRAL_FORCE_UPDATE_BELOW=0.0.1
+CENTRAL_UPDATE_URL=
+
+# ── web 服务 ─────────────────────────────────────────────
+NODE_ENV=production
+FASTAPI_URL=http://api:8000
+NEXT_PUBLIC_FASTAPI_URL=https://mcap-prod-test1-api.zeabur.app
+
+# 管理员 UI 登录（与 api 无关，仅 web 校验）
+ADMIN_LOGIN_NAME=admin
+ADMIN_PASSWORD_HASH=
+ADMIN_PASSWORD_SALT=
+CREDIT_ADMIN_ACCESS_KEY=
+
+# ── 桌面 Electron 构建机（.env.electron-build.local）──
+CLOUD_API_URL=https://mcap-prod-test1-api.zeabur.app
+CENTRAL_SERVICE_URL=https://mcap-prod-test1-api.zeabur.app
+CENTRAL_SIGNING_PUBLIC_KEY=

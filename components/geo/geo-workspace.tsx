@@ -8,7 +8,6 @@
 import { GeoKnowledgeBaseView } from "@/components/geo-knowledge-base-view"
 import { GeoContentMatrixView } from "@/components/geo-content-matrix-view"
 import { GeoArticleEditorView } from "@/components/geo-article-editor-view"
-import { GeoMultiPlatformPushView } from "@/components/geo-multi-platform-push-view"
 import { GEO_VIEWS, type GeoView } from "@/lib/geo/workspace"
 
 type Props = {
@@ -21,9 +20,6 @@ export function GeoWorkspace({ activeView }: Props) {
       {activeView === GEO_VIEWS.KNOWLEDGE_BASE ? <GeoKnowledgeBaseView /> : null}
       {activeView === GEO_VIEWS.CONTENT_MATRIX ? <GeoContentMatrixView /> : null}
       {activeView === GEO_VIEWS.ARTICLE_EDITOR ? <GeoArticleEditorView /> : null}
-      {activeView === GEO_VIEWS.MULTI_PLATFORM_PUSH ? (
-        <GeoMultiPlatformPushView />
-      ) : null}
     </div>
   )
 }

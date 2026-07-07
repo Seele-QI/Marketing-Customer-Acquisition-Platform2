@@ -47,6 +47,8 @@ from lib.credit import (
     list_redeem_code_batches,
     list_redeem_codes_by_batch,
     redeem_code,
+    admin_list_users,
+    admin_adjust_balance,
 )
 from lib.rate_limit import (
     CENTRAL_ACTIVATE_IP_LIMITS,
@@ -184,6 +186,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def bind_request_context_middleware(request: Request, call_next):
+    from lib.request_context import reset_current_request, set_current_request
+
+    token = set_current_request(request)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_request(token)
 
 
 @app.get("/health")
@@ -2976,11 +2989,16 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
     ref_id = (req.ref_id or "").strip() or scene
     note = (req.note or scene)[:200]
     new_balance = consume_with_idempotency(
-        user_id=user.id, scene=scene, ref_id=ref_id, note=note,
+        user_id=user.id,
+        scene=scene,
+        ref_id=ref_id,
+        note=note,
+        cost=req.cost,
     )
+    resolved_cost = req.cost if req.cost is not None else SCENE_COST_TABLE[scene]
     return {
         "balance": new_balance,
-        "cost": SCENE_COST_TABLE[scene],
+        "cost": resolved_cost,
         "scene": scene,
         "ref_id": ref_id,
     }
@@ -3113,6 +3131,32 @@ async def credit_redeem_codes_generate(req: RedeemGenerateRequest, request: Requ
         note=req.note,
     )
     return {"items": items, "count": len(items)}
+
+
+class AdminAdjustRequest(BaseModel):
+    user_id: int
+    delta: int
+    note: str = ""
+
+
+@app.get("/api/credit/admin/users")
+async def credit_admin_list_users(
+    request: Request,
+    page: int = 1,
+    limit: int = 20,
+    search: str = "",
+):
+    _require_admin_key(request)
+    return admin_list_users(page=page, limit=limit, search=search)
+
+
+@app.post("/api/credit/admin/adjust")
+async def credit_admin_adjust(req: AdminAdjustRequest, request: Request):
+    _require_admin_key(request)
+    if not isinstance(req.user_id, int) or req.user_id < 1:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": "user_id 无效"})
+    new_balance = admin_adjust_balance(req.user_id, req.delta, req.note)
+    return {"user_id": req.user_id, "balance": new_balance, "delta": req.delta}
 
 
 @app.post("/api/credit/redeem")
@@ -4068,6 +4112,8 @@ class PromoVideoGenerateRequest(BaseModel):
     storyboard_task_id: str
     selected_indices: list[int] = []
     video_prompt: str = ""
+    duration: int = 0
+    promo_script: str = ""
     video_resolution: str = "720p"
     real_person_mode: bool = True
     instance_type: str = "default"
@@ -4117,71 +4163,84 @@ async def _promo_crop_frames_from_grid(
                 grid_data = f.read()
         frame_paths = crop_storyboard_grid(grid_data, cols, rows, frames_dir)
     else:
-        failed_stage = STAGE_PV_RH_CROP_SUBMIT
-        _set_promo_stage(task_id, STAGE_PV_RH_CROP_SUBMIT, progress=70)
-        grid_rh_url = await upload_to_runninghub(rh_key, grid_path)
-        crop_task_id = await submit_grid_crop_to_rh(
-            rh_key,
-            grid_rh_url,
-            rows,
-            cols,
-            save_all=True,
-            instance_type=instance_type,
-            output_dir=output_dir,
-        )
-        _set_promo_stage(
-            task_id,
-            STAGE_PV_RH_CROP_SUBMIT,
-            rh_crop_task_id=crop_task_id,
-            progress=72,
-        )
-
-        failed_stage = STAGE_PV_RH_CROP_POLL
-        _set_promo_stage(
-            task_id,
-            STAGE_PV_RH_CROP_POLL,
-            rh_crop_task_id=crop_task_id,
-            progress=75,
-        )
-
-        def _on_crop_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
-            _promo_patch_task(
-                task_id,
-                rh_crop_status=rh_status or (result.get("status") or ""),
-                progress=min(90, 75 + int(min(elapsed / 120.0, 1.0) * 15)),
+        try:
+            failed_stage = STAGE_PV_RH_CROP_SUBMIT
+            _set_promo_stage(task_id, STAGE_PV_RH_CROP_SUBMIT, progress=70)
+            grid_rh_url = await upload_to_runninghub(rh_key, grid_path)
+            crop_task_id = await submit_grid_crop_to_rh(
+                rh_key,
+                grid_rh_url,
+                rows,
+                cols,
+                save_all=True,
+                instance_type=instance_type,
+                output_dir=output_dir,
             )
-            try:
-                with open(
-                    os.path.join(output_dir, "rh_crop_poll_last.json"),
-                    "w",
-                    encoding="utf-8",
-                ) as f:
-                    json.dump(result, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+            _set_promo_stage(
+                task_id,
+                STAGE_PV_RH_CROP_SUBMIT,
+                rh_crop_task_id=crop_task_id,
+                progress=72,
+            )
 
-        crop_result = await wait_for_runninghub_task(
-            rh_key,
-            crop_task_id,
-            max_wait=600,
-            on_poll=_on_crop_poll,
-            min_urls=expected_frames,
-            task_label="裁切",
-        )
+            failed_stage = STAGE_PV_RH_CROP_POLL
+            _set_promo_stage(
+                task_id,
+                STAGE_PV_RH_CROP_POLL,
+                rh_crop_task_id=crop_task_id,
+                progress=75,
+            )
 
-        failed_stage = STAGE_PV_CROP_DOWNLOAD
-        _set_promo_stage(
-            task_id,
-            STAGE_PV_CROP_DOWNLOAD,
-            rh_crop_task_id=crop_task_id,
-            progress=92,
-        )
-        frame_paths = await download_crop_results(
-            rh_key,
-            crop_result,
-            output_dir,
-            expected_frames,
-        )
+            def _on_crop_poll(result: dict, elapsed: float, rh_status: str = "") -> None:
+                _promo_patch_task(
+                    task_id,
+                    rh_crop_status=rh_status or (result.get("status") or ""),
+                    progress=min(90, 75 + int(min(elapsed / 120.0, 1.0) * 15)),
+                )
+                try:
+                    with open(
+                        os.path.join(output_dir, "rh_crop_poll_last.json"),
+                        "w",
+                        encoding="utf-8",
+                    ) as f:
+                        json.dump(result, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+
+            crop_result = await wait_for_runninghub_task(
+                rh_key,
+                crop_task_id,
+                max_wait=600,
+                on_poll=_on_crop_poll,
+                min_urls=expected_frames,
+                task_label="裁切",
+            )
+
+            failed_stage = STAGE_PV_CROP_DOWNLOAD
+            _set_promo_stage(
+                task_id,
+                STAGE_PV_CROP_DOWNLOAD,
+                rh_crop_task_id=crop_task_id,
+                progress=92,
+            )
+            frame_paths = await download_crop_results(
+                rh_key,
+                crop_result,
+                output_dir,
+                expected_frames,
+            )
+        except Exception as rh_crop_err:
+            logger.warning(
+                "promo %s RH grid crop failed (%s), falling back to Pillow",
+                task_id,
+                rh_crop_err,
+            )
+            failed_stage = STAGE_PV_CROP_DOWNLOAD
+            _set_promo_stage(task_id, STAGE_PV_CROP_DOWNLOAD, progress=75)
+            if grid_data is None:
+                with open(grid_path, "rb") as f:
+                    grid_data = f.read()
+            frame_paths = crop_storyboard_grid(grid_data, cols, rows, frames_dir)
 
     if len(frame_paths) != expected_frames:
         raise RuntimeError(
@@ -4322,7 +4381,8 @@ async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> No
         _promo_fail(task_id, err, t.get("stage") or failed_stage)
     except Exception as e:
         t = _promo_video_task_store.get(task_id) or {}
-        _promo_fail(task_id, str(e) or "分镜生成失败", t.get("stage") or failed_stage)
+        err = (str(e) or "").strip() or type(e).__name__
+        _promo_fail(task_id, err or "分镜生成失败", t.get("stage") or failed_stage)
 
 
 async def _run_promo_retry_crop(task_id: str) -> None:
@@ -4460,7 +4520,7 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
         if not selected_paths:
             raise RuntimeError("未选中有效分镜（本地帧文件不存在）")
 
-        duration = int(story.get("duration") or 15)
+        duration = int(gen_req.duration or story.get("duration") or 15)
         ratio = (gen_req.ratio or "").strip() or story.get("ratio") or "adaptive"
         video_resolution = (gen_req.video_resolution or "720p").strip()
         if video_resolution != "720p":
@@ -4567,10 +4627,17 @@ app.include_router(dh_video_v2_router)
 # ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    # 路由内 raise HTTPException(404, detail=...) 须保留原始 detail，勿覆盖为 not_found
+    if isinstance(exc, StarletteHTTPException) and exc.detail is not None:
+        return JSONResponse(status_code=404, content={"detail": exc.detail})
+
     path = str(request.url.path)
-    # /api/* 路径返回 JSON；/static/* 由 StaticFiles 自己处理
     if path.startswith("/api/"):
-        return JSONResponse(status_code=404, content={"detail": "not_found", "path": path})
-    # 其他路径：抛出原始 404（由 FastAPI 默认处理）
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "not_found", "path": path, "message": "接口不存在"},
+        )
     from fastapi import HTTPException as _HTTPException
     raise _HTTPException(status_code=404, detail="Not Found")

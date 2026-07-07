@@ -93,3 +93,27 @@ def test_concurrent_consume_never_negative():
     final = credit.get_account(uid).balance
     assert final >= 0
     assert initial - final == 80 or len(errors) == 1
+
+
+def test_admin_list_users_and_adjust():
+    uid = _make_user("admin-test@x.com")
+    result = credit.admin_list_users(page=1, limit=100)
+    assert result["total"] >= 1
+    item = next(i for i in result["items"] if i["id"] == uid)
+    assert item["balance"] == 100
+
+    new_balance = credit.admin_adjust_balance(uid, 50, note="test bonus")
+    assert new_balance == 150
+    assert credit.get_account(uid).balance == 150
+
+    ledger = credit.list_ledger(uid, 5)
+    assert any(i["type"] == credit.TYPE_ADMIN_ADJUST for i in ledger)
+
+    from fastapi import HTTPException
+    raised = False
+    try:
+        credit.admin_adjust_balance(uid, -9999, note="too much")
+    except HTTPException as e:
+        assert e.status_code == 402
+        raised = True
+    assert raised

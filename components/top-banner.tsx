@@ -164,7 +164,7 @@ export function TopBanner({
             <div className="absolute inset-0 animate-avatar-breathe">
               <Image
                 src="/avatar-girl-nobg.png"
-                alt="AI超级个体数字形象"
+                alt="AI超级中台数字形象"
                 width={680}
                 height={680}
                 className="h-full w-full select-none object-contain object-bottom drop-shadow-xl"
@@ -177,11 +177,11 @@ export function TopBanner({
         <div className="relative min-w-0 text-center md:text-left">
           <div className="mb-3 inline-flex animate-slide-up items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
             <Sparkles className="h-3 w-3 animate-pulse" />
-            ✨ 状态拉满 · AI超级个体工作站
+            ✨ 状态拉满 · AI超级中台工作站
           </div>
 
           <h1 className="animate-slide-up delay-100 text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-[28px] lg:text-[32px]">
-            {greeting}，<span className="shimmer-text">{userName}</span>，你的「AI超级个体」已经准备就绪
+            {greeting}，<span className="shimmer-text">{userName}</span>，你的「AI超级中台」已经准备就绪
           </h1>
 
           <p className="mt-2 animate-slide-up delay-200 text-pretty text-sm leading-relaxed text-muted-foreground sm:text-[15px]">

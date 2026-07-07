@@ -328,6 +328,11 @@ def get_user_identity(user_id: int) -> Optional[dict]:
 
 
 def get_current_user(request) -> Optional[CurrentUser]:
+    from lib.cloud_client import get_current_user_remote, is_cloud_hybrid_mode
+
+    if is_cloud_hybrid_mode():
+        return get_current_user_remote(request)
+
     sid = request.cookies.get(SESSION_COOKIE)
     if not sid:
         return None

@@ -198,6 +198,35 @@ def consume_with_idempotency(
             detail={"code": "MISSING_REF_ID", "message": "缺少幂等键 ref_id"},
         )
 
+    from lib.cloud_client import consume_remote, is_cloud_hybrid_mode
+    from lib.request_context import get_current_request
+
+    if is_cloud_hybrid_mode():
+        req = get_current_request()
+        if req is None:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "CLOUD_CONTEXT_MISSING", "message": "混合模式缺少请求上下文"},
+            )
+        if cost is None:
+            cost = SCENE_COST_TABLE[scene]
+        else:
+            _validate_variable_cost(scene, cost)
+        try:
+            return consume_remote(req, scene=scene, ref_id=ref_id, note=note or scene, cost=cost)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            from lib.credit import CreditError
+
+            if isinstance(exc, CreditError):
+                raise exc
+            logger.exception("cloud consume failed")
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "CLOUD_CONSUME_FAILED", "message": str(exc)},
+            ) from exc
+
     cached = _query_existing_consume(user_id, ref_id)
     if cached is not None:
         logger.info("idempotent consume hit user=%s ref=%s", user_id, ref_id)

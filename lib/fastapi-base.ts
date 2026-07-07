@@ -46,6 +46,16 @@ export function getServerFastapiBase(): string {
   return DEV_FASTAPI_DEFAULT
 }
 
+/**
+ * 云端业务 API（账号 / 积分 / 权限）。桌面 prod 注入 CLOUD_API_URL；
+ * 未设置时回退 FASTAPI_URL（Zeabur web 内网或本地 dev）。
+ */
+export function getCloudApiBase(): string {
+  const raw = sanitizeEnvValue(process.env.CLOUD_API_URL)
+  if (raw.length > 0) return normalizeBase(raw)
+  return getServerFastapiBase()
+}
+
 /** Node fetch(undici) 不支持转发的 hop-by-hop / 特殊请求头 */
 const PROXY_STRIP_HEADERS = [
   "host",
@@ -69,11 +79,24 @@ function buildProxyHeaders(req: Request): Headers {
 }
 
 export async function proxyToFastapi(req: Request, path: string): Promise<Response> {
-  const base = getServerFastapiBase()
+  return proxyToBase(req, path, getServerFastapiBase(), "FASTAPI_UNAVAILABLE", "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）")
+}
+
+export async function proxyToCloudApi(req: Request, path: string): Promise<Response> {
+  return proxyToBase(req, path, getCloudApiBase(), "CLOUD_API_UNAVAILABLE", "无法连接云端服务，请检查 CLOUD_API_URL 或网络")
+}
+
+async function proxyToBase(
+  req: Request,
+  path: string,
+  base: string,
+  unavailableCode: string,
+  proxyFailedMessage: string,
+): Promise<Response> {
   if (!base) {
     return new Response(
       JSON.stringify({
-        detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置（请设置 FASTAPI_URL）" },
+        detail: { code: unavailableCode, message: "后端服务未配置" },
       }),
       { status: 503, headers: { "Content-Type": "application/json" } },
     )
@@ -88,39 +111,9 @@ export async function proxyToFastapi(req: Request, path: string): Promise<Respon
   if (req.method !== "GET" && req.method !== "HEAD") {
     init.body = await req.text()
   }
-  // #region agent log
-  fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
-    body: JSON.stringify({
-      sessionId: "c48468",
-      runId: "pre-fix",
-      hypothesisId: "A",
-      location: "lib/fastapi-base.ts:proxyToFastapi",
-      message: "proxy request",
-      data: { method: req.method, path, hasExpect: req.headers.has("expect") },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {})
-  // #endregion
   try {
     const upstream = await fetch(url, init)
     const respHeaders = new Headers(upstream.headers)
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
-      body: JSON.stringify({
-        sessionId: "c48468",
-        runId: "pre-fix",
-        hypothesisId: "A",
-        location: "lib/fastapi-base.ts:proxyToFastapi",
-        message: "proxy upstream ok",
-        data: { path, status: upstream.status },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {})
-    // #endregion
     return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
   } catch (err) {
     const cause =
@@ -129,26 +122,11 @@ export async function proxyToFastapi(req: Request, path: string): Promise<Respon
         : err instanceof Error
           ? err.message
           : String(err)
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c48468" },
-      body: JSON.stringify({
-        sessionId: "c48468",
-        runId: "pre-fix",
-        hypothesisId: "B",
-        location: "lib/fastapi-base.ts:proxyToFastapi",
-        message: "proxy fetch failed",
-        data: { path, cause },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {})
-    // #endregion
     return new Response(
       JSON.stringify({
         detail: {
           code: "FASTAPI_PROXY_FAILED",
-          message: "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）",
+          message: proxyFailedMessage,
           cause,
         },
       }),

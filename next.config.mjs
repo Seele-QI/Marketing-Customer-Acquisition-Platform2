@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // 隐藏左下角 Next.js 开发指示器（Route / Turbopack 面板）
+  devIndicators: false,
   images: {
     unoptimized: true,
   },

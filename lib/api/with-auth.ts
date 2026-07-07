@@ -1,7 +1,7 @@
 import { cookies } from "next/headers"
 import { NextResponse } from "next/server"
 
-import { getServerFastapiBase } from "@/lib/fastapi-base"
+import { getCloudApiBase } from "@/lib/fastapi-base"
 
 export type AuthedContext = { userId: number; cookieHeader: string }
 
@@ -20,7 +20,7 @@ export function withAuth(handler: AuthedHandler) {
     const sid = (await cookies()).get("session_id")?.value
     if (!sid) return notLoggedIn()
 
-    const base = getServerFastapiBase()
+    const base = getCloudApiBase()
     if (!base) {
       return NextResponse.json(
         { detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置" } },
@@ -62,7 +62,7 @@ export async function chargeCredit(opts: {
   scene: string
   refId: string
 }): Promise<{ balance: number; cost: number }> {
-  const base = getServerFastapiBase()
+  const base = getCloudApiBase()
   const resp = await fetch(`${base}/api/credit/consume`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: opts.cookieHeader },
@@ -79,7 +79,7 @@ export async function chargeCredit(opts: {
 
 /** 查询余额（预检用，不扣费） */
 export async function getCreditBalance(cookieHeader: string): Promise<number> {
-  const base = getServerFastapiBase()
+  const base = getCloudApiBase()
   if (!base) throw new Error("FASTAPI_UNAVAILABLE")
   const resp = await fetch(`${base}/api/credit/balance`, {
     headers: { Cookie: cookieHeader },
@@ -102,7 +102,7 @@ export async function chargeMeteredCredit(opts: {
   refId: string
   note?: string
 }): Promise<{ balance: number; cost: number }> {
-  const base = getServerFastapiBase()
+  const base = getCloudApiBase()
   if (!base) throw new Error("FASTAPI_UNAVAILABLE")
   const meteredKey = (process.env.CREDIT_METERED_KEY || "").trim()
   if (!meteredKey) throw new Error("METERED_KEY_MISSING")

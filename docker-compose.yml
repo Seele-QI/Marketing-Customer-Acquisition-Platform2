@@ -8,7 +8,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: Dockerfile.web
+      dockerfile: web/Dockerfile.web
     ports:
       - "3000:3000"
     environment:
@@ -29,7 +29,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: api/Dockerfile.api
     ports:
       - "8000:8000"
     volumes:

@@ -9,6 +9,7 @@ import {
   LogOut,
   ShieldCheck,
   TicketPercent,
+  Users,
   WandSparkles,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -27,7 +28,9 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import type { Batch, RedeemCodeItem } from "@/lib/credit-types"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
+import type { AdminUserItem, Batch, RedeemCodeItem } from "@/lib/credit-types"
 
 const AMOUNTS = [5000, 8000, 10000, 20000, 30000]
 
@@ -63,6 +66,17 @@ export function AdminCreditView() {
   const [batchDialogId, setBatchDialogId] = React.useState("")
   const [batchItems, setBatchItems] = React.useState<RedeemCodeItem[]>([])
   const [loadingBatchItems, setLoadingBatchItems] = React.useState(false)
+  const [adminTab, setAdminTab] = React.useState<"redeem" | "users">("redeem")
+  const [userSearch, setUserSearch] = React.useState("")
+  const [users, setUsers] = React.useState<AdminUserItem[]>([])
+  const [usersTotal, setUsersTotal] = React.useState(0)
+  const [usersPage, setUsersPage] = React.useState(1)
+  const [loadingUsers, setLoadingUsers] = React.useState(false)
+  const [adjustOpen, setAdjustOpen] = React.useState(false)
+  const [adjustTarget, setAdjustTarget] = React.useState<AdminUserItem | null>(null)
+  const [adjustDelta, setAdjustDelta] = React.useState("")
+  const [adjustNote, setAdjustNote] = React.useState("")
+  const [adjusting, setAdjusting] = React.useState(false)
 
   const loadBatches = React.useCallback(async () => {
     const res = await fetch("/api/credit/redeem-codes", { credentials: "include" })
@@ -76,6 +90,27 @@ export function AdminCreditView() {
     setBatches(data.batches ?? [])
     return { unauthorized: false }
   }, [])
+
+  const loadUsers = React.useCallback(async (page = 1, search = userSearch) => {
+    setLoadingUsers(true)
+    try {
+      const q = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+        search: search.trim(),
+      })
+      const res = await fetch(`/api/credit/admin/users?${q.toString()}`, { credentials: "include" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.detail?.message ?? `加载用户失败（${res.status}）`)
+      setUsers((data.items ?? []) as AdminUserItem[])
+      setUsersTotal(Number(data.total ?? 0))
+      setUsersPage(Number(data.page ?? page))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "加载用户失败")
+    } finally {
+      setLoadingUsers(false)
+    }
+  }, [userSearch])
 
   const checkAdminSession = React.useCallback(async () => {
     const res = await fetch("/api/credit/admin/status", { credentials: "include" })
@@ -167,6 +202,44 @@ export function AdminCreditView() {
     }
   }
 
+  const openAdjustDialog = (user: AdminUserItem) => {
+    setAdjustTarget(user)
+    setAdjustDelta("")
+    setAdjustNote("")
+    setAdjustOpen(true)
+  }
+
+  const submitAdjust = async () => {
+    if (!adjustTarget) return
+    const delta = Number(adjustDelta)
+    if (!Number.isFinite(delta) || delta === 0) {
+      toast.error("请输入非零的调整金额（正数充值，负数扣减）")
+      return
+    }
+    setAdjusting(true)
+    try {
+      const res = await fetch("/api/credit/admin/adjust", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          user_id: adjustTarget.id,
+          delta,
+          note: adjustNote.trim() || "管理员调整",
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.detail?.message ?? "调账失败")
+      toast.success(`已调整，当前余额 ${formatPoints(data.balance ?? 0)}`)
+      setAdjustOpen(false)
+      await loadUsers(usersPage, userSearch)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "调账失败")
+    } finally {
+      setAdjusting(false)
+    }
+  }
+
   const logout = async () => {
     try {
       await fetch("/api/credit/admin/logout", { method: "POST", credentials: "include" })
@@ -232,9 +305,9 @@ export function AdminCreditView() {
         <Card className="rounded-3xl border-blue-200 bg-gradient-to-br from-blue-600 via-indigo-600 to-slate-900 p-2 text-white">
           <CardHeader>
             <Badge className="w-fit bg-white/15 text-white hover:bg-white/15">管理员独立页</Badge>
-            <CardTitle className="text-3xl">后台兑换码管理中心</CardTitle>
+            <CardTitle className="text-3xl">后台管理中心</CardTitle>
             <CardDescription className="text-white/75">
-              管理员账号密码登录后，可生成不同额度兑换码、查看批次并一键复制。
+              管理员登录后可管理用户积分、生成兑换码并查看批次。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex gap-3">
@@ -296,7 +369,20 @@ export function AdminCreditView() {
         ) : null}
 
         {verified ? (
-          <>
+          <Tabs
+            value={adminTab}
+            onValueChange={(v) => {
+              const tab = v as "redeem" | "users"
+              setAdminTab(tab)
+              if (tab === "users") void loadUsers(1, userSearch)
+            }}
+          >
+            <TabsList>
+              <TabsTrigger value="redeem">兑换码</TabsTrigger>
+              <TabsTrigger value="users">用户管理</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="redeem" className="mt-6 space-y-6">
             <Card className="rounded-2xl">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -385,7 +471,87 @@ export function AdminCreditView() {
                 </div>
               </CardContent>
             </Card>
-          </>
+            </TabsContent>
+
+            <TabsContent value="users" className="mt-6 space-y-6">
+              <Card className="rounded-2xl">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Users className="h-5 w-5 text-blue-600" />
+                    用户列表
+                  </CardTitle>
+                  <CardDescription>查看注册用户并手动调整积分（admin_adjust）。</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col gap-3 md:flex-row">
+                    <Input
+                      placeholder="搜索账号或邮箱"
+                      value={userSearch}
+                      onChange={(e) => setUserSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void loadUsers(1, userSearch)
+                      }}
+                    />
+                    <Button variant="outline" onClick={() => void loadUsers(1, userSearch)} disabled={loadingUsers}>
+                      {loadingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : "搜索"}
+                    </Button>
+                  </div>
+                  <div className="overflow-hidden rounded-xl border">
+                    <div className="grid grid-cols-6 bg-muted px-4 py-3 text-xs font-medium text-muted-foreground">
+                      <span>ID</span>
+                      <span>账号</span>
+                      <span>余额</span>
+                      <span>状态</span>
+                      <span>注册时间</span>
+                      <span>操作</span>
+                    </div>
+                    {users.length === 0 ? (
+                      <div className="border-t px-4 py-6 text-center text-sm text-muted-foreground">
+                        {loadingUsers ? "加载中…" : "暂无用户"}
+                      </div>
+                    ) : (
+                      users.map((user) => (
+                        <div
+                          key={user.id}
+                          className="grid grid-cols-6 items-center border-t px-4 py-3 text-sm"
+                        >
+                          <span>{user.id}</span>
+                          <span className="truncate font-mono text-xs">{user.login_name || user.email_masked}</span>
+                          <span>{formatPoints(user.balance)}</span>
+                          <span>{user.status}</span>
+                          <span className="text-muted-foreground">{formatTime(user.created_at)}</span>
+                          <Button variant="outline" size="sm" onClick={() => openAdjustDialog(user)}>
+                            调账
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-sm text-muted-foreground">
+                    <span>共 {usersTotal} 个用户</span>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={usersPage <= 1 || loadingUsers}
+                        onClick={() => void loadUsers(usersPage - 1, userSearch)}
+                      >
+                        上一页
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={usersPage * 20 >= usersTotal || loadingUsers}
+                        onClick={() => void loadUsers(usersPage + 1, userSearch)}
+                      >
+                        下一页
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         ) : null}
       </div>
 
@@ -441,6 +607,41 @@ export function AdminCreditView() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={adjustOpen} onOpenChange={setAdjustOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>调整积分</DialogTitle>
+            <DialogDescription>
+              用户 {adjustTarget?.login_name || adjustTarget?.email_masked}（ID {adjustTarget?.id}），当前余额{" "}
+              {formatPoints(adjustTarget?.balance ?? 0)}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="adjust-delta">调整金额（正数充值，负数扣减）</Label>
+              <Input
+                id="adjust-delta"
+                value={adjustDelta}
+                onChange={(e) => setAdjustDelta(e.target.value)}
+                placeholder="例如 1000 或 -500"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjust-note">备注</Label>
+              <Textarea
+                id="adjust-note"
+                value={adjustNote}
+                onChange={(e) => setAdjustNote(e.target.value)}
+                placeholder="管理员调整原因"
+              />
+            </div>
+            <Button onClick={() => void submitAdjust()} disabled={adjusting} className="w-full">
+              {adjusting ? <Loader2 className="h-4 w-4 animate-spin" /> : "确认调整"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </main>

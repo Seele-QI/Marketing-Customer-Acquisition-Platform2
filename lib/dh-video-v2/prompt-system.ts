@@ -4,7 +4,7 @@ export type DhV2PromptMode = "direct" | "storyboard"
 
 export type DhV2AutoPromptRequest = {
   script: string
-  duration: 15 | 30 | 45
+  duration: 15 | 30 | 45 | 60
   image_count: number
   mode: DhV2PromptMode
   visual_style?: string

@@ -50,6 +50,12 @@ export function formatPromoError(raw: string): string {
   if (/1007|Could not decode image/i.test(s)) {
     return "分镜图未正确上传，请重试生成视频"
   }
+  if (/下载九宫格|下载失败|ConnectError|connection attempts failed|网络连接/i.test(s)) {
+    return "九宫格分镜图下载失败（多为网络/代理问题）。请点击「重试裁切」或「返回重试」；若反复失败，请关闭系统代理后重试。"
+  }
+  if (/not_found|Storyboard not found|分镜任务不存在|任务已失效|接口不存在/i.test(s)) {
+    return "分镜任务已失效（服务可能已重启）。请点击「返回上一步」或回到步骤 2 重新生成分镜后再试。"
+  }
   return s
 }
 
@@ -118,14 +124,17 @@ export async function queryPromoStoryboardStatus(taskId: string): Promise<PromoS
   return r.json()
 }
 
-export async function requestPromoAutoPrompt(storyboardTaskId: string, selectedCount: number) {
+export async function requestPromoAutoPrompt(input: {
+  promo_script: string
+  duration: number
+  selected_count: number
+  visual_style?: string
+  has_audio_ref?: boolean
+}) {
   const r = await promoFetch("/api/promo-video/auto-prompt", {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({
-      storyboard_task_id: storyboardTaskId,
-      selected_count: selectedCount || 1,
-    }),
+    body: JSON.stringify(input),
   })
   const data = await r.json()
   if (!r.ok) throw new Error(parseDetail(data))
@@ -136,6 +145,8 @@ export async function submitPromoVideo(payload: {
   storyboard_task_id: string
   selected_indices: number[]
   video_prompt: string
+  duration?: number
+  promo_script?: string
   video_resolution?: string
   real_person_mode?: boolean
   instance_type?: string
@@ -146,8 +157,18 @@ export async function submitPromoVideo(payload: {
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
   })
-  const data = await r.json()
-  if (!r.ok) throw new Error(parseDetail(data))
+  const raw = await r.text()
+  let data: { detail?: unknown; task_id?: string } = {}
+  try {
+    data = raw ? (JSON.parse(raw) as typeof data) : {}
+  } catch {
+    throw new Error(
+      r.status >= 500
+        ? "服务器内部错误，请查看后端日志或稍后重试"
+        : raw.slice(0, 200) || "请求失败",
+    )
+  }
+  if (!r.ok) throw new Error(formatPromoError(parseDetail(data)))
   return data as { task_id: string }
 }
 

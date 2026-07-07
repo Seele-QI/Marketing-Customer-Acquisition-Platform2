@@ -12,7 +12,6 @@ export const GEO_VIEWS = {
   KNOWLEDGE_BASE: "企业知识库搭建",
   CONTENT_MATRIX: "内容矩阵规划",
   ARTICLE_EDITOR: "深度优化文章创作",
-  MULTI_PLATFORM_PUSH: "多平台一键推送",
 } as const
 
 export type GeoView = (typeof GEO_VIEWS)[keyof typeof GEO_VIEWS]
@@ -21,7 +20,6 @@ export const GEO_VIEW_LABELS: Record<GeoView, string> = {
   [GEO_VIEWS.KNOWLEDGE_BASE]: "企业知识库搭建",
   [GEO_VIEWS.CONTENT_MATRIX]: "内容矩阵规划",
   [GEO_VIEWS.ARTICLE_EDITOR]: "深度优化文章创作",
-  [GEO_VIEWS.MULTI_PLATFORM_PUSH]: "多平台一键推送",
 }
 
 const GEO_VIEW_SET = new Set<string>(Object.values(GEO_VIEWS))
