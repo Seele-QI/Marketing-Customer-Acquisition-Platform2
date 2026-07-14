@@ -12,7 +12,7 @@
  * 触发：`pnpm preflight` 或 `pnpm dist` 之前自动跑
  */
 
-import { existsSync, statSync, readdirSync } from 'node:fs';
+import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -122,6 +122,42 @@ const routesDir = path.join(resources, 'routes');
 const promoRoutes = path.join(routesDir, 'promo_video_routes.py');
 check('routes/ exists', existsSync(routesDir));
 check('promo_video_routes.py exists', existsSync(promoRoutes));
+
+/* ============ packaged .env ============ */
+
+console.log('\n[preflight] === packaged .env ===');
+const packagedEnv = path.join(resources, '.env');
+check('.env exists', existsSync(packagedEnv), packagedEnv);
+
+const REQUIRED_ENV_KEYS = ['CLOUD_API_URL', 'CENTRAL_SERVICE_URL', 'CENTRAL_SIGNING_PUBLIC_KEY'];
+
+function parseDotEnvSimple(content) {
+  const config = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) config[key] = value;
+  }
+  return config;
+}
+
+if (existsSync(packagedEnv)) {
+  const envConfig = parseDotEnvSimple(readFileSync(packagedEnv, 'utf-8'));
+  for (const key of REQUIRED_ENV_KEYS) {
+    const value = (envConfig[key] || '').trim();
+    check(`  ${key} set`, value.length > 0);
+  }
+}
 
 /* ============ Python smoke import (optional) ============ */
 

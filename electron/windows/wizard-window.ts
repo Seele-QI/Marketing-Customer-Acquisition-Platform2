@@ -2,21 +2,14 @@
  * 激活向导窗口
  *
  * 在首次启动（无凭证）时弹出，引导用户输入激活码。
- * 激活成功后保存凭证、关闭向导、打开主窗口。
- *
- * 流程：欢迎 → 输入 → 验证中 → 成功/失败
+ * 激活成功后由主进程关闭向导并继续启动主界面。
  */
 
-import { BrowserWindow, ipcMain } from 'electron';
-import logger from '../services/logger';
-import { getMachineIdShort } from '../services/machine-id';
-import { activate, type ActivationResult } from '../services/activation-client';
-import { saveCredentials, type CredentialData } from '../services/credential-store';
+import { BrowserWindow } from 'electron';
+import * as path from 'node:path';
 import { attachEditableContextMenu } from '../utils/editable-context-menu';
 
-export type WizardCallback = (success: boolean) => void;
-
-export function createWizardWindow(onDone: WizardCallback): BrowserWindow {
+export function createWizardWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 480,
     height: 580,
@@ -28,42 +21,17 @@ export function createWizardWindow(onDone: WizardCallback): BrowserWindow {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload-wizard.js'),
     },
   });
 
-  // 内联 HTML 向导页面
   const html = getWizardHtml();
   win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
-  // 注册 IPC 通道（向导窗口专用）
-  ipcMain.handle('wizard:activate', async (_event, code: string) => {
-    try {
-      const result = await activate(code);
-      if (result.ok) {
-        const data: CredentialData = {
-          machine_id: result.keys['machine_id'] || '',
-          activation_code: code,
-          expires_at: result.expires_at,
-          keys: result.keys,
-        };
-        saveCredentials(data);
-        logger.info('wizard: activation success');
-        return { ok: true };
-      }
-      return { ok: false, error: result.error, code: result.code };
-    } catch (err: any) {
-      return { ok: false, error: err.message || '激活失败' };
-    }
-  });
-
-  ipcMain.handle('wizard:get-machine-id', () => getMachineIdShort());
-
   win.once('ready-to-show', () => win.show());
   attachEditableContextMenu(win);
-  win.on('closed', () => onDone(false));
 
-  // 将回调暴露给关闭事件
-  (win as any).__wizardDone = onDone;
   return win;
 }
 
@@ -139,14 +107,11 @@ input:focus{border-color:#3b82f6}
   <p class="mid">机器码: <span id="machine-id">加载中…</span></p>
 </div>
 <script>
-const { ipcRenderer } = require('electron');
-
-let currentStep = 'welcome';
+const api = window.wizardAPI;
 
 function goStep(step) {
   document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
   document.getElementById('step-' + step).classList.add('active');
-  currentStep = step;
   if (step === 'input') document.getElementById('code').focus();
 }
 
@@ -166,10 +131,10 @@ async function doActivate() {
   }
   goStep('verifying');
   try {
-    const result = await ipcRenderer.invoke('wizard:activate', code);
+    const result = await api.activate(code);
     if (result.ok) {
       goStep('success');
-      setTimeout(() => ipcRenderer.invoke('wizard:done'), 1500);
+      setTimeout(() => api.done(), 1500);
     } else {
       document.getElementById('err-msg').textContent = result.error || '激活失败';
       document.getElementById('err').textContent = '';
@@ -183,7 +148,7 @@ async function doActivate() {
 
 async function init() {
   try {
-    const mid = await ipcRenderer.invoke('wizard:get-machine-id');
+    const mid = await api.getMachineId();
     document.getElementById('machine-id').textContent = mid || '未知';
   } catch {}
 }

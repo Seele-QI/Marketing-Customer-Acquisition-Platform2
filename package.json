@@ -17,7 +17,7 @@
     "electron:dev": "node scripts/dev-electron.mjs",
     "electron:build": "tsc -p electron/tsconfig.json",
     "electron:watch": "tsc -p electron/tsconfig.json --watch",
-    "resources:build": "node scripts/build-python-bundle.mjs && node scripts/build-next-standalone.mjs && node scripts/extract-ffmpeg.mjs",
+    "resources:build": "node scripts/build-python-bundle.mjs && node scripts/build-next-standalone.mjs && node scripts/extract-ffmpeg.mjs && node scripts/copy-packaged-env.mjs",
     "resources:clean": "node scripts/clean-resources.mjs",
     "preflight": "node scripts/preflight.mjs",
     "dist": "pnpm electron:build && electron-builder",

@@ -1,21 +1,23 @@
 /**
  * Electron 主进程入口
  *
- * 阶段 1：单实例锁 + 主窗口 + 子进程拉起
- * 阶段 3：托盘 / 自启动 / 关窗拦截（本次）
- * 阶段 7：首次启动 → 弹向导（待补）
+ * prod：加载打包 .env → 激活向导（无凭证时）→ 子进程 → 主窗口
  */
 
-import { app, BrowserWindow, ipcMain, type BrowserWindowConstructorOptions, dialog } from "electron";
-import * as path from "node:path";
-import logger from "./services/logger";
-import { childManager, registerQuitHook } from "./services/child-process-manager";
-import { TrayController, type TrayOptions } from "./services/tray-controller";
-import { setAutoLaunch, isAutoLaunchEnabled } from "./services/auto-launch";
-import { exportLogs, openLogsFolder } from "./services/log-collector";
-import { injectApiKeys } from "./services/env-injector";
+import './apply-packaged-env';
+
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import * as path from 'node:path';
+import logger from './services/logger';
+import { childManager, registerQuitHook } from './services/child-process-manager';
+import { TrayController, type TrayOptions } from './services/tray-controller';
+import { setAutoLaunch, isAutoLaunchEnabled } from './services/auto-launch';
+import { exportLogs, openLogsFolder } from './services/log-collector';
+import { injectApiKeys } from './services/env-injector';
+import { loadCredentials } from './services/credential-store';
+import { createWizardWindow } from './windows/wizard-window';
+import { registerWizardIpcHandlers, setWizardDoneCallback } from './wizard-ipc';
 import {
-  resourcesRoot,
   NEXT_PORT,
   UVICORN_PORT,
   bgmDir,
@@ -24,14 +26,16 @@ import {
   ffmpegBinDir,
   pythonRoot,
   nextStandaloneRoot,
+  resourcesRoot,
+  accountsDbPath,
   writePorts,
-} from "./utils/paths";
-import { findFreePort as findAvailablePort } from "./utils/port-finder";
+} from './utils/paths';
+import { findFreePort as findAvailablePort } from './utils/port-finder';
 
 /* ============ 初始化 ============ */
 
-if (process.platform === "win32") {
-  app.setAppUserModelId("com.aimarketing.zhongtai");
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.aimarketing.zhongtai');
 }
 
 const isDev = !app.isPackaged;
@@ -39,14 +43,20 @@ let mainWindow: BrowserWindow | null = null;
 let tray: TrayController | null = null;
 let isQuitting = false;
 
+registerWizardIpcHandlers();
+
+function cloudApiUrl(): string {
+  return (process.env.CLOUD_API_URL || process.env.CENTRAL_SERVICE_URL || '').trim();
+}
+
 /* ============ 单实例锁 ============ */
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  logger.warn("another instance is running, quit");
+  logger.warn('another instance is running, quit');
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -60,17 +70,23 @@ if (!gotLock) {
 
 async function bootstrap() {
   await app.whenReady();
-  logger.info("app ready, isDev=" + isDev);
+  logger.info('app ready, isDev=' + isDev);
 
-  // 退出钩子（kill 子进程）
   registerQuitHook();
 
-  // 自启动（默认开启）
   if (!isAutoLaunchEnabled()) {
     setAutoLaunch(true);
   }
 
-  // 自动检测可用端口
+  if (!isDev && !loadCredentials()) {
+    const activated = await runActivationWizard();
+    if (!activated) {
+      logger.warn('activation cancelled or failed, quitting');
+      app.quit();
+      return;
+    }
+  }
+
   let actualNextPort = NEXT_PORT;
   let actualUvicornPort = UVICORN_PORT;
   try {
@@ -78,19 +94,16 @@ async function bootstrap() {
     actualUvicornPort = await findAvailablePort(UVICORN_PORT);
     logger.info(`ports allocated: next=${actualNextPort}, uvicorn=${actualUvicornPort}`);
   } catch (err) {
-    logger.error("port allocation failed:", err);
-    dialog.showErrorBox("端口分配失败", `无法找到可用端口：${(err as Error).message}`);
+    logger.error('port allocation failed:', err);
+    dialog.showErrorBox('端口分配失败', `无法找到可用端口：${(err as Error).message}`);
     app.quit();
     return;
   }
 
-  // 端口记录
   writePorts(actualNextPort, actualUvicornPort);
 
-  // 主窗口
   mainWindow = createMainWindow();
 
-  // 托盘
   const trayOpts: TrayOptions = {
     mainWindow,
     onShow: () => {
@@ -104,31 +117,51 @@ async function bootstrap() {
       openLogsFolder();
     },
     onExportLogs: () => {
-      exportLogs().catch((e: Error) => logger.error("export logs:", e));
+      exportLogs().catch((e: Error) => logger.error('export logs:', e));
     },
   };
   tray = new TrayController(trayOpts);
   tray.init();
 
-  // 日志 IPC
-  ipcMain.handle("open-logs-folder", () => openLogsFolder());
-  ipcMain.handle("export-logs", () => exportLogs());
+  ipcMain.handle('open-logs-folder', () => openLogsFolder());
+  ipcMain.handle('export-logs', () => exportLogs());
 
-  // 子进程
   try {
     await startChildren(actualNextPort, actualUvicornPort);
   } catch (err) {
-    logger.error("failed to start child processes:", err);
+    logger.error('failed to start child processes:', err);
     dialog.showErrorBox(
-      "启动失败",
-      `无法启动后端服务，请检查日志：\n${path.join(app.getPath("userData"), "logs")}\n\n错误：${(err as Error).message}`,
+      '启动失败',
+      `无法启动后端服务，请检查日志：\n${path.join(app.getPath('userData'), 'logs')}\n\n错误：${(err as Error).message}`,
     );
     app.quit();
     return;
   }
 
-  // 加载 Web UI
   mainWindow.loadURL(`http://127.0.0.1:${actualNextPort}`);
+}
+
+function runActivationWizard(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      setWizardDoneCallback(null);
+      resolve(ok);
+    };
+
+    const win = createWizardWindow();
+
+    setWizardDoneCallback(() => {
+      finish(true);
+      if (!win.isDestroyed()) win.close();
+    });
+
+    win.on('closed', () => {
+      finish(loadCredentials() !== null);
+    });
+  });
 }
 
 /* ============ 主窗口 ============ */
@@ -139,34 +172,31 @@ function createMainWindow(): BrowserWindow {
     height: 800,
     minWidth: 1024,
     minHeight: 700,
-    title: "AI营销获客中台",
-    backgroundColor: "#0a0a0a",
+    title: 'AI营销获客中台',
+    backgroundColor: '#0a0a0a',
     show: false,
     autoHideMenuBar: !isDev,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
-  win.once("ready-to-show", () => win.show());
+  win.once('ready-to-show', () => win.show());
 
-  // 主窗口由前端 EditableContextMenu 提供右键粘贴（覆盖全部受控输入框）
-
-  // 阶段 3：关闭 → 隐藏到托盘
-  win.on("close", (e) => {
+  win.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
       win.hide();
-      tray?.notify("AI营销获客中台", "已最小化到托盘，右键托盘图标可退出");
+      tray?.notify('AI营销获客中台', '已最小化到托盘，右键托盘图标可退出');
       return false;
     }
     return true;
   });
 
-  win.on("closed", () => {
+  win.on('closed', () => {
     mainWindow = null;
   });
 
@@ -179,74 +209,75 @@ async function startChildren(nextPort: number, uvicornPort: number) {
   if (isDev) {
     const projectRoot = process.cwd();
     await childManager.start({
-      name: "next",
-      command: "pnpm",
-      args: ["exec", "next", "dev", "--port", String(nextPort)],
+      name: 'next',
+      command: 'pnpm',
+      args: ['exec', 'next', 'dev', '--port', String(nextPort)],
       cwd: projectRoot,
-      env: { NODE_ENV: "development", PORT: String(nextPort) },
+      env: { NODE_ENV: 'development', PORT: String(nextPort) },
       port: nextPort,
       startupTimeoutMs: 60_000,
     });
     await childManager.start({
-      name: "uvicorn",
-      command: "python",
-      args: ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(uvicornPort), "--no-access-log"],
+      name: 'uvicorn',
+      command: 'python',
+      args: ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(uvicornPort), '--no-access-log'],
       cwd: projectRoot,
-      env: { NODE_ENV: "production", PYTHONUNBUFFERED: "1", PORT: String(uvicornPort) },
+      env: { NODE_ENV: 'production', PYTHONUNBUFFERED: '1', PORT: String(uvicornPort) },
       port: uvicornPort,
       healthUrl: `http://127.0.0.1:${uvicornPort}/api/auth/me`,
       startupTimeoutMs: 30_000,
     });
   } else {
-    const exeExt = process.platform === "win32" ? ".exe" : "";
+    const exeExt = process.platform === 'win32' ? '.exe' : '';
     const fastApiBase = `http://127.0.0.1:${uvicornPort}`;
     const pythonPath = [
-      path.join(pythonRoot(), "site-packages"),
-      path.join(pythonRoot(), "lib"),
+      path.join(pythonRoot(), 'site-packages'),
+      path.join(pythonRoot(), 'lib'),
     ].join(path.delimiter);
-    const cloudApiUrl = (process.env.CLOUD_API_URL || process.env.CENTRAL_SERVICE_URL || "").trim();
+    const cloudUrl = cloudApiUrl();
     const baseEnv: Record<string, string> = {
-      NODE_ENV: "production",
-      PYTHONUNBUFFERED: "1",
+      NODE_ENV: 'production',
+      PYTHONUNBUFFERED: '1',
       FASTAPI_URL: fastApiBase,
       NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
-      ...(cloudApiUrl ? { CLOUD_API_URL: cloudApiUrl } : {}),
+      ...(cloudUrl ? { CLOUD_API_URL: cloudUrl } : {}),
       FFMPEG_EXE: path.join(ffmpegBinDir(), `ffmpeg${exeExt}`),
       FFPROBE_EXE: path.join(ffmpegBinDir(), `ffprobe${exeExt}`),
       DATA_DIR: videoCacheDir(),
       VIDEO_BGM_DIR: bgmDir(),
       VIDEO_POSTPROCESS_DIR: videoPostprocessDir(),
+      CREDIT_DB_OVERRIDE: accountsDbPath(),
     };
     const prodEnv = await injectApiKeys(baseEnv);
     await childManager.start({
-      name: "next",
+      name: 'next',
       command: process.execPath,
-      args: [path.join(nextStandaloneRoot(), "server.js")],
+      args: [path.join(nextStandaloneRoot(), 'server.js')],
       cwd: nextStandaloneRoot(),
       env: {
         ...prodEnv,
-        NODE_ENV: "production",
-        HOSTNAME: "127.0.0.1",
+        NODE_ENV: 'production',
+        HOSTNAME: '127.0.0.1',
         PORT: String(nextPort),
         FASTAPI_URL: fastApiBase,
         NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
-        ...(cloudApiUrl ? { CLOUD_API_URL: cloudApiUrl } : {}),
+        ...(cloudUrl ? { CLOUD_API_URL: cloudUrl } : {}),
       },
       port: nextPort,
       startupTimeoutMs: 60_000,
     });
     await childManager.start({
-      name: "uvicorn",
+      name: 'uvicorn',
       command: path.join(pythonRoot(), `python${exeExt}`),
-      args: ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(uvicornPort), "--no-access-log"],
+      args: ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(uvicornPort), '--no-access-log'],
       cwd: resourcesRoot(),
       env: {
         ...prodEnv,
-        NODE_ENV: "production",
+        NODE_ENV: 'production',
         PORT: String(uvicornPort),
         FASTAPI_URL: fastApiBase,
         NEXT_PUBLIC_FASTAPI_URL: fastApiBase,
-        ...(cloudApiUrl ? { CLOUD_API_URL: cloudApiUrl } : {}),
+        ...(cloudUrl ? { CLOUD_API_URL: cloudUrl } : {}),
         PYTHONPATH: pythonPath,
       },
       port: uvicornPort,
@@ -259,7 +290,7 @@ async function startChildren(nextPort: number, uvicornPort: number) {
 /* ============ 退出 ============ */
 
 async function quitApp() {
-  logger.info("quit initiated by tray");
+  logger.info('quit initiated by tray');
   isQuitting = true;
   tray?.destroy();
   tray = null;
@@ -267,24 +298,21 @@ async function quitApp() {
   app.exit(0);
 }
 
-// 所有窗口关闭不退出（关窗 = 隐藏到托盘）
-app.on("window-all-closed", () => {
-  // macOS 保持 app 存活，Windows 也不退出（托盘存活）
+app.on('window-all-closed', () => {
+  // Windows 托盘存活，不关进程
 });
 
-app.on("activate", () => {
+app.on('activate', () => {
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();
   }
 });
 
-/* ============ 进程级错误处理 ============ */
-
-process.on("unhandledRejection", (reason) => {
-  logger.error("unhandledRejection:", reason);
+process.on('unhandledRejection', (reason) => {
+  logger.error('unhandledRejection:', reason);
 });
 
-process.on("uncaughtException", (err) => {
-  logger.error("uncaughtException:", err);
+process.on('uncaughtException', (err) => {
+  logger.error('uncaughtException:', err);
 });

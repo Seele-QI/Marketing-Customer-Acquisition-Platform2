@@ -10,7 +10,10 @@ import { getMachineId } from './machine-id';
 import logger from './logger';
 import { verifyActivateResponse } from '../utils/activate-verify';
 
-const BASE_URL = process.env.CENTRAL_SERVICE_URL || 'https://your-server.example.com';
+function centralBaseUrl(): string {
+  const raw = (process.env.CENTRAL_SERVICE_URL || process.env.CLOUD_API_URL || '').trim();
+  return raw.replace(/\/+$/, '') || 'https://your-server.example.com';
+}
 const APP_VERSION = '0.1.0';
 
 export interface ActivationResult {
@@ -27,7 +30,7 @@ export interface ActivationResult {
 export async function activate(code: string): Promise<ActivationResult> {
   const mid = getMachineId();
   try {
-    const res = await fetch(`${BASE_URL}/api/central/activate`, {
+    const res = await fetch(`${centralBaseUrl()}/api/central/activate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ machine_id: mid, code, client_version: APP_VERSION }),
@@ -82,7 +85,7 @@ export async function activate(code: string): Promise<ActivationResult> {
 export async function heartbeat(code: string): Promise<{ ok: boolean; revoked: boolean }> {
   const mid = getMachineId();
   try {
-    const res = await fetch(`${BASE_URL}/api/central/heartbeat`, {
+    const res = await fetch(`${centralBaseUrl()}/api/central/heartbeat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ machine_id: mid, code, client_version: APP_VERSION, ts: Date.now() / 1000 }),

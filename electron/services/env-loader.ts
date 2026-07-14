@@ -15,6 +15,35 @@ export interface EnvConfig {
   [key: string]: string;
 }
 
+/** 解析 .env 文本为键值对（支持 # 注释与引号） */
+export function parseDotEnvContent(content: string): EnvConfig {
+  const config: EnvConfig = {};
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+
+    const key = trimmed.substring(0, eqIndex).trim();
+    let value = trimmed.substring(eqIndex + 1).trim();
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.substring(1, value.length - 1);
+    }
+
+    if (key) {
+      config[key] = value;
+    }
+  }
+
+  return config;
+}
+
 /**
  * 从 resources/.env 文件加载环境变量
  */
@@ -28,30 +57,7 @@ export function loadDotEnv(): EnvConfig {
 
   try {
     const content = fs.readFileSync(envPath, 'utf-8');
-    const config: EnvConfig = {};
-
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      // 跳过空行和注释
-      if (!trimmed || trimmed.startsWith('#')) continue;
-
-      const eqIndex = trimmed.indexOf('=');
-      if (eqIndex === -1) continue;
-
-      const key = trimmed.substring(0, eqIndex).trim();
-      let value = trimmed.substring(eqIndex + 1).trim();
-
-      // 移除引号
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.substring(1, value.length - 1);
-      }
-
-      if (key) {
-        config[key] = value;
-      }
-    }
-
+    const config = parseDotEnvContent(content);
     logger.info('env-loader: loaded ' + Object.keys(config).length + ' vars from ' + envPath);
     return config;
   } catch (err) {

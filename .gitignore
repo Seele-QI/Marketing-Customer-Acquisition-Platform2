@@ -61,6 +61,7 @@ resources/next-standalone/
 resources/bgm/
 resources/main.py
 resources/routes/
+resources/.env
 
 # pnpm-electron-builder 缓存
 app-builder-cache/

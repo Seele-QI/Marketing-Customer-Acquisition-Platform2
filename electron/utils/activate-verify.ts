@@ -5,10 +5,9 @@
 
 import crypto from 'node:crypto';
 
-/** Override via env at build/runtime; empty = skip verify (dev only). */
-const PUBLIC_KEY_PEM =
-  process.env.CENTRAL_SIGNING_PUBLIC_KEY?.trim() ||
-  '';
+function publicKeyPem(): string {
+  return process.env.CENTRAL_SIGNING_PUBLIC_KEY?.trim() || '';
+}
 
 const MAX_SERVER_TIME_SKEW_SEC = 300;
 
@@ -40,7 +39,8 @@ export function verifyActivateResponse(input: ActivateVerifyInput): {
   code?: string;
   message?: string;
 } {
-  if (!PUBLIC_KEY_PEM) {
+  const pem = publicKeyPem();
+  if (!pem) {
     if (!input.signature) {
       return { ok: true };
     }
@@ -63,7 +63,7 @@ export function verifyActivateResponse(input: ActivateVerifyInput): {
   try {
     const message = Buffer.from(canonicalActivatePayload(input), 'utf8');
     const signature = Buffer.from(input.signature, 'base64');
-    const valid = crypto.verify(null, message, PUBLIC_KEY_PEM, signature);
+    const valid = crypto.verify(null, message, pem, signature);
     if (!valid) {
       return { ok: false, code: 'INVALID_SIGNATURE', message: '激活响应签名校验失败' };
     }

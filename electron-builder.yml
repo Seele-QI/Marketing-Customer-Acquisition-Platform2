@@ -28,6 +28,7 @@ extraResources:
       - "bgm/**"
       - "main.py"
       - "routes/**"
+      - ".env"
 
 extraMetadata:
   main: electron/dist-electron/main.js

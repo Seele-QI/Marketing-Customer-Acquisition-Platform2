@@ -17,8 +17,8 @@ python scripts/generate-central-signing-keys.py
 
 | 服务名 | 构建方式 | Dockerfile | 容器端口 | 说明 |
 |--------|----------|------------|----------|------|
-| **api** | **Docker**（自定义镜像） | `api/Dockerfile.api` | **8000** | FastAPI + ffmpeg + 积分库 |
-| **web** | **Docker**（自定义镜像） | `web/Dockerfile.web` | **3000** | Next.js **standalone 运行时**（`node server.js`） |
+| **api** | **Docker**（自定义镜像） | `Dockerfile.api`（项目根目录） | **8000** | FastAPI + ffmpeg + 积分库 |
+| **web** | **Docker**（自定义镜像） | `Dockerfile.web`（项目根目录） | **3000** | Next.js **standalone 运行时**（`node server.js`） |
 
 ### ⚠️ 不要用 PREBUILT_V2 / Caddy 静态模板
 
@@ -31,7 +31,7 @@ Zeabur 若自动识别为 **PREBUILT_V2**，会用 **Caddy** 托管 `/usr/share/
 | Caddy 监听 `:8080` | `node server.js` 监听 **`:3000`** |
 | `/usr/share/caddy` 为空 → 502 | `.next/standalone` 已构建进镜像 |
 
-**若 web 已是 PREBUILT_V2：** 删除该服务 → 重新添加 → 选「从 GitHub 部署」→ 构建类型选 **Dockerfile** → 路径填 `web/Dockerfile.web` → 端口 **3000**。
+**若 web 已是 PREBUILT_V2：** 删除该服务 → 重新添加 → 选「从 GitHub 部署」→ 构建类型选 **Dockerfile** → 路径填 `Dockerfile.web`（根目录）→ 端口 **3000**。
 
 **不要手动设置** `PORT=${WEB_PORT}`，删掉 `PORT` 让镜像默认 `PORT=3000` 生效。
 
@@ -131,8 +131,8 @@ CENTRAL_SIGNING_PUBLIC_KEY=<公钥 PEM>
 
 | 症状 | 检查 |
 |------|------|
-| web 502 + Caddy / PREBUILT_V2 | 改为 Docker 构建 `web/Dockerfile.web`，端口 3000，删除 `PORT=${WEB_PORT}` |
-| web 502 + 构建日志 output 为空 | 确认 Dockerfile 路径为 `web/Dockerfile.web`（非根目录占位 `Dockerfile`） |
+| web 502 + Caddy / PREBUILT_V2 | 改为 Docker 构建 `Dockerfile.web`（根目录），端口 3000，删除 `PORT=${WEB_PORT}` |
+| web 502 + 构建日志 output 为空 | 确认 Dockerfile 路径为 `Dockerfile.web`（勿用根目录占位 `Dockerfile`） |
 | web 503 FASTAPI | `FASTAPI_URL` 是否为 `http://api.zeabur.internal:8000` |
 | 管理员 403 | web 与 api 的 `CREDIT_ADMIN_ACCESS_KEY` 是否一致 |
 | CORS 错误 | `CORS_ALLOW_ORIGINS` 是否含 web 域名 |
