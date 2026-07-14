@@ -30,6 +30,8 @@ COPY main.py            ./
 COPY lib/               lib/
 COPY routes/            routes/
 COPY assets/            assets/
+COPY scripts/           scripts/
+# ensure_app_schema() imports scripts.init_credit_db.migrate at startup
 
 # ── 4) 运行时固定配置 ──
 ENV PYTHONUNBUFFERED=1
