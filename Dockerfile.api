@@ -1,0 +1,154 @@
+# syntax=docker/dockerfile:1.7
+# ────────────────────────────────────────────────────────────────
+#  FastAPI 后端（视频生成 / ffmpeg 剪辑 / 积分账本）
+#  对外暴露 8000，内部调用 RunningHub + DeepSeek + 火山方舟
+#
+#  构建示例：
+#    docker build -f Dockerfile.api -t zhongtai-api .
+#  运行示例（覆盖密钥）：
+#    docker run -p 8000:8000 \
+#      -e DEEPSEEK_API_KEY=sk-xxx \
+#      -e RUNNINGHUB_API_KEY=xxx \
+#      -v zhongtai_data:/data \
+#      zhongtai-api
+# ────────────────────────────────────────────────────────────────
+
+FROM python:3.13-slim AS runner
+WORKDIR /app
+
+# ── 1) 系统依赖：ffmpeg ──
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── 2) Python 依赖 ──
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── 3) 项目代码 ──
+COPY main.py            ./
+COPY lib/               lib/
+COPY routes/            routes/
+COPY assets/            assets/
+
+# ── 4) 运行时固定配置 ──
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+ENV HOST=0.0.0.0
+ENV DATA_DIR=/data
+ENV CREDIT_DB_OVERRIDE=/data/accounts.db
+ENV VIDEO_BGM_DIR=/app/assets/bgm
+ENV VIDEO_POSTPROCESS_DIR=/data/video-postprocess
+
+# ── 5) AI 服务密钥（生产环境必须通过 -e 或 docker-compose 覆盖）──
+ENV DEEPSEEK_API_KEY=""
+ENV RUNNINGHUB_API_KEY=""
+
+# ── 6) DeepSeek 模型（可选，默认 deepseek-v4-pro）──
+ENV DEEPSEEK_CHAT_MODEL="deepseek-v4-pro"
+
+# ── 7) Seedance 数字人视频（首选渠道）──
+ENV SEEDANCE_PRIMARY_BASE_URL="https://api.7tai.cc"
+ENV SEEDANCE_PRIMARY_API_KEY=""
+ENV SEEDANCE_PRIMARY_MODEL="sd2-福利"
+ENV SEEDANCE_PRIMARY_MEDIA_MODE="url"
+
+# ── 8) Seedance 备选渠道（aicost.xyz）──
+ENV SEEDANCE_API_KEY=""
+ENV SEEDANCE_BASE_URL="https://www.aicost.xyz"
+ENV XINGHE_API_KEY=""
+ENV XINGHE_BASE_URL="https://www.aicost.xyz"
+
+# ── 9) 数字人视频 V2 分段控制 ──
+ENV DH_VIDEO_V2_DEFAULT_PROVIDER="seedance"
+ENV DH_V2_MAX_PARALLEL_SEGMENTS="4"
+ENV DH_V2_SEGMENT_POLL_TIMEOUT="900"
+ENV RH_VIDEO_INSTANCE_TYPE="default"
+
+# ── 10) 阿里云语音识别（ASR / 文案提取）──
+ENV ALIYUN_ACCESS_KEY_ID=""
+ENV ALIYUN_ACCESS_KEY_SECRET=""
+ENV ALIYUN_ASR_APP_KEY=""
+
+# ── 11) 智凌文案提取（可选）──
+ENV ZHILING_API_KEY=""
+
+# ── 12) 邮箱登录（Magic Link）──
+ENV RESEND_API_KEY=""
+ENV RESEND_FROM="中台 <noreply@example.com>"
+ENV APP_PUBLIC_BASE="http://localhost:3000"
+ENV DEV_EMAIL_MODE="0"
+
+# ── 13) 安全相关（生产环境必须覆盖）──
+ENV EMAIL_HASH_SALT=""
+ENV CREDIT_ADMIN_ACCESS_KEY=""
+ENV ADMIN_LOGIN_NAME=""
+ENV ADMIN_PASSWORD_HASH=""
+ENV ADMIN_PASSWORD_SALT=""
+
+# ── 14) 积分系统 ──
+ENV CREDIT_REGISTER_BONUS="100"
+ENV CREDIT_SESSION_TTL_DAYS="30"
+ENV CREDIT_EMAIL_TOKEN_TTL_SECONDS="900"
+ENV CREDIT_METERED_KEY=""
+
+# ── 15) 火山方舟 / 豆包（可选）──
+ENV ARK_API_KEY=""
+ENV ARK_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+ENV ARK_CHAT_MODEL="doubao-seed-2-1-pro-260628"
+ENV ARK_ENDPOINT_ID=""
+ENV ARK_IMAGE_ENDPOINT_ID=""
+ENV ARK_IMAGE_API_KEY=""
+ENV POSITIONING_PRODUCT_ARK_ENDPOINT_ID=""
+ENV POSITIONING_PRODUCT_ARK_API_KEY=""
+
+# ── 16) NewAPI / aicost.xyz（Claude / ChatGPT）──
+ENV NEWAPI_BASE_URL="https://www.aicost.xyz"
+ENV NEWAPI_KEY=""
+ENV NEWAPI_GPT_MODEL="gpt-5.5"
+ENV NEWAPI_CLAUDE_MODEL="claude-opus-4-8"
+
+# ── 17) 天行数据（热搜）──
+ENV TIANAPI_KEY=""
+
+# ── 18) 公网部署 ──
+ENV CORS_ALLOW_ORIGINS=""
+ENV SHARE_BASE_URL=""
+ENV SHARE_API_TOKEN=""
+
+# ── 19) ffmpeg 控制 ──
+ENV FFMPEG_MAX_CONCURRENT="2"
+# FFMPEG_EXE 与 FFPROBE_EXE 默认使用系统 PATH 中的 ffmpeg（apt 已安装）
+
+# ── 20) GEO 多平台检索（可选）──
+ENV JUSTONEAPI_TOKEN=""
+ENV SERPAPI_KEY=""
+
+# ── 21) GEO 企业知识库 Skill（可选多模型）──
+ENV KIMI_API_KEY=""
+ENV KIMI_MODEL="moonshot-v1-32k"
+ENV OPENAI_API_KEY=""
+ENV OPENAI_BASE_URL="https://api.openai.com/v1"
+ENV OPENAI_CHAT_MODEL="gpt-4o-mini"
+ENV ANTHROPIC_API_KEY=""
+ENV ANTHROPIC_CHAT_MODEL="claude-3-5-haiku-20241022"
+ENV GEMINI_API_KEY=""
+ENV GEMINI_CHAT_MODEL="gemini-2.0-flash"
+
+# ── 22) 桌面客户端中央激活（可选）──
+ENV CENTRAL_SIGNING_PRIVATE_KEY=""
+ENV CENTRAL_SIGNING_KEY_ID="v1"
+ENV CENTRAL_KEY_POOL_JSON=""
+ENV CENTRAL_LATEST_VERSION=""
+ENV CENTRAL_FORCE_UPDATE_BELOW="0.0.1"
+ENV CENTRAL_UPDATE_URL=""
+
+# ── 23) 数据目录初始化 ──
+RUN mkdir -p /data/video-cache/generated \
+             /data/video-cache/manual-uploads \
+             /data/video-postprocess \
+    && chmod -R 755 /app /data
+
+EXPOSE 8000
+
+CMD ["sh", "-c", "python -m uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

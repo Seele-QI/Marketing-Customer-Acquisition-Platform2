@@ -1,0 +1,150 @@
+# syntax=docker/dockerfile:1.7
+# ────────────────────────────────────────────────────────────────
+#  Next.js 前端（standalone 输出）
+#  构建产物：.next/standalone（仅含运行时所需的 Node 依赖 + server bundle）
+#  运行时由 standalone/server.js 提供 HTTP 服务，对外暴露 $PORT（默认 3000）
+#
+#  NEXT_PUBLIC_* 变量在构建时烘焙到 JS bundle，须通过 --build-arg 传入。
+#  其余服务端变量（API Key 等）在运行时通过 -e 或 docker-compose 注入。
+#
+#  构建示例：
+#    docker build -f Dockerfile.web \
+#      --build-arg NEXT_PUBLIC_FASTAPI_URL=https://api.example.com \
+#      --build-arg NEXT_PUBLIC_DH_VIDEO_V2_MOCK=0 \
+#      -t zhongtai-web .
+#  运行示例：
+#    docker run -p 3000:3000 \
+#      -e FASTAPI_URL=http://api:8000 \
+#      -e DEEPSEEK_API_KEY=sk-xxx \
+#      zhongtai-web
+# ────────────────────────────────────────────────────────────────
+
+# ── Stage 1: deps（pnpm + 所有依赖，含 devDependencies 用于 build）──
+FROM node:22-alpine AS deps
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+COPY scripts/ ./scripts/
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+    && node scripts/patch-next-themes.mjs
+
+# ── Stage 2: builder（构建 Next.js standalone）──
+FROM node:22-alpine AS builder
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# NEXT_PUBLIC_* 变量必须在构建阶段可见（烘焙进客户端 bundle）
+# 通过 --build-arg 传入，不留明文密钥在镜像层
+ARG NEXT_PUBLIC_FASTAPI_URL=""
+ARG NEXT_PUBLIC_DH_VIDEO_V2_MOCK="0"
+ARG NEXT_PUBLIC_CLOUD_API_URL=""
+
+ENV NEXT_PUBLIC_FASTAPI_URL=${NEXT_PUBLIC_FASTAPI_URL}
+ENV NEXT_PUBLIC_DH_VIDEO_V2_MOCK=${NEXT_PUBLIC_DH_VIDEO_V2_MOCK}
+ENV NEXT_PUBLIC_CLOUD_API_URL=${NEXT_PUBLIC_CLOUD_API_URL}
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+RUN corepack enable && corepack prepare pnpm@latest --activate \
+    && pnpm run build
+
+# ── Stage 3: runner（最终镜像，仅含运行所需）──
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+# ── 运行时固定配置 ──
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# ── FastAPI 连接（服务端 proxy 内网地址）──
+ENV FASTAPI_URL="http://api:8000"
+
+# ── 浏览器直连 API（若构建时未烘焙可在此运行时覆盖，仅影响 SSR）──
+ENV NEXT_PUBLIC_FASTAPI_URL=""
+
+# ── DeepSeek（Next.js API Routes 直连，不经过 FastAPI）──
+ENV DEEPSEEK_API_KEY=""
+ENV DEEPSEEK_CHAT_MODEL="deepseek-v4-pro"
+
+# ── 火山方舟 / 豆包（图像生成、GEO 对话）──
+ENV ARK_API_KEY=""
+ENV ARK_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+ENV ARK_CHAT_MODEL="doubao-seed-2-1-pro-260628"
+ENV ARK_ENDPOINT_ID=""
+ENV ARK_IMAGE_ENDPOINT_ID=""
+ENV ARK_IMAGE_API_KEY=""
+ENV POSITIONING_PRODUCT_ARK_ENDPOINT_ID=""
+ENV POSITIONING_PRODUCT_ARK_API_KEY=""
+
+# ── NewAPI / aicost.xyz（Claude / ChatGPT，与 DeepSeek/豆包分离）──
+ENV NEWAPI_BASE_URL="https://www.aicost.xyz"
+ENV NEWAPI_KEY=""
+ENV NEWAPI_GPT_MODEL="gpt-5.5"
+ENV NEWAPI_CLAUDE_MODEL="claude-opus-4-8"
+
+# ── 计量扣费（Next 服务端 → FastAPI，勿暴露给浏览器）──
+ENV CREDIT_METERED_KEY=""
+
+# ── 邮箱登录（Magic Link）──
+ENV RESEND_API_KEY=""
+ENV RESEND_FROM="中台 <noreply@example.com>"
+ENV APP_PUBLIC_BASE="http://localhost:3000"
+ENV DEV_EMAIL_MODE="0"
+
+# ── 安全相关（生产环境必须覆盖）──
+ENV EMAIL_HASH_SALT=""
+ENV CREDIT_ADMIN_ACCESS_KEY=""
+ENV ADMIN_LOGIN_NAME=""
+ENV ADMIN_PASSWORD_HASH=""
+ENV ADMIN_PASSWORD_SALT=""
+
+# ── 积分系统 ──
+ENV CREDIT_REGISTER_BONUS="100"
+ENV CREDIT_SESSION_TTL_DAYS="30"
+ENV CREDIT_EMAIL_TOKEN_TTL_SECONDS="900"
+
+# ── 天行数据（热搜）──
+ENV TIANAPI_KEY=""
+
+# ── GEO 企业知识库 Skill（可选多模型）──
+ENV KIMI_API_KEY=""
+ENV KIMI_MODEL="moonshot-v1-32k"
+ENV OPENAI_API_KEY=""
+ENV OPENAI_BASE_URL="https://api.openai.com/v1"
+ENV OPENAI_CHAT_MODEL="gpt-4o-mini"
+ENV ANTHROPIC_API_KEY=""
+ENV ANTHROPIC_CHAT_MODEL="claude-3-5-haiku-20241022"
+ENV GEMINI_API_KEY=""
+ENV GEMINI_CHAT_MODEL="gemini-2.0-flash"
+
+# ── GEO 多平台检索（可选）──
+ENV JUSTONEAPI_TOKEN=""
+ENV SERPAPI_KEY=""
+
+# ── 分享分发 ──
+ENV SHARE_BASE_URL=""
+ENV SHARE_API_TOKEN=""
+
+# ── 桌面客户端云端接口（可选）──
+ENV CLOUD_API_URL=""
+
+# standalone 自带 node_modules，但仍需复制 .next/static 与 public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+
+# 非 root 运行
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 nextjs \
+    && mkdir -p .next \
+    && chown nextjs:nodejs .next
+USER nextjs
+
+EXPOSE 3000
+
+# standalone 模式自带 server.js
+CMD ["node", "server.js"]
