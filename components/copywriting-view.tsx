@@ -20,31 +20,31 @@ type CopyAgent = {
 
 const copyAgents: CopyAgent[] = [
   {
-    name: "实体店获客脚本创作",
-    category: "获客",
-    description: "专为实体店打造获客型短视频脚本，从引流钩子到成交引导，适配餐饮、装修、教育、美业等线下业态。",
+    name: "数字人口播文案",
+    category: "口播",
+    description: "专为数字人口播与实体店获客打造口播稿，从引流钩子到成交引导，适配餐饮、装修、教育、美业等线下业态。",
     icon: Store,
     badge: "HOT",
     colorClass: { bg: "bg-rose-500/10", text: "text-rose-500" },
   },
   {
-    name: "私域裂变脚本",
-    category: "裂变",
-    description: "输出朋友圈、社群、企微等多触点裂变文案与活动脚本，设计转发理由、福利钩子与转化路径。",
+    name: "图文视频混剪文案",
+    category: "混剪",
+    description: "为图片轮播与多素材混剪视频撰写旁白，按素材段落组织、转场自然、字幕友好。",
     icon: Share2,
     badge: "NEW",
     colorClass: { bg: "bg-violet-500/10", text: "text-violet-500" },
   },
   {
-    name: "高效口播脚本",
-    category: "口播",
-    description: "面向数字人与真人口播，输出自然好念、气口清晰、带情绪起伏的口播稿，按秒数与平台节奏精准控稿。",
+    name: "宣传视频文案创作",
+    category: "宣传",
+    description: "面向品牌宣传与产品推广，输出自然好念、气口清晰、带情绪起伏的宣传口播稿，按秒数精准控稿。",
     icon: Mic,
     badge: "HOT",
     colorClass: { bg: "bg-amber-500/10", text: "text-amber-500" },
   },
   {
-    name: "爆款脚本洗稿",
+    name: "爆款脚本二创",
     category: "二创",
     description: "基于参考脚本进行结构重组与风格改写，保留爆款逻辑的同时产出原创内容，适配多平台多语气。",
     icon: RefreshCw,
@@ -63,7 +63,7 @@ export function CopywritingView({ onOpenAgent }: CopywritingViewProps) {
       <section className="mx-auto max-w-5xl">
         <header>
           <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">选择您的 AI 创作分身</h1>
-          <p className="mt-3 text-sm text-muted-foreground sm:text-base">精准匹配实体获客与内容创作场景，4 大专业方向供你选择</p>
+          <p className="mt-3 text-sm text-muted-foreground sm:text-base">精准匹配视频文案创作场景，4 大专业方向供你选择</p>
         </header>
 
         <div className="mt-8 grid grid-cols-1 gap-5 md:grid-cols-2">

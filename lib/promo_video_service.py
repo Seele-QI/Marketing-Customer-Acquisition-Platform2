@@ -40,7 +40,30 @@ async def call_deepseek(api_key, system_prompt, user_prompt, temperature=0.7, ma
     return data["choices"][0]["message"]["content"].strip()
 
 
-STORYBOARD_SYSTEM_PROMPT = "你是一位资深广告创意总监和AI绘画提示词专家。请根据用户提供的产品信息，生成一段用于AI绘画模型创作产品广告分镜图的创意提示词。\n\n要求：\n1. 提示词必须用中文描述，结合产品特点\n2. 需要包含画面构图、光影、氛围、风格描述\n3. 提示词需要体现产品卖点\n4. 保持画面美观且有广告质感\n5. 不要超过300字\n6. 直接输出提示词，不要有其他解释性文字"
+PROMO_STORYBOARD_NO_LABEL_SUFFIX = "不要生成任何类似「分镜1」「分镜2」的文字"
+
+STORYBOARD_SYSTEM_PROMPT = (
+    "你是一位资深广告创意总监和AI绘画提示词专家。请根据用户提供的产品信息，"
+    "生成一段用于AI绘画模型创作产品广告分镜图的创意提示词。\n\n"
+    "要求：\n"
+    "1. 提示词必须用中文描述，结合产品特点\n"
+    "2. 需要包含画面构图、光影、氛围、风格描述\n"
+    "3. 提示词需要体现产品卖点\n"
+    "4. 保持画面美观且有广告质感\n"
+    "5. 不要超过300字\n"
+    "6. 直接输出提示词，不要有其他解释性文字\n"
+    f"7. {PROMO_STORYBOARD_NO_LABEL_SUFFIX}"
+)
+
+
+def augment_storyboard_creative_prompt(prompt: str) -> str:
+    base = (prompt or "").strip()
+    suffix = PROMO_STORYBOARD_NO_LABEL_SUFFIX
+    if not base:
+        return suffix
+    if suffix in base:
+        return base
+    return f"{base}。{suffix}"
 
 
 async def generate_storyboard_prompt(deepseek_api_key, product_name, selling_points, target_audience, style, image_description=""):
@@ -262,7 +285,7 @@ async def submit_storyboard_to_rh(
         {
             "nodeId": "7",
             "fieldName": "text",
-            "fieldValue": creative_prompt,
+            "fieldValue": augment_storyboard_creative_prompt(creative_prompt),
             "description": "提示词",
         },
     ]
@@ -438,15 +461,26 @@ async def query_runninghub_task(api_key, task_id):
     return await _rh_post_json(api_key, url, {"taskId": task_id}, retries=RH_QUERY_MAX_RETRIES)
 
 
+def promo_video_poll_timeout() -> float:
+    """宣传视频 RH 分镜/成片轮询超时（秒），默认 3000。"""
+    raw = (os.getenv("PROMO_VIDEO_POLL_TIMEOUT") or "3000").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 3000.0
+
+
 async def wait_for_runninghub_task(
     api_key,
     task_id,
-    max_wait=600,
+    max_wait=None,
     poll_interval=5,
     on_poll=None,
     min_urls: int | None = None,
     task_label: str = "分镜",
 ):
+    if max_wait is None:
+        max_wait = promo_video_poll_timeout()
     start = time.time()
     query_failures = 0
     while True:

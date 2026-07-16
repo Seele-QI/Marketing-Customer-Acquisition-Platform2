@@ -20,8 +20,10 @@ import {
   X,
   Pencil,
   Clapperboard,
+  Paperclip,
 } from "lucide-react"
 import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
+import { isSonettoModelId } from "@/lib/llm/model-registry"
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -41,6 +43,14 @@ import {
 import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { isLoginRequiredError } from "@/lib/auth/prompt-login"
+import { consumeBillingAwareSseStream } from "@/lib/credit/balance-sync"
+import {
+  type PendingImage,
+  MAX_PENDING_IMAGES,
+  MAX_IMAGE_FILE_BYTES,
+  buildChatImagePayload,
+  addImageFilesToPending,
+} from "@/lib/chat-image-upload"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -51,6 +61,7 @@ type Message = {
   role: "user" | "assistant"
   content: string
   timestamp: number
+  attachedImagePreviews?: string[]
 }
 
 type HistorySession = {
@@ -354,49 +365,6 @@ function MemoryIndicator({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Stream Consumer                                                     */
-/* ------------------------------------------------------------------ */
-
-async function consumeStream(
-  response: Response,
-  onDelta: (delta: string) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error("响应体不可读")
-
-  const decoder = new TextDecoder()
-  let buffer = ""
-
-  while (true) {
-    if (signal?.aborted) {
-      reader.cancel()
-      return
-    }
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split("\n")
-    buffer = lines.pop() ?? ""
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed || !trimmed.startsWith("data:")) continue
-      const data = trimmed.slice(5).trim()
-      if (data === "[DONE]") return
-      try {
-        const parsed = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] }
-        const delta = parsed.choices?.[0]?.delta?.content
-        if (typeof delta === "string") onDelta(delta)
-      } catch {
-        /* skip unparseable chunks */
-      }
-    }
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -426,6 +394,11 @@ export function CopywritingChatWorkspace({
   const scrollAnchorRef = React.useRef<HTMLDivElement>(null)
   const inputValueRef = React.useRef(inputValue)
   inputValueRef.current = inputValue
+  const [pendingImages, setPendingImages] = React.useState<PendingImage[]>([])
+  const pendingImagesRef = React.useRef(pendingImages)
+  pendingImagesRef.current = pendingImages
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const isSendingRef = React.useRef(false)
 
   const activeSession = activeSessionId ? sessions.find((s) => s.id === activeSessionId) ?? null : null
 
@@ -491,18 +464,61 @@ export function CopywritingChatWorkspace({
     }
   }, [])
 
+  const removePendingImage = React.useCallback((id: string) => {
+    setPendingImages((prev) => {
+      const target = prev.find((p) => p.id === id)
+      if (target) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((p) => p.id !== id)
+    })
+  }, [])
+
+  const handleFileChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files?.length) return
+    addImageFilesToPending(Array.from(files), setPendingImages)
+    e.target.value = ""
+  }, [])
+
   const handleSend = React.useCallback(async (text?: string) => {
     const content = (text ?? inputValueRef.current).trim()
-    if (!content || isSending) return
+    const imgs = pendingImagesRef.current
+    if ((!content && imgs.length === 0) || isSendingRef.current) return
 
+    if (imgs.length > 0 && isSonettoModelId(modelIdRef.current)) {
+      toast({
+        title: "当前模型不支持识图",
+        description: "请切换为 DeepSeek 或豆包后再发送图片。",
+        variant: "destructive",
+      })
+      return
+    }
+
+    isSendingRef.current = true
     setInputValue("")
     setIsSending(true)
+
+    let imagePayload: Awaited<ReturnType<typeof buildChatImagePayload>> | undefined
+    let imageDataUrlsForHistory: string[] | undefined
+    if (imgs.length > 0) {
+      imagePayload = await buildChatImagePayload(imgs)
+      imageDataUrlsForHistory = imagePayload.map(
+        (p) => `data:${p.mimeType};base64,${p.dataBase64}`,
+      )
+      setPendingImages((prev) => {
+        prev.forEach((p) => URL.revokeObjectURL(p.previewUrl))
+        return []
+      })
+    }
+
+    const userBubbleContent =
+      content || (imagePayload?.length ? `已上传${imagePayload.length}张图片` : "")
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content,
+      content: userBubbleContent,
       timestamp: Date.now(),
+      ...(imageDataUrlsForHistory?.length ? { attachedImagePreviews: imageDataUrlsForHistory } : {}),
     }
 
     const assistantMsg: Message = {
@@ -522,8 +538,9 @@ export function CopywritingChatWorkspace({
 
     try {
       if (!(await requireLogin("登录后可使用 AI 文案对话并扣减积分"))) {
-        setMessages((prev) => prev.filter((m) => m.id !== assistantMsg.id))
+        setMessages((prev) => prev.filter((m) => m.id !== assistantMsg.id && m.id !== userMsg.id))
         setIsSending(false)
+        isSendingRef.current = false
         return
       }
 
@@ -537,6 +554,7 @@ export function CopywritingChatWorkspace({
           modelId: modelIdRef.current,
           conversationHistory: history,
           memoryContext: buildMemoryContext(),
+          ...(imagePayload && imagePayload.length > 0 ? { images: imagePayload } : {}),
         }),
       })
 
@@ -548,7 +566,7 @@ export function CopywritingChatWorkspace({
       }
 
       let fullResponse = ""
-      await consumeStream(
+      await consumeBillingAwareSseStream(
         res,
         (delta) => {
           fullResponse += delta
@@ -562,7 +580,7 @@ export function CopywritingChatWorkspace({
 
       // Save to sessions
       const finalMessages = [...messages, userMsg, { ...assistantMsg, content: fullResponse }]
-      const title = content.slice(0, 40) + (content.length > 40 ? "…" : "")
+      const title = userBubbleContent.slice(0, 40) + (userBubbleContent.length > 40 ? "…" : "")
       const newSession: HistorySession = {
         id: activeSessionId ?? crypto.randomUUID(),
         title,
@@ -600,8 +618,9 @@ export function CopywritingChatWorkspace({
       )
     } finally {
       setIsSending(false)
+      isSendingRef.current = false
     }
-  }, [messages, isSending, agentName, activeSessionId, sessions, extractMemory, requireLogin, promptLogin])
+  }, [messages, agentName, activeSessionId, sessions, extractMemory, requireLogin, promptLogin])
 
   const handleNewChat = React.useCallback(() => {
     setActiveSessionId(null)
@@ -871,7 +890,23 @@ export function CopywritingChatWorkspace({
                             </div>
                           )
                         ) : (
-                          <p className="whitespace-pre-wrap">{msg.content}</p>
+                          <div className="space-y-2">
+                            {msg.attachedImagePreviews && msg.attachedImagePreviews.length > 0 ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {msg.attachedImagePreviews.map((src, i) => (
+                                  <img
+                                    key={`${msg.id}-img-${i}`}
+                                    src={src}
+                                    alt=""
+                                    className="h-16 w-16 rounded-lg object-cover ring-1 ring-white/20"
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                            {msg.content ? (
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                            ) : null}
+                          </div>
                         )}
                       </div>
 
@@ -957,7 +992,46 @@ export function CopywritingChatWorkspace({
 
             {/* Input Row */}
             <div className="flex items-end gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isSending}
+                className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200/60 bg-white text-slate-500 transition-colors hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
+                aria-label="上传图片"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden
+                accept="image/*"
+                onChange={handleFileChange}
+              />
               <div className="flex-1 rounded-2xl border border-slate-200/60 bg-white shadow-sm transition-colors focus-within:border-slate-300 focus-within:shadow-md dark:border-white/10 dark:bg-white/5">
+                {pendingImages.length > 0 ? (
+                  <div className="flex flex-wrap gap-2 border-b border-slate-200/40 px-3 pt-3 pb-2 dark:border-white/10">
+                    {pendingImages.map((p) => (
+                      <div
+                        key={p.id}
+                        className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted ring-1 ring-border/50"
+                      >
+                        <img src={p.previewUrl} alt="" className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-background shadow ring-1 ring-border text-muted-foreground hover:text-foreground"
+                          onClick={() => removePendingImage(p.id)}
+                          aria-label="移除图片"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <textarea
                   ref={textareaRef}
                   className="w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[14px] leading-relaxed placeholder:text-slate-400 focus:outline-none dark:placeholder:text-slate-500"
@@ -966,10 +1040,32 @@ export function CopywritingChatWorkspace({
                   value={inputValue}
                   onChange={(e) => {
                     setInputValue(e.target.value)
-                    // Auto-resize
                     const el = e.target
                     el.style.height = "auto"
                     el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+                  }}
+                  onPaste={(e) => {
+                    const items = e.clipboardData?.items
+                    if (!items) return
+                    for (let i = 0; i < items.length; i++) {
+                      const item = items[i]
+                      if (!item.type.startsWith("image/")) continue
+                      const file = item.getAsFile()
+                      if (!file) continue
+                      if (file.size > MAX_IMAGE_FILE_BYTES) {
+                        toast({
+                          title: "图片过大",
+                          description: "单张图片不能超过 20MB",
+                          variant: "destructive",
+                        })
+                        continue
+                      }
+                      setPendingImages((prev) => {
+                        if (prev.length >= MAX_PENDING_IMAGES) return prev
+                        const id = crypto.randomUUID()
+                        return [...prev, { id, file, previewUrl: URL.createObjectURL(file) }]
+                      })
+                    }
                   }}
                   onKeyDown={handleKeyDown}
                   disabled={isSending}
@@ -978,10 +1074,10 @@ export function CopywritingChatWorkspace({
               <button
                 type="button"
                 onClick={() => handleSend()}
-                disabled={!inputValue.trim() || isSending}
+                disabled={(!inputValue.trim() && pendingImages.length === 0) || isSending}
                 className={cn(
                   "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-all",
-                  inputValue.trim() && !isSending
+                  (inputValue.trim() || pendingImages.length > 0) && !isSending
                     ? "bg-primary text-primary-foreground shadow-sm hover:opacity-90"
                     : "bg-slate-100 text-slate-400 dark:bg-white/10",
                 )}

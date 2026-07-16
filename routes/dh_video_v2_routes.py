@@ -518,6 +518,7 @@ async def dh_video_v2_submit(req: Request):
         "segments": segment_states,
         "error": "",
         "provider": submit_req.provider,
+        "created_at": time.time(),
     }
 
     asyncio.create_task(_run_dh_video_v2_pipeline(task_id, submit_req, public_base))
@@ -566,14 +567,36 @@ async def dh_video_v2_retry_segment(req: Request):
     return {"ok": True, "task_id": task_id, "segment_index": retry_req.segmentIndex}
 
 
+def _apply_task_timeout_if_needed(task_id: str, task: dict[str, Any]) -> dict[str, Any]:
+    from lib.dh_video_v2_service import task_timeout
+
+    status = str(task.get("status") or "").lower()
+    if status in ("completed", "failed", "partial_failed", "timeout", "expired"):
+        return task
+    created = float(task.get("created_at") or 0)
+    if created <= 0:
+        return task
+    if time.time() - created <= task_timeout():
+        return task
+    timed_out = {
+        **task,
+        "status": "timeout",
+        "error": "任务超时（已超过 50 分钟）",
+        "stage_label": "超时",
+    }
+    _dh_video_v2_task_store[task_id] = timed_out
+    return timed_out
+
+
 @router.get("/api/dh-video-v2/status")
 async def dh_video_v2_status(taskId: str):
     tid = (taskId or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="Missing taskId")
-    task = _dh_video_v2_task_store.get(tid)
-    if not task:
+    raw = _dh_video_v2_task_store.get(tid)
+    if not raw:
         raise HTTPException(status_code=404, detail="Task not found")
+    task = _apply_task_timeout_if_needed(tid, raw)
     return {
         "task_id": tid,
         "status": task.get("status", "unknown"),

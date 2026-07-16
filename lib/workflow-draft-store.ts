@@ -3,6 +3,13 @@
  * 大文件本体存 workflow-asset-store (IndexedDB)
  */
 import type { TaskKind } from "@/lib/task-runtime/types"
+import type { CoverAspectRatio, CoverResolution } from "@/lib/video/cover-constants"
+import { DEFAULT_COVER_ASPECT_RATIO, DEFAULT_COVER_RESOLUTION } from "@/lib/video/cover-constants"
+
+type CoverDraftFields = {
+  coverAspectRatio: CoverAspectRatio
+  coverResolution: CoverResolution
+}
 
 export const DRAFT_STORAGE_KEY = "agenthub-workflow-drafts"
 
@@ -20,7 +27,7 @@ export type AssetRef = {
   meta?: string
 }
 
-export type ImageVideoDraft = {
+export type ImageVideoDraft = CoverDraftFields & {
   currentStep: 1 | 2 | 3
   script: string
   enableBgm: boolean
@@ -34,7 +41,7 @@ export type ImageVideoDraft = {
   audioRef: AssetRef | null
 }
 
-export type MashupDraft = {
+export type MashupDraft = CoverDraftFields & {
   currentStep: 1 | 2 | 3
   script: string
   enableBgm: boolean
@@ -46,9 +53,10 @@ export type MashupDraft = {
   submittedAt: number
   videoRefs: AssetRef[]
   audioRef: AssetRef | null
+  coverImageRef: AssetRef | null
 }
 
-export type DhVideoV2Draft = {
+export type DhVideoV2Draft = CoverDraftFields & {
   step: "compose" | "scriptPlan" | "generating" | "preview"
   script: string
   creativeIdea: string
@@ -66,7 +74,7 @@ export type DhVideoV2Draft = {
   audioRefs: AssetRef[]
 }
 
-export type PromoVideoDraft = {
+export type PromoVideoDraft = CoverDraftFields & {
   step: "form" | "storyboard" | "prompt" | "video"
   formData: {
     productPrompt: string
@@ -97,21 +105,12 @@ export type CopywritingExtractDraft = {
   editedText: string
 }
 
-export type DigitalHumanAssetDraft = {
-  imageAssetId: string
-  audioAssetId: string
-  imageName: string
-  audioName: string
-  audioDuration: string
-}
-
 export type WorkflowDraftMap = {
   "image-video": ImageVideoDraft
   mashup: MashupDraft
   "dh-video-v2": DhVideoV2Draft
   "promo-video": PromoVideoDraft
   "copywriting-extract": CopywritingExtractDraft
-  "digital-human": DigitalHumanAssetDraft
 }
 
 type DraftStore = Partial<WorkflowDraftMap>
@@ -164,6 +163,8 @@ export function clearDraft(kind: keyof WorkflowDraftMap): void {
 
 export function defaultImageVideoDraft(): ImageVideoDraft {
   return {
+    coverAspectRatio: DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: DEFAULT_COVER_RESOLUTION,
     currentStep: 1,
     script: "",
     enableBgm: true,
@@ -180,6 +181,8 @@ export function defaultImageVideoDraft(): ImageVideoDraft {
 
 export function defaultMashupDraft(): MashupDraft {
   return {
+    coverAspectRatio: DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: DEFAULT_COVER_RESOLUTION,
     currentStep: 1,
     script: "",
     enableBgm: true,
@@ -191,11 +194,14 @@ export function defaultMashupDraft(): MashupDraft {
     submittedAt: 0,
     videoRefs: [],
     audioRef: null,
+    coverImageRef: null,
   }
 }
 
 export function defaultDhVideoV2Draft(): DhVideoV2Draft {
   return {
+    coverAspectRatio: DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: DEFAULT_COVER_RESOLUTION,
     step: "compose",
     script: "",
     creativeIdea: "",
@@ -216,6 +222,8 @@ export function defaultDhVideoV2Draft(): DhVideoV2Draft {
 
 export function defaultPromoVideoDraft(): PromoVideoDraft {
   return {
+    coverAspectRatio: DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: DEFAULT_COVER_RESOLUTION,
     step: "form",
     formData: {
       productPrompt: "",
@@ -244,14 +252,4 @@ export function defaultPromoVideoDraft(): PromoVideoDraft {
 
 export function defaultCopywritingExtractDraft(): CopywritingExtractDraft {
   return { url: "", editedText: "" }
-}
-
-export function defaultDigitalHumanAssetDraft(): DigitalHumanAssetDraft {
-  return {
-    imageAssetId: "",
-    audioAssetId: "",
-    imageName: "",
-    audioName: "",
-    audioDuration: "",
-  }
 }

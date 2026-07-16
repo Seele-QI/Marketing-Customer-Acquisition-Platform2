@@ -36,9 +36,9 @@ class PatchMatrixProjectBody(BaseModel):
 
 
 @router.get("/api/geo/matrix-projects")
-async def geo_matrix_list(request: Request):
+async def geo_matrix_list(request: Request, summary: bool = True):
     user = require_user(request)
-    projects = list_projects(user.id)
+    projects = list_projects(user.id, summary=summary)
     return {"projects": projects}
 
 

@@ -3,8 +3,10 @@
 import * as React from "react"
 import { Loader2, Target } from "lucide-react"
 
+import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { PositioningIntakeWizard } from "@/components/ip-positioning/positioning-intake-wizard"
 import { PositioningReportView } from "@/components/ip-positioning/positioning-report-view"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { toast } from "@/hooks/use-toast"
 import type { IpPositioningIntake, IpPositioningReport } from "@/lib/ip-positioning-schema"
 import {
@@ -15,7 +17,9 @@ import {
 import { clearWorkflowAssets } from "@/lib/workflow-asset-store"
 
 export function AccountPositioning() {
+  const { requireLogin } = useLoginRequired()
   const [analyzing, setAnalyzing] = React.useState(false)
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [report, setReport] = React.useState<IpPositioningReport | null>(() => {
     if (typeof window === "undefined") return null
     return loadIpPositioningSession()?.report ?? null
@@ -32,6 +36,10 @@ export function AccountPositioning() {
       files: Array<{ name: string; size: number; type: string; base64?: string }>
       modelId: string
     }) => {
+      const loggedIn = await requireLogin("登录后可生成 IP 定位报告并扣减积分")
+      if (!loggedIn) return
+
+      setErrorMessage(null)
       setAnalyzing(true)
       setReport(null)
       setStage(payload.intake.stage)
@@ -46,6 +54,7 @@ export function AccountPositioning() {
         const res = await fetch("/api/ai/ip-positioning", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({
             modelId: payload.modelId,
             intake: payload.intake,
@@ -53,16 +62,27 @@ export function AccountPositioning() {
           }),
         })
 
-        const data = await res.json()
+        const raw = await res.text()
+        let data: Record<string, unknown>
+        try {
+          data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+        } catch {
+          throw new Error(
+            raw.trim().slice(0, 120) || `服务异常 (HTTP ${res.status})`,
+          )
+        }
 
         if (!res.ok) {
-          const detail =
-            typeof data.detail === "string"
-              ? data.detail
-              : typeof data.detail?.message === "string"
-                ? data.detail.message
+          const detail = data.detail
+          const message =
+            typeof detail === "string"
+              ? detail
+              : typeof detail === "object" &&
+                  detail !== null &&
+                  typeof (detail as { message?: string }).message === "string"
+                ? (detail as { message: string }).message
                 : "分析失败"
-          throw new Error(detail)
+          throw new Error(message)
         }
 
         if (!data.report) {
@@ -78,20 +98,27 @@ export function AccountPositioning() {
           modelId: payload.modelId,
         })
 
-        if (data._meta) {
+        if (data._meta && typeof data._meta === "object") {
+          const meta = data._meta as {
+            model?: string
+            durationMs?: number
+            documentsUsed?: number
+          }
           console.log(
-            `[IP Positioning] Model: ${data._meta.model} | ${data._meta.durationMs}ms | docs: ${data._meta.documentsUsed}`,
+            `[IP Positioning] Model: ${meta.model} | ${meta.durationMs}ms | docs: ${meta.documentsUsed}`,
           )
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : "分析失败"
+        setErrorMessage(message)
         toast({ title: "IP 定位诊断失败", description: message, variant: "destructive" })
         console.error("[IP Positioning] Error:", e)
+        throw e
       } finally {
         setAnalyzing(false)
       }
     },
-    [],
+    [requireLogin],
   )
 
   const handleRestart = React.useCallback(() => {
@@ -99,6 +126,7 @@ export function AccountPositioning() {
     void clearWorkflowAssets("ip-positioning")
     setReport(null)
     setStage(null)
+    setErrorMessage(null)
     setWizardKey((k) => k + 1)
   }, [])
 
@@ -128,11 +156,19 @@ export function AccountPositioning() {
         ) : report ? (
           <PositioningReportView report={report} stage={stage} onRestart={handleRestart} />
         ) : (
-          <PositioningIntakeWizard
-            key={wizardKey}
-            onSubmit={handleSubmit}
-            analyzing={analyzing}
-          />
+          <>
+            {errorMessage ? (
+              <Alert variant="destructive" className="mb-6">
+                <AlertTitle>IP 定位诊断失败</AlertTitle>
+                <AlertDescription>{errorMessage}</AlertDescription>
+              </Alert>
+            ) : null}
+            <PositioningIntakeWizard
+              key={wizardKey}
+              onSubmit={handleSubmit}
+              analyzing={analyzing}
+            />
+          </>
         )}
       </div>
     </div>

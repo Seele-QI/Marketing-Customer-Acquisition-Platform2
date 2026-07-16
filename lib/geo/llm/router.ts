@@ -3,6 +3,10 @@ import crypto from "node:crypto"
 import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
 import { getCreditBalance } from "@/lib/api/with-auth"
 import {
+  arkChatCompletionNonStream,
+  isArkChatConfigured,
+} from "@/lib/llm/ark-client"
+import {
   DEFAULT_NEWAPI_CLAUDE_MODEL,
   DEFAULT_NEWAPI_GPT_MODEL,
 } from "@/lib/llm/model-registry"
@@ -11,6 +15,9 @@ import {
   sonettoChatCompletion,
 } from "@/lib/llm/sonetto-client"
 import { getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
+
+/** 兼容旧 import：`@/lib/geo/llm/router` */
+export { getArkChatModelId, isArkChatConfigured } from "@/lib/llm/ark-client"
 
 export type LlmProviderId = "deepseek" | "doubao" | "kimi" | "gpt" | "claude" | "gemini"
 
@@ -22,7 +29,6 @@ export type LlmProviderMeta = {
 }
 
 const DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
-const DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 const KIMI_CHAT_URL = "https://api.moonshot.cn/v1/chat/completions"
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -42,14 +48,6 @@ export type CompleteTextParams = {
   user: string
   maxTokens?: number
   billing?: CompleteTextBilling
-}
-
-function normalizeArkBaseUrl(raw: string): string {
-  let t = raw.trim().replace(/\/+$/, "")
-  if (t.endsWith("/chat/completions")) {
-    t = t.slice(0, -"/chat/completions".length).replace(/\/+$/, "")
-  }
-  return t
 }
 
 export function isSonettoLlmProvider(id: LlmProviderId): boolean {
@@ -76,12 +74,7 @@ function isProviderConfigured(id: LlmProviderId): boolean {
     case "deepseek":
       return Boolean(getDeepseekApiKey())
     case "doubao":
-      return Boolean(
-        (readServerEnv("ARK_API_KEY") || readServerEnv("ARK_API_SECRET")) &&
-          (readServerEnv("ARK_CHAT_MODEL") ||
-            readServerEnv("ARK_ENDPOINT_ID") ||
-            readServerEnv("ARK_MODEL")),
-      )
+      return isArkChatConfigured()
     case "kimi":
       return Boolean(readServerEnv("KIMI_API_KEY"))
     case "gpt":
@@ -98,7 +91,7 @@ function isProviderConfigured(id: LlmProviderId): boolean {
 export function listLlmProviders(): LlmProviderMeta[] {
   const defs: { id: LlmProviderId; label: string; envKeys: string[] }[] = [
     { id: "deepseek", label: "DeepSeek", envKeys: ["DEEPSEEK_API_KEY"] },
-    { id: "doubao", label: "豆包 2.1", envKeys: ["ARK_API_KEY", "ARK_CHAT_MODEL"] },
+    { id: "doubao", label: "豆包 Seed 2.1 Pro", envKeys: ["ARK_API_KEY", "ARK_CHAT_MODEL"] },
     { id: "kimi", label: "Kimi", envKeys: ["KIMI_API_KEY"] },
     { id: "gpt", label: "GPT-5.5", envKeys: ["NEWAPI_KEY", "SONETTO_GPT_API_KEY"] },
     { id: "claude", label: "Claude Opus 4.8", envKeys: ["NEWAPI_KEY", "SONETTO_CLAUDE_API_KEY"] },
@@ -144,45 +137,22 @@ async function completeDeepSeek(system: string, user: string, maxTokens: number)
   return parseChatCompletionText(res)
 }
 
-export function getArkChatModelId(): string {
-  return (
-    readServerEnv("ARK_CHAT_MODEL") ||
-    readServerEnv("ARK_ENDPOINT_ID") ||
-    readServerEnv("ARK_MODEL") ||
-    ""
-  )
-}
-
-export function isArkChatConfigured(): boolean {
-  const apiKey = readServerEnv("ARK_API_KEY") || readServerEnv("ARK_API_SECRET")
-  return Boolean(apiKey && getArkChatModelId())
-}
-
 async function completeDoubao(system: string, user: string, maxTokens: number): Promise<string> {
-  const apiKey = readServerEnv("ARK_API_KEY") || readServerEnv("ARK_API_SECRET")
-  const modelId = getArkChatModelId()
-  if (!apiKey || !modelId) {
+  if (!isArkChatConfigured()) {
     throw new Error("未配置 ARK_API_KEY 或 ARK_CHAT_MODEL / ARK_ENDPOINT_ID")
   }
-
-  const baseUrl = normalizeArkBaseUrl(readServerEnv("ARK_BASE_URL") || DEFAULT_ARK_BASE_URL)
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.4,
-    }),
+  const result = await arkChatCompletionNonStream({
+    system,
+    userParts: user,
+    maxTokens,
+    temperature: 0.4,
   })
-  return parseChatCompletionText(res)
+  if (!result.ok) {
+    const err = new Error(result.detail)
+    ;(err as Error & { statusCode?: number }).statusCode = result.status
+    throw err
+  }
+  return result.text
 }
 
 async function completeKimi(system: string, user: string, maxTokens: number): Promise<string> {
@@ -265,6 +235,60 @@ async function completeSonetto(
   return result.text
 }
 
+/** 纯函数：构建补全尝试序列（便于单测） */
+export function completionAttemptSequence(
+  primary: LlmProviderId,
+  includeDeepseekFallback: boolean,
+): LlmProviderId[] {
+  const attempts: LlmProviderId[] = [primary, primary]
+  if (primary !== "deepseek" && includeDeepseekFallback) {
+    attempts.push("deepseek")
+  }
+  return attempts
+}
+
+/** 构建补全尝试序列：首选模型重试一次，失败后（若已配置）DeepSeek 兜底 */
+export function buildCompletionAttemptProviders(primary: LlmProviderId): LlmProviderId[] {
+  return completionAttemptSequence(primary, isProviderConfigured("deepseek"))
+}
+
+function isNonRetryableCompletionError(err: Error): boolean {
+  const code = (err as Error & { statusCode?: number }).statusCode
+  return code === 402 || code === 503
+}
+
+async function invokeProvider(
+  provider: LlmProviderId,
+  system: string,
+  user: string,
+  maxTokens: number,
+): Promise<string> {
+  if (!isProviderConfigured(provider)) {
+    const meta = listLlmProviders().find((p) => p.id === provider)
+    const keys = meta?.envKeys.join("、") ?? provider
+    const err = new Error(`未配置 ${keys}，请在 .env 中设置后重启服务`)
+    ;(err as Error & { statusCode?: number }).statusCode = 503
+    throw err
+  }
+
+  if (provider === "gpt" || provider === "claude") {
+    return completeSonetto(provider, system, user, maxTokens)
+  }
+
+  switch (provider) {
+    case "deepseek":
+      return completeDeepSeek(system, user, maxTokens)
+    case "doubao":
+      return completeDoubao(system, user, maxTokens)
+    case "kimi":
+      return completeKimi(system, user, maxTokens)
+    case "gemini":
+      return completeGemini(system, user, maxTokens)
+    default:
+      throw new Error(`未知 provider: ${provider}`)
+  }
+}
+
 async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<void> {
   if (!billing.cookieHeader) {
     const err = new Error("缺少 cookieHeader，无法扣费")
@@ -309,7 +333,7 @@ async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<vo
   }
 }
 
-/** 非流式文本补全；未配置 Key 时抛出带 503 语义的错误 */
+/** 非流式文本补全；首选模型失败时重试一次，仍失败则 DeepSeek 兜底（若已配置） */
 export async function completeText(params: CompleteTextParams): Promise<string> {
   const { provider, system, user, maxTokens = 4096, billing } = params
 
@@ -321,31 +345,24 @@ export async function completeText(params: CompleteTextParams): Promise<string> 
     throw err
   }
 
-  let text: string
-  if (provider === "gpt" || provider === "claude") {
-    text = await completeSonetto(provider, system, user, maxTokens)
-  } else {
-    switch (provider) {
-      case "deepseek":
-        text = await completeDeepSeek(system, user, maxTokens)
-        break
-      case "doubao":
-        text = await completeDoubao(system, user, maxTokens)
-        break
-      case "kimi":
-        text = await completeKimi(system, user, maxTokens)
-        break
-      case "gemini":
-        text = await completeGemini(system, user, maxTokens)
-        break
-      default:
-        throw new Error(`未知 provider: ${provider}`)
+  const attempts = buildCompletionAttemptProviders(provider)
+  let lastError: Error | undefined
+
+  for (const attemptProvider of attempts) {
+    try {
+      const text = await invokeProvider(attemptProvider, system, user, maxTokens)
+      if (billing) {
+        await settleGeoArticleBilling({ ...billing, provider: attemptProvider })
+      }
+      return text
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e))
+      lastError = err
+      if (isNonRetryableCompletionError(err)) {
+        throw err
+      }
     }
   }
 
-  if (billing) {
-    await settleGeoArticleBilling({ ...billing, provider })
-  }
-
-  return text
+  throw lastError ?? new Error("模型调用失败")
 }

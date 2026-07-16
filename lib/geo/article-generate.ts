@@ -5,6 +5,8 @@ import {
   buildArticleUserPrompt,
   type ArticlePromptContext,
 } from "@/lib/geo/article-prompt"
+import { enforceArticleFormat } from "@/lib/geo/article-format"
+import { getMatrixPlatformLabel } from "@/lib/geo/matrix-platforms"
 import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
 import {
   completeText,
@@ -24,7 +26,8 @@ export type ArticleProgressEvent =
   | { type: "job_done"; jobId: string; article: GeneratedArticle }
   | { type: "job_error"; jobId: string; error: string }
 
-const MAX_TOKENS = 4096
+/** 短文生成，token 预算相应下调 */
+const MAX_TOKENS = 2048
 const DEFAULT_CONCURRENCY = 20
 
 function billingFor(
@@ -61,6 +64,14 @@ export async function generateOneArticle(
       throw new Error("模型未返回有效正文")
     }
 
+    const formatted = enforceArticleFormat(text, {
+      title: job.title,
+      platformLabel: getMatrixPlatformLabel(job.platformId),
+    })
+    if (!formatted.trim()) {
+      throw new Error("格式化后正文为空")
+    }
+
     return {
       id,
       jobId: job.jobId,
@@ -68,7 +79,7 @@ export async function generateOneArticle(
       platformId: job.platformId,
       date: job.date,
       title: job.title,
-      markdown: text,
+      markdown: formatted,
       status: "success",
       createdAt,
     }

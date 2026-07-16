@@ -18,7 +18,7 @@ const MOCK_RECOMMENDATIONS = [
   {
     id: "2",
     icon: TrendingUp,
-    text: "「高效口播脚本」上周产出 8 条视频，平均播放量 2.4w。建议本周继续稳定产出，重点优化前 3 秒钩子",
+    text: "「宣传视频文案创作」上周产出 8 条视频，平均播放量 2.4w。建议本周继续稳定产出，重点优化前 3 秒钩子",
     color: "text-blue-500",
     bg: "bg-blue-500/10",
   },

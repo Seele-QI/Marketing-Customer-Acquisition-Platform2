@@ -4,6 +4,7 @@
 用法（项目根目录）:
   python tools/verify_dh_video_v2.py --smoke     # 仅测 API 连通（文生视频）
   python tools/verify_dh_video_v2.py --full      # 含参考图单段 + ffmpeg 拼接烟测
+  python tools/verify_dh_video_v2.py --download-url <url> [--upstream-id ID]
 """
 
 from __future__ import annotations
@@ -60,12 +61,40 @@ async def smoke_api() -> None:
 
     out = Path(tempfile.gettempdir()) / "dh_v2_smoke.mp4"
     print(f"[3/3] 下载到 {out} …")
-    await download_video_file(url, str(out), upstream_id=str(tid))
+    await download_video_file(
+        url,
+        str(out),
+        upstream_id=str(tid),
+        debug_context="verify_smoke",
+    )
     size = out.stat().st_size
     print(f"      文件大小 {size} bytes")
     if size < 10_000:
         raise SystemExit(f"FAIL: 视频过小 ({size} bytes)")
     print("SMOKE OK")
+
+
+async def download_url_only(url: str, upstream_id: str = "") -> None:
+    """仅测试本机视频 URL 下载（排查 VPN/CDN/鉴权问题）。"""
+    from lib.dh_video_v2_service import download_video_file
+
+    out = Path(tempfile.gettempdir()) / "dh_v2_download_test.mp4"
+    print(f"下载 URL: {url[:120]}…")
+    if upstream_id:
+        print(f"upstream_id: {upstream_id}")
+    print(f"输出: {out}")
+    try:
+        await download_video_file(
+            url,
+            str(out),
+            upstream_id=upstream_id,
+            debug_context="verify_download_url",
+        )
+    except Exception as e:
+        print(f"FAIL: {e}")
+        raise SystemExit(1) from e
+    size = out.stat().st_size
+    print(f"OK: {size} bytes -> {out}")
 
 
 async def full_pipeline_smoke() -> None:
@@ -133,7 +162,14 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true", help="文生视频 API 烟测")
     parser.add_argument("--full", action="store_true", help="双段参考图 + 拼接全链路")
     parser.add_argument("--concat", action="store_true", help="仅 ffmpeg 拼接烟测")
+    parser.add_argument("--download-url", metavar="URL", help="仅测试下载指定视频 URL")
+    parser.add_argument("--upstream-id", default="", help="配合 --download-url 的 Seedance task id")
     args = parser.parse_args()
+
+    if args.download_url:
+        asyncio.run(download_url_only(args.download_url.strip(), args.upstream_id.strip()))
+        return
+
     if not (args.smoke or args.full or args.concat):
         args.smoke = True
 

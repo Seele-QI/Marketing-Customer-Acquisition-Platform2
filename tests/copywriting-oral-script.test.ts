@@ -12,7 +12,7 @@ import {
 } from "../lib/copywriting-script-format.ts"
 
 test("固定角色提示词统一追加纯口播规则", () => {
-  const prompt = resolveAgentSystemPrompt("实体店获客脚本创作")
+  const prompt = resolveAgentSystemPrompt("数字人口播文案")
 
   assert.match(prompt, /只输出可直接朗读的纯口播稿正文/)
   assert.match(prompt, /严禁输出任何括号内容/)
@@ -27,24 +27,25 @@ test("兜底角色提示词也会追加纯口播规则", () => {
   assert.ok(prompt.includes(COPYWRITING_PURE_ORAL_RULES.trim()))
 })
 
-test("enriched system prompt 会拼入口播规则与附加上下文", () => {
+test("enriched system prompt 会拼入口播规则、skill 与附加上下文", () => {
   const prompt = buildCopywritingEnrichedSystemPrompt({
-    agentName: "高效口播脚本",
+    agentName: "宣传视频文案创作",
     workflowKnowledge: "工作流知识",
     memoryContext: "用户记忆",
   })
 
   assert.ok(prompt.includes(COPYWRITING_PURE_ORAL_RULES.trim()))
+  assert.match(prompt, /宣传视频文案创作技巧/)
+  assert.match(prompt, /你是「宣传视频文案创作」专家/)
   assert.ok(prompt.includes("工作流知识"))
   assert.ok(prompt.includes("用户记忆"))
 })
 
-test("爆款脚本洗稿允许内部分析但最终只输出成稿", () => {
-  const prompt = resolveAgentSystemPrompt("爆款脚本洗稿")
+test("爆款脚本二创提示词包含图片识别能力", () => {
+  const prompt = resolveAgentSystemPrompt("爆款脚本二创")
 
-  assert.match(prompt, /可先在内部完成爆款逻辑分析/)
-  assert.match(prompt, /最终只输出原创改写后的口播成稿/)
-  assert.doesNotMatch(prompt, /先简要分析其爆款逻辑再给改写稿/)
+  assert.match(prompt, /参考视频截图或封面图/)
+  assert.match(prompt, /严禁输出任何括号内容/)
 })
 
 test("按 Markdown 版本标题拆分多版本口播稿", () => {

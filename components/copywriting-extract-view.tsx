@@ -34,7 +34,7 @@ type Props = {
   onAiRewrite?: (text: string) => void
 }
 
-type ExtractionStatus = "idle" | "downloading" | "transcribing" | "completed" | "failed"
+type ExtractionStatus = "idle" | "submitting" | "downloading" | "transcribing" | "completed" | "failed"
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -44,6 +44,7 @@ const PLATFORM_HINTS = "抖音 · B站 · 快手 · 小红书 · YouTube"
 
 const STEP_LABELS: Record<ExtractionStatus, string> = {
   idle: "",
+  submitting: "提交中",
   downloading: "下载中",
   transcribing: "识别中",
   completed: "完成",
@@ -69,12 +70,14 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
   const [editedText, setEditedText] = React.useState(
     () => loadDraft("copywriting-extract")?.editedText ?? "",
   )
+  const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   React.useEffect(() => {
     saveDraft("copywriting-extract", { url, editedText })
   }, [url, editedText])
 
-  const isRunning = status === "downloading" || status === "transcribing"
+  const isRunning =
+    isSubmitting || status === "downloading" || status === "transcribing"
 
   // 从全局 runtime 恢复 / 同步
   React.useEffect(() => {
@@ -86,9 +89,12 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
     }
 
     if (runtimeTask.status === "running") {
+      setIsSubmitting(false)
       const step = (runtimeTask.stageLabel || "").includes("识别")
         ? "transcribing"
-        : "downloading"
+        : (runtimeTask.stageLabel || "").includes("提交")
+          ? "submitting"
+          : "downloading"
       setStatus(step)
       setError("")
       return
@@ -167,6 +173,9 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
     setResult(null)
     setCopied(false)
     setEditedText("")
+    setIsSubmitting(true)
+    setStatus("submitting")
+    setProgress(5)
 
     try {
       const res = await startCopyExtraction({ url: videoUrl })
@@ -178,13 +187,15 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
         taskId: res.task_id,
         progress: 5,
         stageLabel: "下载中",
-        meta: { url: videoUrl },
+        meta: { url: videoUrl, startedAt: Date.now() },
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : "提交提取任务失败"
       setError(msg)
       setStatus("failed")
       toast({ description: msg, variant: "destructive" })
+    } finally {
+      setIsSubmitting(false)
     }
   }, [url, runtimeApi])
 
@@ -265,7 +276,7 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
               ) : (
                 <FileText className="h-4 w-4" />
               )}
-              {isRunning ? "提取中…" : "提取文案"}
+              {isSubmitting ? "提交中…" : isRunning ? "提取中…" : "提取文案"}
             </button>
           </div>
           <p className="mt-2.5 ml-1 text-[12px] text-muted-foreground/70">
@@ -470,20 +481,24 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
 /* ------------------------------------------------------------------ */
 
 const STEPS: { key: ExtractionStatus; label: string }[] = [
+  { key: "submitting", label: "提交中" },
   { key: "downloading", label: "下载中" },
   { key: "transcribing", label: "识别中" },
   { key: "completed", label: "完成" },
 ]
 
 function StepIndicator({ current }: { current: ExtractionStatus }) {
-  const currentIdx = STEPS.findIndex((s) => s.key === current)
+  const activeKey =
+    current === "submitting" ? "downloading" : current === "completed" ? "transcribing" : current
+  const currentIdx = STEPS.findIndex((s) => s.key === activeKey)
 
   return (
     <div className="flex items-center gap-1.5">
       {STEPS.map((step, i) => {
-        const isDone = i < currentIdx
-        const isActive = step.key === current
-        const isPending = i > currentIdx
+        const isDone = i < currentIdx || (current === "submitting" && i === 0)
+        const isActive =
+          step.key === activeKey || (current === "submitting" && step.key === "submitting")
+        const isPending = i > currentIdx && current !== "submitting"
 
         return (
           <React.Fragment key={step.key}>

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -22,12 +23,17 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import yt_dlp  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _http_client_sync(**kwargs) -> httpx.Client:
+    """直连外网，避免 Windows 系统代理（如 Clash 127.0.0.1:10808）导致 ConnectError。"""
+    return httpx.Client(trust_env=False, **kwargs)
 
 # ── 阿里云 NLS 配置 ──────────────────────────────────────────────
 NLS_TOKEN_URL = "https://nls-meta.cn-shanghai.aliyuncs.com/pop/2018-05-18/tokens"
@@ -134,7 +140,8 @@ def _get_nls_token() -> str:
     }
 
     try:
-        resp = httpx.post(NLS_TOKEN_URL, headers=headers, json={}, timeout=15.0)
+        with _http_client_sync(timeout=15.0) as client:
+            resp = client.post(NLS_TOKEN_URL, headers=headers, json={})
         resp.raise_for_status()
         data = resp.json()
         # Token 接口返回大写字段名
@@ -208,7 +215,7 @@ async def _aliyun_nls_transcribe_internal(
         f"audio={len(audio_bytes)} bytes"
     )
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
         resp = await client.post(url, headers=headers, content=audio_bytes)
         resp.raise_for_status()
         result = resp.json()
@@ -421,7 +428,8 @@ def _download_via_api(url: str, output_dir: str) -> tuple[str, dict]:
     logger.info(f"[api:{platform}] 请求 media-parser 解析: {url}")
 
     # 1) 调用 media-parser 解析视频链接
-    resp = httpx.post(api_url, json={"text": url}, timeout=30.0)
+    with _http_client_sync(timeout=30.0) as client:
+        resp = client.post(api_url, json={"text": url})
     resp.raise_for_status()
     data = resp.json()
 
@@ -450,11 +458,12 @@ def _download_via_api(url: str, output_dir: str) -> tuple[str, dict]:
     video_ext = ".mp4"
     video_path = os.path.join(output_dir, f"api_video_{uuid.uuid4().hex[:8]}{video_ext}")
 
-    with httpx.stream("GET", download_url, timeout=180.0, follow_redirects=True) as stream:
-        stream.raise_for_status()
-        with open(video_path, "wb") as f:
-            for chunk in stream.iter_bytes(chunk_size=8192):
-                f.write(chunk)
+    with _http_client_sync(timeout=180.0, follow_redirects=True) as client:
+        with client.stream("GET", download_url) as stream:
+            stream.raise_for_status()
+            with open(video_path, "wb") as f:
+                for chunk in stream.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
 
     file_size = os.path.getsize(video_path)
     logger.info(f"[api:{platform}] 视频下载完成: {file_size} bytes")
@@ -611,7 +620,8 @@ def extract_subtitles_sync(url: str) -> str | None:
             if not sub_url:
                 continue
             try:
-                resp = httpx.get(sub_url, timeout=30.0)
+                with _http_client_sync(timeout=30.0) as client:
+                    resp = client.get(sub_url)
                 resp.raise_for_status()
                 text = _parse_subtitle_raw(resp.text, entry.get("ext", ""))
                 if text and len(text.strip()) > 10:
@@ -813,12 +823,12 @@ def _submit_zhiling_asr(url: str) -> str:
         raise RuntimeError("未配置 ZHILING_API_KEY")
 
     api_url = f"{_ZHILING_BASE}/parse-video-url-time?key={key}"
-    resp = httpx.post(
-        api_url,
-        data={"videoUrl": url},
-        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
-        timeout=30.0,
-    )
+    with _http_client_sync(timeout=30.0) as client:
+        resp = client.post(
+            api_url,
+            data={"videoUrl": url},
+            headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
+        )
     resp.raise_for_status()
     result = resp.json()
 
@@ -833,40 +843,47 @@ def _submit_zhiling_asr(url: str) -> str:
     return str(task_id)
 
 
-async def _poll_zhiling_result(task_id: str) -> str:
+async def _poll_zhiling_result(
+    task_id: str,
+    on_progress: Callable[[int], None] | None = None,
+) -> str:
     """轮询智凌 ASR 任务结果，返回识别文本"""
     key = _get_zhiling_key()
     if not key:
         raise RuntimeError("未配置 ZHILING_API_KEY")
 
-    import asyncio
-
     api_url = f"{_ZHILING_BASE}/task-status"
-    deadline = time.time() + _ZHILING_POLL_TIMEOUT
+    started = time.time()
+    deadline = started + _ZHILING_POLL_TIMEOUT
 
-    while time.time() < deadline:
-        resp = httpx.get(api_url, params={"key": key, "taskId": task_id}, timeout=15.0)
-        resp.raise_for_status()
-        result = resp.json()
+    async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+        while time.time() < deadline:
+            resp = await client.get(api_url, params={"key": key, "taskId": task_id})
+            resp.raise_for_status()
+            result = resp.json()
 
-        if result.get("code") != 200:
-            raise RuntimeError(f"智凌 API 查询失败: {result.get('msg', '未知错误')}")
+            if result.get("code") != 200:
+                raise RuntimeError(f"智凌 API 查询失败: {result.get('msg', '未知错误')}")
 
-        data = result.get("data") or {}
-        schedule = (data.get("schedule") or "").upper()
+            data = result.get("data") or {}
+            schedule = (data.get("schedule") or "").upper()
 
-        if schedule == "SUCCESS":
-            content = (data.get("content") or "").strip()
-            if content:
-                logger.info(f"[zhiling] 识别成功: {len(content)} 字")
-                return content
-            raise RuntimeError("智凌 API 返回成功但内容为空")
+            if on_progress:
+                elapsed = time.time() - started
+                pct = 30 + int(min(1.0, elapsed / _ZHILING_POLL_TIMEOUT) * 60)
+                on_progress(min(pct, 90))
 
-        if schedule == "FAIL":
-            raise RuntimeError("智凌 API 识别失败")
+            if schedule == "SUCCESS":
+                content = (data.get("content") or "").strip()
+                if content:
+                    logger.info(f"[zhiling] 识别成功: {len(content)} 字")
+                    return content
+                raise RuntimeError("智凌 API 返回成功但内容为空")
 
-        # WAIT_HANDLE / ING → 继续轮询
-        await asyncio.sleep(_ZHILING_POLL_INTERVAL)
+            if schedule == "FAIL":
+                raise RuntimeError("智凌 API 识别失败")
+
+            await asyncio.sleep(_ZHILING_POLL_INTERVAL)
 
     raise RuntimeError(f"智凌 API 轮询超时（{_ZHILING_POLL_TIMEOUT}s）")
 
@@ -883,12 +900,12 @@ async def run_extraction(task_id: str, url: str) -> None:
         task.progress = 10
 
         logger.info(f"[extract:{task_id}] 尝试提取字幕: {url}")
-        subtitle_text = extract_subtitles_sync(url)
+        subtitle_text = await asyncio.to_thread(extract_subtitles_sync, url)
         if subtitle_text:
             task.text = subtitle_text
             task.source = "subtitles"
             try:
-                info = extract_video_info(url)
+                info = await asyncio.to_thread(extract_video_info, url)
                 task.title = info.get("title", "")
                 task.duration = info.get("duration", 0)
             except Exception:
@@ -910,11 +927,14 @@ async def run_extraction(task_id: str, url: str) -> None:
             task.step = "识别中"
             task.progress = 30
 
-            zhiling_task_id = _submit_zhiling_asr(url)
+            zhiling_task_id = await asyncio.to_thread(_submit_zhiling_asr, url)
             task.progress = 40
             logger.info(f"[extract:{task_id}] 智凌 ASR 任务已提交: {zhiling_task_id}")
 
-            text = await _poll_zhiling_result(zhiling_task_id)
+            def _zhiling_progress(pct: int) -> None:
+                task.progress = max(task.progress, pct)
+
+            text = await _poll_zhiling_result(zhiling_task_id, on_progress=_zhiling_progress)
             task.text = text
             task.source = "asr"
             task.status = "completed"
@@ -927,7 +947,7 @@ async def run_extraction(task_id: str, url: str) -> None:
         logger.info(f"[extract:{task_id}] 无字幕，下载音频…")
 
         with tempfile.TemporaryDirectory(prefix="video_extract_") as tmpdir:
-            wav_path, info = download_audio_sync(url, tmpdir)
+            wav_path, info = await asyncio.to_thread(download_audio_sync, url, tmpdir)
             task.title = info.get("title", "")
             task.duration = info.get("duration", 0)
             task.progress = 60

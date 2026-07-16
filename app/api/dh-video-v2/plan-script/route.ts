@@ -33,8 +33,11 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
   if (!isLlmPlanAvailable()) {
     return NextResponse.json(
       {
-        detail:
-          "未配置分镜大模型 API Key，请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY",
+        detail: {
+          code: "PLAN_LLM_NOT_CONFIGURED",
+          message:
+            "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步完成；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。",
+        },
       },
       { status: 503 },
     )
@@ -61,6 +64,28 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
   })
 
   if (!ai.ok) {
+    if (ai.status === 503) {
+      return NextResponse.json(
+        {
+          detail: {
+            code: "PLAN_LLM_NOT_CONFIGURED",
+            message: ai.detail,
+          },
+        },
+        { status: 503 },
+      )
+    }
+    if (ai.status === 502) {
+      return NextResponse.json(
+        {
+          detail: {
+            code: "PLAN_LLM_ALL_FAILED",
+            message: ai.detail,
+          },
+        },
+        { status: 502 },
+      )
+    }
     return NextResponse.json({ detail: ai.detail }, { status: ai.status })
   }
 

@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import { app } from 'electron';
 import { killProcessTree, waitForHttpReady } from '../utils/process-tree';
 import { logsDir } from '../utils/paths';
+import { stripSystemProxy } from '../utils/strip-system-proxy';
 import logger from './logger';
 
 export interface ChildSpec {
@@ -27,6 +28,8 @@ export interface ChildSpec {
   healthUrl?: string;
   /** 启动超时（默认 30s） */
   startupTimeoutMs?: number;
+  /** Windows 下是否用 shell 启动（Next 子进程应设 false） */
+  shell?: boolean;
 }
 
 interface ChildHandle {
@@ -134,12 +137,20 @@ export class ChildProcessManager {
 
     logger.info(`[${spec.name}] spawning: ${spec.command} ${spec.args.join(' ')}`);
 
+    const useShell = spec.shell ?? (process.platform === 'win32');
+
+    // 合并 process.env 后再剥代理，避免 Windows HTTP_PROXY 污染 Node fetch（分镜出站）
+    const env = stripSystemProxy({
+      ...process.env,
+      ...(spec.env as Record<string, string | undefined>),
+    });
+
     const proc = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
-      env: { ...process.env, ...spec.env },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell: useShell,
     });
 
     const h: ChildHandle = { proc, port: spec.port, restartCount: 0, lastCrashAt: 0, recentStderr: [] };

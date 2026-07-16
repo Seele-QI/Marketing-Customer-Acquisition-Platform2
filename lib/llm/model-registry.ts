@@ -80,7 +80,7 @@ export const FIXED_CHAT_MODELS: readonly FixedModelDef[] = [
   },
   {
     id: DOUBAO_SEED_21_MODEL_ID,
-    label: "豆包 2.1",
+    label: "豆包 Seed 2.1 Pro",
     provider: "ark",
     billing: "fixed",
     costCredits: 2,

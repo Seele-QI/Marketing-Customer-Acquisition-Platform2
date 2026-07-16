@@ -1,0 +1,32 @@
+{
+  "skills": [
+    {
+      "id": "dh-oral-copy",
+      "agentName": "数字人口播文案",
+      "label": "数字人口播文案创作技巧",
+      "description": "3秒钩子、口语气口、20秒分段、痛点到转化闭环",
+      "path": "dh-oral-copy/SKILL.md"
+    },
+    {
+      "id": "image-mashup-copy",
+      "agentName": "图文视频混剪文案",
+      "label": "图文视频混剪文案创作技巧",
+      "description": "按素材段旁白、转场衔接、字幕友好、BGM卡点",
+      "path": "image-mashup-copy/SKILL.md"
+    },
+    {
+      "id": "promo-video-copy",
+      "agentName": "宣传视频文案创作",
+      "label": "宣传视频文案创作技巧",
+      "description": "品牌主张、卖点递进、时长密度、信任背书与行动号召",
+      "path": "promo-video-copy/SKILL.md"
+    },
+    {
+      "id": "viral-rewrite",
+      "agentName": "爆款脚本二创",
+      "label": "爆款脚本二创技巧",
+      "description": "钩子拆解、节奏保留、要素替换、多平台语气改写",
+      "path": "viral-rewrite/SKILL.md"
+    }
+  ]
+}

@@ -13,18 +13,23 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  ARTICLE_BATCH_MAX_JOBS,
+  ARTICLE_BATCH_COPIES_PER_SLOT_MAX,
+  clampCopiesPerSlot,
   alignJobSnapshots,
   expandDirectionJobs,
   expandMatrixJobs,
   listMatrixDates,
 } from "@/lib/geo/article-batch-jobs"
 import { MATRIX_PLATFORMS } from "@/lib/geo/matrix-platforms"
-import { listMatrixProjects } from "@/lib/geo/matrix-api"
+import { listMatrixProjects, getMatrixProject } from "@/lib/geo/matrix-api"
 import type { MatrixProject } from "@/lib/geo/matrix-types"
 import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { startBatchGenerate } from "@/lib/geo/article-batch-api"
-import { saveJobSnapshots, type ArticleBatchConfig } from "@/lib/geo/article-batch-store"
+import {
+  loadArticleBatch,
+  saveJobSnapshots,
+  type ArticleBatchConfig,
+} from "@/lib/geo/article-batch-store"
 import type { ArticleJob, BatchGenerateEvent, GeneratedArticle } from "@/lib/geo/article-types"
 import { toast } from "@/hooks/use-toast"
 
@@ -59,23 +64,43 @@ export function GeoArticleBatchPanel({
   const [direction, setDirection] = React.useState("")
   const [platformIds, setPlatformIds] = React.useState<string[]>(["xiaohongshu", "zhihu"])
   const [projects, setProjects] = React.useState<MatrixProject[]>([])
+  const [projectDetail, setProjectDetail] = React.useState<MatrixProject | null>(null)
   const [projectsLoading, setProjectsLoading] = React.useState(false)
   const [projectId, setProjectId] = React.useState<string>("")
   const [selectedDates, setSelectedDates] = React.useState<string[]>([])
+  const [copiesPerSlot, setCopiesPerSlot] = React.useState(1)
   const [previewCount, setPreviewCount] = React.useState<number | null>(null)
   const [previewSkipped, setPreviewSkipped] = React.useState(0)
   const [previewError, setPreviewError] = React.useState<string | null>(null)
   const localJobsRef = React.useRef<ArticleJob[]>([])
+  const restoredConfigRef = React.useRef(false)
 
   const selectedProject = React.useMemo(
-    () => projects.find((p) => p.id === projectId) ?? null,
-    [projects, projectId],
+    () => projectDetail ?? projects.find((p) => p.id === projectId) ?? null,
+    [projectDetail, projects, projectId],
   )
 
   const availableDates = React.useMemo(
     () => listMatrixDates(selectedProject),
     [selectedProject],
   )
+
+  React.useEffect(() => {
+    if (restoredConfigRef.current) return
+    restoredConfigRef.current = true
+    const stored = loadArticleBatch().lastConfig
+    if (!stored) return
+    if (stored.mode === "direction" || stored.mode === "matrix") {
+      setMode(stored.mode)
+    }
+    if (stored.direction) setDirection(stored.direction)
+    if (stored.platformIds?.length) setPlatformIds(stored.platformIds)
+    if (stored.projectId) setProjectId(stored.projectId)
+    if (stored.dates?.length) setSelectedDates(stored.dates)
+    if (stored.copiesPerSlot != null) {
+      setCopiesPerSlot(clampCopiesPerSlot(stored.copiesPerSlot))
+    }
+  }, [])
 
   React.useEffect(() => {
     let cancelled = false
@@ -100,6 +125,24 @@ export function GeoArticleBatchPanel({
   }, [])
 
   React.useEffect(() => {
+    if (!projectId) {
+      setProjectDetail(null)
+      return
+    }
+    let cancelled = false
+    void getMatrixProject(projectId)
+      .then((p) => {
+        if (!cancelled) setProjectDetail(p)
+      })
+      .catch(() => {
+        if (!cancelled) setProjectDetail(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  React.useEffect(() => {
     if (selectedProject?.platforms?.length) {
       setPlatformIds(selectedProject.platforms)
     }
@@ -118,6 +161,7 @@ export function GeoArticleBatchPanel({
           mode: "direction",
           direction,
           platformIds,
+          copiesPerSlot,
         })
         setPreviewCount(jobs.length)
         setPreviewSkipped(0)
@@ -128,6 +172,7 @@ export function GeoArticleBatchPanel({
           project: selectedProject,
           dates: selectedDates,
           platformIds,
+          copiesPerSlot,
         })
         setPreviewCount(jobs.length)
         setPreviewSkipped(skipped.length)
@@ -142,7 +187,7 @@ export function GeoArticleBatchPanel({
       setPreviewSkipped(0)
       setPreviewError(e instanceof Error ? e.message : "无法预览任务数")
     }
-  }, [mode, direction, platformIds, selectedProject, selectedDates])
+  }, [mode, direction, platformIds, selectedProject, selectedDates, copiesPerSlot])
 
   const togglePlatform = (id: string) => {
     setPlatformIds((prev) =>
@@ -156,26 +201,30 @@ export function GeoArticleBatchPanel({
     )
   }
 
+  const handleCopiesChange = (raw: string) => {
+    const n = Number.parseInt(raw, 10)
+    if (!Number.isFinite(n)) {
+      setCopiesPerSlot(1)
+      return
+    }
+    setCopiesPerSlot(clampCopiesPerSlot(n))
+  }
+
   const handleStart = async () => {
     if (generating) return
     if (previewError || previewCount == null || previewCount < 1) {
       toast({ title: previewError ?? "请完善创作配置", variant: "destructive" })
       return
     }
-    if (previewCount > ARTICLE_BATCH_MAX_JOBS) {
-      toast({
-        title: `单次最多 ${ARTICLE_BATCH_MAX_JOBS} 篇，当前 ${previewCount} 篇`,
-        variant: "destructive",
-      })
-      return
-    }
 
+    const copies = clampCopiesPerSlot(copiesPerSlot)
     const config: ArticleBatchConfig = {
       mode,
       direction: mode === "direction" ? direction.trim() : undefined,
       projectId: mode === "matrix" ? projectId : undefined,
       dates: mode === "matrix" ? selectedDates : undefined,
       platformIds,
+      copiesPerSlot: copies,
     }
 
     let jobMetas: { jobId: string; title: string; platformId: string; date?: string }[] = []
@@ -186,6 +235,7 @@ export function GeoArticleBatchPanel({
           mode: "direction",
           direction: direction.trim(),
           platformIds,
+          copiesPerSlot: copies,
         })
         expandedJobs = expanded.jobs
         jobMetas = expanded.jobs.map((j) => ({
@@ -199,6 +249,7 @@ export function GeoArticleBatchPanel({
           project: selectedProject,
           dates: selectedDates,
           platformIds,
+          copiesPerSlot: copies,
         })
         expandedJobs = expanded.jobs
         jobMetas = expanded.jobs.map((j) => ({
@@ -235,6 +286,7 @@ export function GeoArticleBatchPanel({
           projectId: config.projectId,
           dates: config.dates,
           platformIds,
+          copiesPerSlot: copies,
         },
         {
           onEvent: (event: BatchGenerateEvent) => {
@@ -403,6 +455,48 @@ export function GeoArticleBatchPanel({
         </div>
       </div>
 
+      <div className="mb-3">
+        <label
+          htmlFor="geo-article-copies-per-slot"
+          className="mb-1.5 block text-[11px] font-medium text-slate-500"
+        >
+          每组合篇数
+          <span className="ml-1 font-normal text-slate-400">
+            （同一天×同一渠道，1–{ARTICLE_BATCH_COPIES_PER_SLOT_MAX}）
+          </span>
+        </label>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={generating || copiesPerSlot <= 1}
+            onClick={() => setCopiesPerSlot((n) => clampCopiesPerSlot(n - 1))}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-[14px] text-slate-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300"
+            aria-label="减少篇数"
+          >
+            −
+          </button>
+          <input
+            id="geo-article-copies-per-slot"
+            type="number"
+            min={1}
+            max={ARTICLE_BATCH_COPIES_PER_SLOT_MAX}
+            value={copiesPerSlot}
+            disabled={generating}
+            onChange={(e) => handleCopiesChange(e.target.value)}
+            className="h-8 w-16 rounded-md border border-slate-200 bg-white px-2 text-center text-[13px] tabular-nums text-slate-800 dark:border-white/10 dark:bg-transparent dark:text-slate-200"
+          />
+          <button
+            type="button"
+            disabled={generating || copiesPerSlot >= ARTICLE_BATCH_COPIES_PER_SLOT_MAX}
+            onClick={() => setCopiesPerSlot((n) => clampCopiesPerSlot(n + 1))}
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-[14px] text-slate-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300"
+            aria-label="增加篇数"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-white/5">
         <p className="text-[12px] text-slate-500">
           {previewError ? (
@@ -416,21 +510,16 @@ export function GeoArticleBatchPanel({
               篇
               {mode === "direction" ? (
                 <span className="text-slate-400">
-                  （已选 {platformIds.length} 个平台）
+                  （{platformIds.length} 平台 × {copiesPerSlot} 篇）
                 </span>
               ) : (
                 <span className="text-slate-400">
-                  （{platformIds.length} 平台 × {selectedDates.length} 天）
+                  （{platformIds.length} 平台 × {selectedDates.length} 天 × {copiesPerSlot} 篇）
                 </span>
               )}
               {previewSkipped > 0 && (
                 <span className="ml-1 text-amber-600">
                   · {previewSkipped} 个组合无矩阵格已跳过
-                </span>
-              )}
-              {previewCount > ARTICLE_BATCH_MAX_JOBS && (
-                <span className="ml-1 text-red-500">
-                  （超过上限 {ARTICLE_BATCH_MAX_JOBS}）
                 </span>
               )}
             </>

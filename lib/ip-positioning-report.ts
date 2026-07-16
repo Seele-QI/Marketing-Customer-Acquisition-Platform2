@@ -155,7 +155,7 @@ function buildReportHTML(data: IPReportData): string {
   </div>
   ${sectionsHTML}
   <footer style="text-align:center;padding:1.5rem 0;border-top:1px solid #e2e8f0;margin-top:2rem;color:#94a3b8;font-size:11px;">
-    AgentHub · AI 多智能体营销平台 ｜ 本报告由 AI 生成，仅供参考
+    招财猫 ｜ 本报告由 AI 生成，仅供参考
   </footer>
 </body>
 </html>`

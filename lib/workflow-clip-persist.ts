@@ -3,6 +3,12 @@
  */
 import type { AssetRef, ImageVideoDraft, MashupDraft } from "@/lib/workflow-draft-store"
 import {
+  DEFAULT_COVER_ASPECT_RATIO,
+  DEFAULT_COVER_RESOLUTION,
+  type CoverAspectRatio,
+  type CoverResolution,
+} from "@/lib/video/cover-constants"
+import {
   blobToBase64,
   blobToDataUrl,
   clearWorkflowAssets,
@@ -136,6 +142,43 @@ export async function hydrateClipAudio(ref: AssetRef | null): Promise<ClipAudioI
   return { file, name: stored.name, base64 }
 }
 
+export async function hydrateClipCoverImage(ref: AssetRef | null): Promise<ClipImageItem | null> {
+  if (!ref) return null
+  const stored = await getWorkflowAsset(ref.id)
+  if (!stored) return null
+  const base64 = await blobToBase64(stored.blob)
+  const previewUrl = await blobToDataUrl(stored.blob)
+  const file = new File([stored.blob], stored.name, { type: stored.mime })
+  return { id: ref.id, file, previewUrl, base64 }
+}
+
+export async function persistMashupCoverImage(
+  file: File,
+  base64: string,
+  previewUrl: string,
+): Promise<{ id: string; ref: AssetRef } | null> {
+  const id = newAssetId("mv_cover")
+  const result = await putWorkflowAsset({
+    id,
+    workflow: "mashup",
+    name: file.name,
+    mime: file.type || "image/png",
+    kind: "image",
+    blob: file,
+  })
+  if (!result.ok) return null
+  return {
+    id,
+    ref: {
+      id,
+      name: file.name,
+      mime: file.type,
+      size: file.size,
+      kind: "image",
+    },
+  }
+}
+
 export async function clearClipWorkflow(workflow: "image-video" | "mashup"): Promise<void> {
   await clearWorkflowAssets(workflow)
 }
@@ -154,8 +197,12 @@ export function imageVideoDraftFromState(state: {
   audioSample: ClipAudioItem | null
   imageRefs: AssetRef[]
   audioRef: AssetRef | null
+  coverAspectRatio?: CoverAspectRatio
+  coverResolution?: CoverResolution
 }): ImageVideoDraft {
   return {
+    coverAspectRatio: state.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: state.coverResolution ?? DEFAULT_COVER_RESOLUTION,
     currentStep: state.currentStep,
     script: state.script,
     enableBgm: state.enableBgm,
@@ -182,8 +229,13 @@ export function mashupDraftFromState(state: {
   submittedAt: number
   videoRefs: AssetRef[]
   audioRef: AssetRef | null
+  coverImageRef?: AssetRef | null
+  coverAspectRatio?: CoverAspectRatio
+  coverResolution?: CoverResolution
 }): MashupDraft {
   return {
+    coverAspectRatio: state.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: state.coverResolution ?? DEFAULT_COVER_RESOLUTION,
     currentStep: state.currentStep,
     script: state.script,
     enableBgm: state.enableBgm,
@@ -195,6 +247,7 @@ export function mashupDraftFromState(state: {
     submittedAt: state.submittedAt,
     videoRefs: state.videoRefs,
     audioRef: state.audioRef,
+    coverImageRef: state.coverImageRef ?? null,
   }
 }
 

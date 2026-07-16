@@ -14,9 +14,11 @@ import { DEFAULT_MATRIX_PLATFORM_IDS, getMatrixPlatformLabel } from "@/lib/geo/m
 import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { generateMatrixProject, updateMatrixProject } from "@/lib/geo/matrix-api"
 import { getEnterpriseSkillEntry } from "@/lib/geo/skills-registry"
+import { useLoginRequired } from "@/components/auth/login-required-provider"
 
 export function GeoContentMatrixView() {
-  const [loggedIn, setLoggedIn] = React.useState<boolean | null>(null)
+  const { me, loggedIn, authUnavailable, refreshAuth, promptLogin } = useLoginRequired()
+  const authLoading = me === undefined
   const [project, setProject] = React.useState<MatrixProject | null>(null)
   const [platforms, setPlatforms] = React.useState<string[]>(DEFAULT_MATRIX_PLATFORM_IDS)
   const [activePlatform, setActivePlatform] = React.useState<string | null>(null)
@@ -30,12 +32,6 @@ export function GeoContentMatrixView() {
   const [selectedCell, setSelectedCell] = React.useState<MatrixCell | null>(null)
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   const [cellSaving, setCellSaving] = React.useState(false)
-
-  React.useEffect(() => {
-    void fetch("/api/auth/me", { credentials: "include", cache: "no-store" })
-      .then((r) => setLoggedIn(r.ok))
-      .catch(() => setLoggedIn(false))
-  }, [])
 
   const syncFromProject = React.useCallback((p: MatrixProject) => {
     setProject(p)
@@ -148,15 +144,41 @@ export function GeoContentMatrixView() {
         description="多项目两周 Sprint：选平台、配 AI 引擎与企业知识库，一键生成跨平台关联内容矩阵。"
       />
 
-      {loggedIn === false && (
+      {authUnavailable && !authLoading && (
+        <div className="mb-6 flex items-center gap-3 rounded-xl border border-red-200/80 bg-red-50/60 p-4 dark:border-red-500/30 dark:bg-red-500/10">
+          <LogIn className="h-5 w-5 shrink-0 text-red-600" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium text-red-900 dark:text-red-200">无法连接云端服务</p>
+            <p className="text-[12px] text-red-800/80 dark:text-red-300/80">
+              暂时无法确认登录状态，请检查网络或 CLOUD_API_URL 配置后重试。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshAuth()}
+            className="shrink-0 rounded-lg bg-red-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-red-700"
+          >
+            重试
+          </button>
+        </div>
+      )}
+
+      {!authLoading && !loggedIn && !authUnavailable && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border border-amber-200/80 bg-amber-50/60 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
           <LogIn className="h-5 w-5 shrink-0 text-amber-600" />
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="text-[13px] font-medium text-amber-900 dark:text-amber-200">请先登录</p>
             <p className="text-[12px] text-amber-800/80 dark:text-amber-300/80">
               内容矩阵项目保存在服务端，需登录后创建与管理多项目。
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => promptLogin("登录后可创建与管理内容矩阵项目")}
+            className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-amber-700"
+          >
+            去登录
+          </button>
         </div>
       )}
 

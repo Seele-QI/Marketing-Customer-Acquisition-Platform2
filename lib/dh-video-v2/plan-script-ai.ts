@@ -1,5 +1,5 @@
 /**
- * 数字人视频创作（新）— 大模型分镜规划（GPT / Claude / DeepSeek，禁止本地模板）
+ * 数字人视频创作（新）— 大模型分镜规划（GPT-5.5 优先，DeepSeek 兜底）
  */
 
 import {
@@ -32,9 +32,9 @@ const PLAN_LLM_TEMPERATURE = 0.85
 
 export type DhV2PlanLlmProvider = "sonetto_gpt" | "sonetto_claude" | "deepseek"
 
-const PROVIDER_TRY_ORDER: DhV2PlanLlmProvider[] = [
+/** 分镜脚本：GPT-5.5 优先，DeepSeek 兜底；不使用 Claude */
+export const DH_V2_PLAN_LLM_PROVIDER_ORDER: DhV2PlanLlmProvider[] = [
   "sonetto_gpt",
-  "sonetto_claude",
   "deepseek",
 ]
 
@@ -89,8 +89,7 @@ export type DhV2PlanScriptAiResult =
 function sonettoModelIdForProvider(provider: "sonetto_gpt" | "sonetto_claude"): string {
   if (provider === "sonetto_gpt") {
     return (
-      readServerEnv("NEWAPI_GPT_MODEL") ||
-      readServerEnv("SONETTO_GPT_MODEL") ||
+      readServerEnv("DH_V2_PLAN_GPT_MODEL") ||
       DEFAULT_SONETTO_GPT_MODEL
     )
   }
@@ -107,7 +106,7 @@ function isProviderConfigured(provider: DhV2PlanLlmProvider): boolean {
 }
 
 export function getAvailablePlanLlmProviders(): DhV2PlanLlmProvider[] {
-  return PROVIDER_TRY_ORDER.filter(isProviderConfigured)
+  return DH_V2_PLAN_LLM_PROVIDER_ORDER.filter(isProviderConfigured)
 }
 
 export function isLlmPlanAvailable(): boolean {

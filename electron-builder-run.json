@@ -1,0 +1,6 @@
+{
+  "extends": "./electron-builder.yml",
+  "directories": {
+    "output": "release-run"
+  }
+}

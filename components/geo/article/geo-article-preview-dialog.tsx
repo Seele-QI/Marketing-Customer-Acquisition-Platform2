@@ -1,15 +1,11 @@
 "use client"
 
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { cn } from "@/lib/utils"
 
 type Props = {
   open: boolean
@@ -26,15 +22,9 @@ export function GeoArticlePreviewDialog({ open, onOpenChange, title, markdown }:
           <DialogTitle className="text-[14px] font-semibold">{title}</DialogTitle>
         </DialogHeader>
         <div className="max-h-[calc(85vh-4rem)] overflow-y-auto px-5 py-4">
-          <div
-            className={cn(
-              "prose prose-sm max-w-none dark:prose-invert",
-              "prose-p:my-2 prose-headings:my-3 prose-li:my-0.5",
-              "prose-code:text-[13px] text-slate-700 dark:text-slate-300",
-            )}
-          >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
-          </div>
+          <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
+            {markdown}
+          </pre>
         </div>
       </DialogContent>
     </Dialog>

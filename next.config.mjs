@@ -9,7 +9,22 @@ const nextConfig = {
   serverExternalPackages: [
     "@remotion/bundler",
     "@remotion/renderer",
+    "mammoth",
+    "pdf-parse",
   ],
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/@swc/helpers/**/*",
+      "./node_modules/styled-jsx/**/*",
+      "./node_modules/@next/env/**/*",
+    ],
+    "/api/ai/ip-positioning": [
+      "./node_modules/pdf-parse/**/*",
+      "./node_modules/pdfjs-dist/**/*",
+      "./node_modules/@napi-rs/**/*",
+      "./node_modules/mammoth/**/*",
+    ],
+  },
   // 独立输出模式：构建产物只包含运行所需的最小依赖，
   // 配合 Dockerfile 的多阶段构建，把镜像从 ~800MB 缩到 ~300MB。
   // 详见 docs/superpowers/specs/*standalone-deployment.md
@@ -32,6 +47,27 @@ const nextConfig = {
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
         ],
+      },
+    ]
+  },
+  /**
+   * 桌面 Electron / Docker：/static/* 由 FastAPI 提供，浏览器经 Next 同源代理到 uvicorn。
+   * FASTAPI_URL 在 Electron 子进程启动时注入（如 http://127.0.0.1:8010）。
+   */
+  async rewrites() {
+    const apiBase = (
+      process.env.FASTAPI_URL ||
+      process.env.NEXT_PUBLIC_FASTAPI_URL ||
+      "http://127.0.0.1:8010"
+    ).replace(/\/$/, "")
+    return [
+      {
+        source: "/static/video-postprocess/:path*",
+        destination: `${apiBase}/static/video-postprocess/:path*`,
+      },
+      {
+        source: "/static/video-generated/:path*",
+        destination: `${apiBase}/static/video-generated/:path*`,
       },
     ]
   },

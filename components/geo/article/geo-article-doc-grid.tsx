@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { GeoArticlePreviewDialog } from "@/components/geo/article/geo-article-preview-dialog"
 import { downloadArticleMarkdown, articleWordCount } from "@/lib/geo/article-export"
+import { compareByArticleDate } from "@/lib/geo/article-doc-sort"
 import { getMatrixPlatformLabel } from "@/lib/geo/matrix-platforms"
 import type { GeneratedArticle } from "@/lib/geo/article-types"
 
@@ -33,6 +34,21 @@ type Props = {
   onRetry?: (article: GeneratedArticle) => void
 }
 
+function docGridItemSortKey(item: DocGridItem): {
+  date?: string
+  platformId?: string
+  createdAt?: number
+} {
+  if (item.kind === "pending") {
+    return { date: item.date, platformId: item.platformId }
+  }
+  return {
+    date: item.article.date,
+    platformId: item.article.platformId,
+    createdAt: item.article.createdAt,
+  }
+}
+
 export function GeoArticleDocGrid({
   items,
   activeArticleId,
@@ -42,7 +58,15 @@ export function GeoArticleDocGrid({
 }: Props) {
   const [previewArticle, setPreviewArticle] = React.useState<GeneratedArticle | null>(null)
 
-  if (items.length === 0) {
+  const sortedItems = React.useMemo(
+    () =>
+      [...items].sort((a, b) =>
+        compareByArticleDate(docGridItemSortKey(a), docGridItemSortKey(b)),
+      ),
+    [items],
+  )
+
+  if (sortedItems.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-slate-200/80 bg-slate-50/50 px-6 py-12 text-center dark:border-white/10 dark:bg-white/[0.02]">
         <FileText className="mx-auto mb-2 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -54,7 +78,7 @@ export function GeoArticleDocGrid({
   return (
     <>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
-        {items.map((item) => {
+        {sortedItems.map((item) => {
           if (item.kind === "pending") {
             return (
               <div key={`pending-${item.jobId}`} className={CARD_SHELL}>
@@ -141,7 +165,7 @@ export function GeoArticleDocGrid({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label="Markdown 预览"
+                        aria-label="预览正文"
                         className="h-6 w-6 p-0 text-slate-400 hover:text-cyan-600"
                         onClick={(e) => {
                           e.stopPropagation()
@@ -154,7 +178,7 @@ export function GeoArticleDocGrid({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        aria-label="导出 Markdown 文档"
+                        aria-label="导出文档"
                         className="h-6 w-6 p-0 text-slate-400 hover:text-cyan-600"
                         onClick={(e) => {
                           e.stopPropagation()

@@ -137,7 +137,7 @@ export const EMPTY_INTAKE: IpPositioningIntake = {
   extraInfo: "",
 }
 
-const REQUIRED_INTAKE_KEYS: Array<keyof IpPositioningIntake> = [
+const REQUIRED_INTAKE_KEYS = [
   "industry",
   "keyExperiences",
   "resources",
@@ -150,7 +150,30 @@ const REQUIRED_INTAKE_KEYS: Array<keyof IpPositioningIntake> = [
   "contentFormats",
   "outputFrequency",
   "rememberedVibe",
-]
+] as const satisfies readonly (keyof IpPositioningIntake)[]
+
+type RequiredIntakeKey = (typeof REQUIRED_INTAKE_KEYS)[number]
+
+export const INTAKE_FIELD_LABELS: Record<RequiredIntakeKey, string> = {
+  industry: "当前职业 / 行业",
+  keyExperiences: "关键经历与代表成果",
+  resources: "现有资源 / 人脉 / 客户基础",
+  contrarianTrigger: "你最看不惯行业里的什么「常识」",
+  frequentQuestions: "别人总会来问你什么问题",
+  uniqueExperience: "你经历过什么别人没经历过",
+  targetAudience: "你希望吸引哪类人",
+  shortTermMonetization: "你短期最想变现什么",
+  longTermVision: "长期想成为什么",
+  contentFormats: "你更适合哪种内容形式",
+  outputFrequency: "你能稳定输出的频率",
+  rememberedVibe: "你想被记住的气质",
+}
+
+export function getMissingIntakeFieldLabels(intake: IpPositioningIntake): string[] {
+  return REQUIRED_INTAKE_KEYS.filter((key) => !intake[key]?.trim()).map(
+    (key) => INTAKE_FIELD_LABELS[key],
+  )
+}
 
 function clampText(value: unknown, max: number): string {
   const text = typeof value === "string" ? value.trim() : ""
@@ -202,12 +225,9 @@ export function normalizeIntake(body: IpPositioningRequestBody): IpPositioningIn
 }
 
 export function validateIntake(intake: IpPositioningIntake): string | null {
-  for (const key of REQUIRED_INTAKE_KEYS) {
-    if (!intake[key]?.trim()) {
-      return `缺少必填信息：${key}`
-    }
-  }
-  return null
+  const missing = getMissingIntakeFieldLabels(intake)
+  if (missing.length === 0) return null
+  return `缺少必填：${missing.join("、")}`
 }
 
 export function resolveIpPositioningModel(requested?: string): {

@@ -1,9 +1,15 @@
 "use client"
 
 import * as React from "react"
-import { Upload, FileText, X, AlertCircle } from "lucide-react"
+import { Upload, FileText, X, AlertCircle, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
+import {
+  ACCEPTED_DOCUMENT_EXTENSIONS,
+  isSupportedDocumentName,
+  MAX_DOCUMENT_BYTES,
+  MAX_DOCUMENTS,
+} from "@/lib/ip-positioning-upload"
 
 export type GeoUploadedDoc = {
   name: string
@@ -13,7 +19,6 @@ export type GeoUploadedDoc = {
 }
 
 const TEXT_EXTENSIONS = [".txt", ".md", ".markdown"]
-const UNSUPPORTED_HINT = "PDF / Word 请先转为 .txt 或 .md 后上传"
 
 type Props = {
   docs: GeoUploadedDoc[]
@@ -21,14 +26,13 @@ type Props = {
   className?: string
 }
 
-function isTextFile(name: string): boolean {
-  const lower = name.toLowerCase()
-  return TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))
+function getExtension(name: string): string {
+  const idx = name.lastIndexOf(".")
+  return idx < 0 ? "" : name.slice(idx).toLowerCase()
 }
 
-function isUnsupportedBinary(name: string): boolean {
-  const lower = name.toLowerCase()
-  return [".pdf", ".doc", ".docx"].some((ext) => lower.endsWith(ext))
+function isTextFile(name: string): boolean {
+  return TEXT_EXTENSIONS.includes(getExtension(name))
 }
 
 function makePreview(text: string, maxLen = 120): string {
@@ -45,30 +49,81 @@ async function readTextFile(file: File): Promise<string> {
   })
 }
 
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ""
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+async function extractViaApi(file: File): Promise<string> {
+  const base64 = await fileToBase64(file)
+  const res = await fetch("/api/geo/documents/extract", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      size: file.size,
+      base64,
+    }),
+  })
+  const data = (await res.json()) as { text?: string; error?: string }
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("请先登录后再上传文档")
+    throw new Error(data.error || "文档解析失败")
+  }
+  if (!data.text?.trim()) throw new Error(data.error || "未能提取有效正文")
+  return data.text
+}
+
 export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
   const inputRef = React.useRef<HTMLInputElement>(null)
+  const [busyName, setBusyName] = React.useState<string | null>(null)
 
   const processFile = async (file: File) => {
-    if (isUnsupportedBinary(file.name)) {
+    if (docs.length >= MAX_DOCUMENTS) {
+      toast({
+        title: "已达上限",
+        description: `最多上传 ${MAX_DOCUMENTS} 份资料`,
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (!isSupportedDocumentName(file.name)) {
+      const ext = getExtension(file.name)
       toast({
         title: "暂不支持该格式",
-        description: UNSUPPORTED_HINT,
+        description:
+          ext === ".doc"
+            ? "旧版 .doc 请另存为 .docx 后上传"
+            : `请上传 Word (.docx) / PDF / TXT / MD`,
         variant: "destructive",
       })
       return
     }
 
-    if (!isTextFile(file.name)) {
+    if (file.size > MAX_DOCUMENT_BYTES) {
       toast({
-        title: "仅支持文本格式",
-        description: "请上传 .txt 或 .md 文件",
+        title: "文件过大",
+        description: `${file.name} 超过 20MB`,
         variant: "destructive",
       })
       return
     }
 
+    setBusyName(file.name)
     try {
-      const text = await readTextFile(file)
+      const text = isTextFile(file.name)
+        ? await readTextFile(file)
+        : await extractViaApi(file)
+
       if (!text.trim()) {
         toast({ title: "文件为空", description: file.name, variant: "destructive" })
         return
@@ -81,8 +136,14 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
       }
       onChange([...docs, entry])
       toast({ title: "文档已添加", description: file.name })
-    } catch {
-      toast({ title: "读取失败", description: file.name, variant: "destructive" })
+    } catch (err) {
+      toast({
+        title: "解析失败",
+        description: err instanceof Error ? err.message : file.name,
+        variant: "destructive",
+      })
+    } finally {
+      setBusyName(null)
     }
   }
 
@@ -105,15 +166,22 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
       <div className="mb-3 flex items-center justify-between">
         <div>
           <h3 className="text-[14px] font-semibold text-slate-800 dark:text-slate-200">资料库</h3>
-          <p className="text-[11px] text-slate-500">支持 .txt / .md 即时解析</p>
+          <p className="text-[11px] text-slate-500">
+            支持 Word (.docx) / PDF / TXT / MD · 单文件 ≤ 20MB
+          </p>
         </div>
-        <span className="text-[11px] text-slate-400">{docs.length} 份</span>
+        <span className="text-[11px] text-slate-400">
+          {docs.length}/{MAX_DOCUMENTS} 份
+        </span>
       </div>
 
       <div
         role="button"
         tabIndex={0}
-        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200/80 bg-slate-50/40 p-6 transition-colors hover:border-cyan-400/60 hover:bg-cyan-50/20 dark:border-white/10 dark:bg-white/[0.02] dark:hover:border-cyan-500/30"
+        className={cn(
+          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200/80 bg-slate-50/40 p-6 transition-colors hover:border-cyan-400/60 hover:bg-cyan-50/20 dark:border-white/10 dark:bg-white/[0.02] dark:hover:border-cyan-500/30",
+          busyName && "pointer-events-none opacity-70",
+        )}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
@@ -125,18 +193,22 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
         }}
       >
         <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-50 dark:bg-cyan-500/10">
-          <Upload className="h-4 w-4 text-cyan-500" />
+          {busyName ? (
+            <Loader2 className="h-4 w-4 animate-spin text-cyan-500" />
+          ) : (
+            <Upload className="h-4 w-4 text-cyan-500" />
+          )}
         </span>
         <p className="text-[12px] font-medium text-slate-700 dark:text-slate-300">
-          拖拽或点击上传企业资料
+          {busyName ? `正在解析 ${busyName}…` : "拖拽或点击上传企业资料"}
         </p>
-        <p className="text-[10px] text-slate-400">{UNSUPPORTED_HINT}</p>
+        <p className="text-[10px] text-slate-400">.docx / .pdf / .txt / .md</p>
       </div>
 
       <input
         ref={inputRef}
         type="file"
-        accept=".txt,.md,.markdown"
+        accept={ACCEPTED_DOCUMENT_EXTENSIONS}
         multiple
         className="hidden"
         onChange={(e) => {

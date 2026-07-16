@@ -4,6 +4,15 @@
 import { queryExtractStatus } from "@/lib/video/api"
 import type { PollOutcome, RuntimeTask, TaskAdapter } from "@/lib/task-runtime/types"
 
+/** 后端 progress 长时间不变时，每 15s 微增 1%，上限 95 */
+function withFakeProgress(task: RuntimeTask, backendProgress: number): number {
+  const startedAt =
+    typeof task.meta?.startedAt === "number" ? task.meta.startedAt : task.updatedAt || Date.now()
+  const elapsed = Date.now() - startedAt
+  const bump = Math.floor(elapsed / 15_000)
+  return Math.min(95, Math.max(backendProgress, backendProgress + bump))
+}
+
 export const extractAdapter: TaskAdapter = {
   kind: "copywriting-extract",
   pollIntervalMs: 2_000,
@@ -11,7 +20,8 @@ export const extractAdapter: TaskAdapter = {
   async poll(task: RuntimeTask): Promise<PollOutcome> {
     try {
       const data = await queryExtractStatus(task.taskId)
-      const progress = typeof data.progress === "number" ? data.progress : task.progress
+      const rawProgress = typeof data.progress === "number" ? data.progress : task.progress
+      const progress = withFakeProgress(task, rawProgress)
       const stageLabel = data.step || task.stageLabel
 
       if (data.status === "completed") {

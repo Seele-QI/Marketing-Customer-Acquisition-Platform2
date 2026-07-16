@@ -4,7 +4,7 @@
  * 区分三种根路径：
  * - `appRoot`     : Electron app 根（开发期 = 项目根，prod = resources/app/）
  * - `resourcesRoot`: extraResources 根（prod = resources/）
- * - `userData`    : 用户数据（prod = %APPDATA%/AI营销获客中台/）
+ * - `userData`    : 用户数据（prod = %APPDATA%/招财猫/）
  */
 
 import { app } from "electron";
@@ -113,17 +113,39 @@ export function portsFilePath(): string {
 }
 
 /**
- * resources 内 ffmpeg 二进制目录
+ * Darwin 双架构目录名（universal 包内嵌两套运行时）
  */
-export function ffmpegBinDir(): string {
-  return path.join(resourcesRoot(), "ffmpeg", "bin");
+export function darwinRuntimeFolder(): 'darwin-arm64' | 'darwin-x64' {
+  return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
 }
 
 /**
- * resources 内 embeddable Python 根
+ * 项目 Python 业务模块目录名（Windows embed 用 lib/，Darwin standalone 用 applib/ 避免与 stdlib 冲突）
+ */
+export function pythonAppLibDir(): string {
+  return process.platform === 'darwin' ? 'applib' : 'lib';
+}
+
+/**
+ * resources 内 ffmpeg 二进制目录
+ */
+export function ffmpegBinDir(): string {
+  if (process.platform === 'darwin') {
+    const dual = path.join(resourcesRoot(), 'runtime', darwinRuntimeFolder(), 'ffmpeg', 'bin');
+    if (fs.existsSync(dual)) return dual;
+  }
+  return path.join(resourcesRoot(), 'ffmpeg', 'bin');
+}
+
+/**
+ * resources 内 Python 根
  */
 export function pythonRoot(): string {
-  return path.join(resourcesRoot(), "python");
+  if (process.platform === 'darwin') {
+    const dual = path.join(resourcesRoot(), 'runtime', darwinRuntimeFolder(), 'python');
+    if (fs.existsSync(dual)) return dual;
+  }
+  return path.join(resourcesRoot(), 'python');
 }
 
 /**

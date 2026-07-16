@@ -34,14 +34,14 @@ function getExcerpt(text: string, max = 50): string {
 
 const SOURCE_LABELS: Record<HistoryVideoSource, string> = {
   "digital-human": "数字人口播",
-  "dh-video-v2": "数字人视频创作（新）",
+  "dh-video-v2": "数字人口播视频（新）",
   "image-video": "图文视频",
   mashup: "视频混剪",
   "promo-video": "宣传视频",
 }
 
 function getRecordSource(record: HistoryRecord): HistoryVideoSource {
-  return record.source ?? "digital-human"
+  return record.source ?? "dh-video-v2"
 }
 
 function getCoverSrc(record: HistoryRecord): string | null {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 
 import { readAdminSessionCookie, verifyAdminSession } from "@/lib/admin-session"
 import { getAdminAccessKey } from "@/lib/server-env"
-import { proxyToFastapi } from "@/lib/fastapi-base"
+import { proxyToCloudApi } from "@/lib/fastapi-base"
 
 export const runtime = "nodejs"
 
@@ -27,5 +27,5 @@ export async function POST(req: Request) {
     headers: { ...Object.fromEntries(req.headers.entries()), "X-Admin-Key": expected },
     body: await req.text(),
   })
-  return proxyToFastapi(upstreamReq, "/api/credit/redeem-codes/generate")
+  return proxyToCloudApi(upstreamReq, "/api/credit/redeem-codes/generate")
 }

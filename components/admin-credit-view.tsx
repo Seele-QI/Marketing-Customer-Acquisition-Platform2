@@ -1,20 +1,11 @@
 "use client"
 
 import * as React from "react"
-import {
-  ArrowLeft,
-  CheckCircle2,
-  Copy,
-  Loader2,
-  LogOut,
-  ShieldCheck,
-  TicketPercent,
-  Users,
-  WandSparkles,
-} from "lucide-react"
+import { ArrowLeft, Copy, Loader2, LogOut, TicketPercent, Users, WandSparkles } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
+import { AdminLoginCard } from "@/components/admin/admin-login-card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -53,10 +44,7 @@ async function copyText(text: string, successMessage: string) {
 
 export function AdminCreditView() {
   const router = useRouter()
-  const [loginName, setLoginName] = React.useState("")
-  const [password, setPassword] = React.useState("")
   const [verified, setVerified] = React.useState(false)
-  const [verifying, setVerifying] = React.useState(false)
   const [amount, setAmount] = React.useState("5000")
   const [count, setCount] = React.useState("10")
   const [batches, setBatches] = React.useState<Batch[]>([])
@@ -133,31 +121,11 @@ export function AdminCreditView() {
     }
   }, [checkAdminSession, loadBatches])
 
-  const verify = async () => {
-    if (!loginName.trim() || !password) {
-      toast.error("请输入管理员账号和密码")
-      return
-    }
-    setVerifying(true)
-    try {
-      const res = await fetch("/api/credit/admin/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ login_name: loginName.trim(), password }),
-      })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) throw new Error(data?.detail?.message ?? "验证失败")
-      setVerified(true)
-      setPassword("")
-      toast.success("管理员登录成功")
-      await loadBatches()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "验证失败")
-    } finally {
-      setVerifying(false)
-    }
-  }
+  const handleAdminLoginSuccess = React.useCallback(async () => {
+    setVerified(true)
+    const result = await loadBatches()
+    if (result?.error) toast.error(result.error)
+  }, [loadBatches])
 
   const generate = async () => {
     setGenerating(true)
@@ -247,7 +215,6 @@ export function AdminCreditView() {
       // 忽略错误：清掉本地状态即可
     }
     setVerified(false)
-    setPassword("")
     setBatches([])
     setGeneratedItems([])
   }
@@ -322,51 +289,7 @@ export function AdminCreditView() {
           </CardContent>
         </Card>
 
-        {!verified ? (
-          <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-blue-600" />
-                管理员账号密码验证
-              </CardTitle>
-              <CardDescription>请输入管理员账号与密码，验证通过后才可生成兑换码。</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="admin-login">管理员账号</Label>
-                <Input
-                  id="admin-login"
-                  value={loginName}
-                  onChange={(e) => setLoginName(e.target.value)}
-                  autoComplete="off"
-                  placeholder="请输入管理员账号"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="admin-password">管理员密码</Label>
-                <Input
-                  id="admin-password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="new-password"
-                  placeholder="请输入管理员密码"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void verify()
-                  }}
-                />
-              </div>
-              <Button onClick={verify} disabled={verifying}>
-                {verifying ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4" />
-                )}{" "}
-                登录并进入
-              </Button>
-            </CardContent>
-          </Card>
-        ) : null}
+        {!verified ? <AdminLoginCard onSuccess={handleAdminLoginSuccess} /> : null}
 
         {verified ? (
           <Tabs

@@ -18,8 +18,29 @@ export async function resolve(specifier, context, nextResolve) {
     return nextResolve(resolved, context)
   }
 
+  if (specifier.startsWith(".") && !path.extname(specifier) && context.parentURL?.startsWith("file:")) {
+    const parentPath = fileURLToPath(context.parentURL)
+    const baseDir = path.dirname(parentPath)
+    for (const ext of [".ts", ".tsx", ".js"]) {
+      const candidate = pathToFileURL(path.join(baseDir, specifier + ext)).href
+      try {
+        return await nextResolve(candidate, context)
+      } catch {
+        /* try next extension */
+      }
+    }
+  }
+
   if (specifier === "next/server") {
     return nextResolve("next/server.js", context)
+  }
+
+  if (specifier === "next/headers") {
+    return {
+      shortCircuit: true,
+      url: pathToFileURL(path.join(projectRoot, "tests/mocks/next-headers.mjs")).href,
+      format: "module",
+    }
   }
 
   return nextResolve(specifier, context)

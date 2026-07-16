@@ -1,6 +1,3 @@
-import mammoth from "mammoth"
-import { PDFParse } from "pdf-parse"
-
 import type { ExtractedDocument, UploadedDocumentPayload } from "@/lib/ip-positioning-schema"
 import {
   MAX_DOCUMENT_BYTES,
@@ -35,6 +32,12 @@ function trimExtractedText(text: string, maxChars: number): { text: string; trun
 }
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
+  let PDFParse: typeof import("pdf-parse").PDFParse
+  try {
+    ;({ PDFParse } = await import("pdf-parse"))
+  } catch {
+    throw new Error("PDF 解析模块未安装")
+  }
   const parser = new PDFParse({ data: buffer })
   try {
     const result = await parser.getText()
@@ -45,6 +48,12 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
 }
 
 async function extractDocxText(buffer: Buffer): Promise<string> {
+  let mammoth: typeof import("mammoth")
+  try {
+    mammoth = (await import("mammoth")).default
+  } catch {
+    throw new Error("DOCX 解析模块未安装")
+  }
   const result = await mammoth.extractRawText({ buffer })
   return result.value ?? ""
 }

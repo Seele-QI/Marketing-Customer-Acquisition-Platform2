@@ -27,6 +27,14 @@ import {
 import { submitImageToVideo, cancelImageToVideo } from "@/lib/video/api"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
 import { VideoClipOptions } from "@/components/video-clip-options"
+import { VideoCoverSettings } from "@/components/video-cover-settings"
+import {
+  DEFAULT_COVER_ASPECT_RATIO,
+  DEFAULT_COVER_RESOLUTION,
+  type CoverAspectRatio,
+  type CoverResolution,
+} from "@/lib/video/cover-constants"
+import { startCoverGeneration } from "@/lib/video/cover-runtime"
 import { formatClipNetworkError } from "@/lib/image-video-task-runtime"
 import { fileToBase64, resolveMediaUrl } from "@/lib/video/utils"
 import type { ImageToVideoResponse } from "@/lib/video/types"
@@ -116,6 +124,10 @@ function StepMaterialPrep({
   onAudioChange,
   onEnableBgmChange,
   onEnableSubtitlesChange,
+  coverAspectRatio,
+  coverResolution,
+  onCoverAspectRatioChange,
+  onCoverResolutionChange,
   onSubmit,
   isProcessing,
 }: {
@@ -124,6 +136,10 @@ function StepMaterialPrep({
   audioSample: AudioItem | null
   enableBgm: boolean
   enableSubtitles: boolean
+  coverAspectRatio: CoverAspectRatio
+  coverResolution: CoverResolution
+  onCoverAspectRatioChange: (v: CoverAspectRatio) => void
+  onCoverResolutionChange: (v: CoverResolution) => void
   onImagesChange: (imgs: ImageItem[]) => void
   onScriptChange: (s: string) => void
   onAudioChange: (a: AudioItem | null) => void
@@ -334,6 +350,14 @@ function StepMaterialPrep({
         onEnableSubtitlesChange={onEnableSubtitlesChange}
       />
 
+      <VideoCoverSettings
+        accent="emerald"
+        aspectRatio={coverAspectRatio}
+        resolution={coverResolution}
+        onAspectRatioChange={onCoverAspectRatioChange}
+        onResolutionChange={onCoverResolutionChange}
+      />
+
       <div className="flex flex-col items-center gap-2 pt-2">
         <Button
           size="lg"
@@ -470,6 +494,8 @@ export function ImageVideoWorkflow() {
   const [hydrating, setHydrating] = React.useState(true)
   const [imageRefs, setImageRefs] = React.useState<AssetRef[]>([])
   const [audioRef, setAudioRef] = React.useState<AssetRef | null>(null)
+  const [coverAspectRatio, setCoverAspectRatio] = React.useState<CoverAspectRatio>(DEFAULT_COVER_ASPECT_RATIO)
+  const [coverResolution, setCoverResolution] = React.useState<CoverResolution>(DEFAULT_COVER_RESOLUTION)
   const [state, setState] = React.useState<WorkflowState>({
     currentStep: 1,
     images: [],
@@ -497,6 +523,8 @@ export function ImageVideoWorkflow() {
       if (cancelled) return
       setImageRefs(draft.imageRefs)
       setAudioRef(draft.audioRef)
+      setCoverAspectRatio(draft.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO)
+      setCoverResolution(draft.coverResolution ?? DEFAULT_COVER_RESOLUTION)
       setState({
         currentStep: draft.currentStep,
         images,
@@ -526,9 +554,11 @@ export function ImageVideoWorkflow() {
         ...state,
         imageRefs,
         audioRef,
+        coverAspectRatio,
+        coverResolution,
       }),
     )
-  }, [state, imageRefs, audioRef, hydrating])
+  }, [state, imageRefs, audioRef, coverAspectRatio, coverResolution, hydrating])
 
   const handleImagesChange = React.useCallback(async (imgs: ImageItem[]) => {
     setState((s) => ({ ...s, images: imgs }))
@@ -686,6 +716,16 @@ export function ImageVideoWorkflow() {
           previewUrl: images[0]?.previewUrl || "",
         },
       })
+      startCoverGeneration({
+        kind: "image-video",
+        script: script.trim(),
+        referenceImage: images[0]
+          ? { base64: images[0].base64, previewUrl: images[0].previewUrl }
+          : null,
+        aspectRatio: coverAspectRatio,
+        resolution: coverResolution,
+        linkedTaskId: taskId,
+      })
     } catch (err: unknown) {
       const msg = formatClipNetworkError(err)
       setState((s) => ({
@@ -765,6 +805,10 @@ export function ImageVideoWorkflow() {
           onAudioChange={(a) => { void handleAudioChange(a) }}
           onEnableBgmChange={(v) => setState((s) => ({ ...s, enableBgm: v }))}
           onEnableSubtitlesChange={(v) => setState((s) => ({ ...s, enableSubtitles: v }))}
+          coverAspectRatio={coverAspectRatio}
+          coverResolution={coverResolution}
+          onCoverAspectRatioChange={setCoverAspectRatio}
+          onCoverResolutionChange={setCoverResolution}
           onSubmit={handleSubmit}
           isProcessing={state.isProcessing}
         />

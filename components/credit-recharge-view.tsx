@@ -11,16 +11,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import type { CreditAccount, LedgerItem } from "@/lib/credit-types"
+import { formatCreditPoints, notifyCreditBalanceChanged } from "@/lib/credit/balance-sync"
 
 type GeneratedCode = {
   code: string
   amount: number
 }
 
-
-function formatPoints(value: number) {
-  return new Intl.NumberFormat("zh-CN").format(value)
-}
 
 function formatTime(ms: number) {
   if (!ms) return "--"
@@ -54,7 +51,9 @@ export function CreditRechargeView() {
         return
       }
       if (!res.ok) throw new Error("余额加载失败")
-      setBalance((await res.json()) as CreditAccount)
+      const data = (await res.json()) as CreditAccount
+      setBalance(data)
+      notifyCreditBalanceChanged(data.balance)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "余额加载失败")
     } finally {
@@ -102,7 +101,7 @@ export function CreditRechargeView() {
         throw new Error(typeof message === "string" ? message : "兑换失败")
       }
       const amount = data?.result?.amount ?? 0
-      toast.success(`兑换成功，已充值 ${formatPoints(amount)} 积分`)
+      toast.success(`兑换成功，已充值 ${formatCreditPoints(amount)} 积分`)
       setCode("")
       await refreshBalance()
       await refreshLedger()
@@ -122,7 +121,7 @@ export function CreditRechargeView() {
               <Badge className="bg-white/20 text-white hover:bg-white/20">积分系统</Badge>
               <h1 className="text-3xl font-semibold tracking-tight">积分消费与兑换码充值中心</h1>
               <p className="max-w-2xl text-sm text-white/80">
-                视频创作按类型扣费：数字人口播 音色克隆 50 积分/次 + 视频段 250 积分/段（每 20 秒一段）、图文视频 100 积分、视频混剪 150 积分；大模型对话每次 3 积分。可在此输入兑换码充值。
+                视频创作按类型扣费：数字人口播视频（新）按段计费、图文视频 100 积分、视频混剪 150 积分；大模型对话每次 3 积分。可在此输入兑换码充值。
               </p>
             </div>
             <div className="rounded-2xl bg-white/15 p-5 backdrop-blur">
@@ -130,7 +129,7 @@ export function CreditRechargeView() {
                 <Coins className="h-4 w-4" /> 当前余额
               </div>
               <div className="mt-2 text-4xl font-bold tabular-nums">
-                {loading ? "--" : formatPoints(balance?.balance ?? 0)}
+                {loading ? "--" : formatCreditPoints(balance?.balance ?? 0)}
               </div>
               <div className="mt-1 text-xs text-white/70">积分</div>
             </div>
@@ -165,15 +164,15 @@ export function CreditRechargeView() {
               <Separator />
               <div className="grid grid-cols-3 gap-3 text-center text-sm">
                 <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatPoints(balance?.total_recharged ?? 0)}</div>
+                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_recharged ?? 0)}</div>
                   <div className="text-xs text-muted-foreground">累计充值</div>
                 </div>
                 <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatPoints(balance?.total_bonus ?? 0)}</div>
+                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_bonus ?? 0)}</div>
                   <div className="text-xs text-muted-foreground">赠送积分</div>
                 </div>
                 <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatPoints(balance?.total_consumed ?? 0)}</div>
+                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_consumed ?? 0)}</div>
                   <div className="text-xs text-muted-foreground">累计消耗</div>
                 </div>
               </div>
@@ -224,9 +223,9 @@ export function CreditRechargeView() {
                     <span>{formatLedgerType(item.type)}</span>
                     <span className={item.delta >= 0 ? "text-emerald-600 tabular-nums" : "text-rose-600 tabular-nums"}>
                       {item.delta >= 0 ? "+" : ""}
-                      {formatPoints(item.delta)}
+                      {formatCreditPoints(item.delta)}
                     </span>
-                    <span className="tabular-nums">{formatPoints(item.balance_after)}</span>
+                    <span className="tabular-nums">{formatCreditPoints(item.balance_after)}</span>
                     <span className="truncate text-muted-foreground" title={item.note}>
                       {item.note || item.ref_id || "--"}
                     </span>

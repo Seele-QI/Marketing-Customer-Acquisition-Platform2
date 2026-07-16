@@ -4,8 +4,16 @@ import sqlite3
 import sys
 import tempfile
 
+import pytest
+
 # 必须在任何测试模块 import lib.auth 之前设置（auth 模块加载时校验）
 os.environ.setdefault("EMAIL_HASH_SALT", "0" * 64)
+
+
+@pytest.fixture(autouse=True)
+def _force_local_auth_and_credit(monkeypatch):
+    """单测强制本地 SQLite 会话/积分；避免 .env 中 CLOUD_API_URL 导致走云端委托。"""
+    monkeypatch.setenv("CLOUD_API_URL", "")
 
 
 def setup_test_db() -> str:

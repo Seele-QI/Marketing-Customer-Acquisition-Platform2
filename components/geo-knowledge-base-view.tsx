@@ -44,7 +44,7 @@ export function GeoKnowledgeBaseView() {
     {
       id: "docs",
       label: "文档已入库",
-      desc: "至少一份 .txt / .md 资料",
+      desc: "至少一份 Word / PDF / TXT / MD 资料",
       done: docs.length > 0,
     },
     {

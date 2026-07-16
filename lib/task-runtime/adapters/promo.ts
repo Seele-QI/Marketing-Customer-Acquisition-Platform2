@@ -84,7 +84,8 @@ export const promoVideoAdapter: TaskAdapter = {
       const vd = await queryPromoVideoStatus(task.taskId)
       const progress = vd.progress || task.progress
       const stageLabel = task.stageLabel || "视频生成中"
-      const coverUrl = String(task.meta?.coverUrl ?? "")
+      // 保留并发封面写入的 result.coverUrl（勿从空的 meta.coverUrl 取值）
+      const preservedCoverUrl = String(task.result?.coverUrl ?? "")
 
       if (vd.status === "video_completed") {
         return {
@@ -93,7 +94,7 @@ export const promoVideoAdapter: TaskAdapter = {
           stageLabel: "完成",
           result: {
             videoUrl: vd.video_url || "",
-            coverUrl,
+            coverUrl: preservedCoverUrl,
             rhTaskIds: vd.rh_video_task_ids,
             segmentCount: vd.segment_count,
             segmentsCompleted: vd.segments_completed,

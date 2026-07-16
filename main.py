@@ -16,14 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from lib.runninghub_client import RunningHubClient, RunningHubError, build_motion_prompt, build_cover_prompt
+from lib.runninghub_client import RunningHubClient, RunningHubError, build_video_cover_prompt
 from lib.video_postprocess import render_video_with_template, probe_audio_duration, _FFMPEG_EXE
-from lib.video_audio_split import (
-    SEGMENT_DURATION_SEC,
-    SegmentLimitExceeded,
-    split_audio_segments,
-)
-from lib.video_concat import concatenate_videos_ffmpeg
 from lib.image_video_postprocess import image_video_render
 from lib.mashup_video_postprocess import mashup_video_render
 
@@ -37,8 +31,6 @@ from lib.auth import (
 from lib.credit import (
     CHAT_COST,
     REDEEM_CODE_AMOUNTS,
-    VIDEO_CLONE_VOICE_COST,
-    VIDEO_SEGMENT_COST,
     consume,
     ensure_credit_schema,
     generate_redeem_codes,
@@ -64,8 +56,6 @@ from lib.api_auth import (
     check_base64_size,
     consume_with_idempotency,
     consume_ai_llm,
-    consume_voice_clone,
-    consume_video_creation_segments,
     SCENE_COST_TABLE,
 )
 from lib.safe_http import download_to_path, SafeHttpError
@@ -93,12 +83,15 @@ PROJECT_PUBLIC_ROOT = os.path.join(PROJECT_ROOT, "public")
 # 开发期：默认 <project>/public 子目录
 # 生产期：DATA_DIR=/data（Zeabur Volume 挂载点）
 _DATA_DIR = (os.getenv("DATA_DIR") or "").strip() or os.path.join(PROJECT_PUBLIC_ROOT, "video-cache")
-POST_PROCESS_ROOT = os.path.join(_DATA_DIR, "video-postprocess")
+_POST_PROCESS_OVERRIDE = (os.getenv("VIDEO_POSTPROCESS_DIR") or "").strip()
+POST_PROCESS_ROOT = _POST_PROCESS_OVERRIDE or os.path.join(_DATA_DIR, "video-postprocess")
 GENERATED_VIDEO_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "generated")
 MANUAL_UPLOAD_ROOT = os.path.join(_DATA_DIR, "video-cache", "manual-uploads")
+COVER_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "covers")
 os.makedirs(POST_PROCESS_ROOT, exist_ok=True)
 os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
 os.makedirs(MANUAL_UPLOAD_ROOT, exist_ok=True)
+os.makedirs(COVER_CACHE_ROOT, exist_ok=True)
 
 # —— 远端下载大小上限（防 DoS / OOM）——
 MAX_REMOTE_VIDEO_BYTES = int(os.getenv("MAX_REMOTE_VIDEO_BYTES") or 300 * 1024 * 1024)
@@ -133,6 +126,11 @@ app.mount(
     "/static/video-generated",
     _HardenedStaticFiles(directory=GENERATED_VIDEO_CACHE_ROOT, html=False),
     name="video-generated",
+)
+app.mount(
+    "/static/video-covers",
+    _HardenedStaticFiles(directory=COVER_CACHE_ROOT, html=False),
+    name="video-covers",
 )
 
 
@@ -260,8 +258,6 @@ ALIYUN_ASR_APP_KEY = (os.getenv("ALIYUN_ASR_APP_KEY") or "").strip()
 
 logging.basicConfig(level=logging.INFO)
 ensure_credit_schema()
-from lib.api_auth import ensure_credit_idempotency_index  # noqa: E402
-ensure_credit_idempotency_index()
 
 
 def ensure_app_schema() -> None:
@@ -277,80 +273,13 @@ def ensure_app_schema() -> None:
 
 
 ensure_app_schema()
+from lib.api_auth import ensure_credit_idempotency_index  # noqa: E402
+ensure_credit_idempotency_index()
 
 # ── Pydantic models for video endpoints ──
 
 
-class VideoGenerateRequest(BaseModel):
-    image_base64: str
-    audio_base64: str
-    script: str
-    gender: str = "female"  # "male" | "female" — 用于生成节点 254 的动作描述提示词
-    video_prompt: str = ""
-    video_prompt_mode: str = "natural"
-    resolution: str = "720p"
-    bg_color: str = ""
 
-
-class VoiceCloneRequest(BaseModel):
-    audio_base64: str
-    script: str
-
-
-class TaskStatusResponse(BaseModel):
-    task_id: str
-    status: str
-    progress: int = 0
-    video_url: str = ""
-    audio_url: str = ""
-    cover_url: str = ""
-    cover_status: str = "idle"
-    cover_error: str = ""
-    cover_task_id: str = ""
-    post_video_url: str = ""
-    post_stage: str = ""
-    post_progress: int = 0
-    post_error: str = ""
-    error: str = ""
-    estimated_minutes: int = 30
-    stage: str = ""
-    stage_label: str = ""
-    stage_history: list[str] = []
-    stage_updated_at: float = 0
-    segment_count: int = 0
-    segments_completed: int = 0
-
-
-# —— 视频生成管线 stage 常量 ——
-STAGE_UPLOADING_IMAGE = "uploading_image"
-STAGE_UPLOADING_AUDIO = "uploading_audio"
-STAGE_SUBMITTING_CLONE = "submitting_audio_clone"
-STAGE_WAITING_CLONE = "waiting_audio_clone"
-STAGE_SUBMITTING_VIDEO = "submitting_video"
-STAGE_QUEUED = "queued"
-STAGE_POLLING_VIDEO = "polling_video"
-STAGE_CONCATENATING = "concatenating"
-STAGE_POST_PROCESSING = "post_processing"
-STAGE_COVER_GENERATING = "cover_generating"
-STAGE_COMPLETED = "completed"
-STAGE_FAILED = "failed"
-STAGE_CANCELLED = "cancelled"
-
-STAGE_LABELS = {
-    STAGE_UPLOADING_IMAGE: "上传数字人形象图",
-    STAGE_UPLOADING_AUDIO: "上传音色样本",
-    STAGE_SUBMITTING_CLONE: "提交音频克隆任务",
-    STAGE_WAITING_CLONE: "等待音频克隆完成",
-    STAGE_SUBMITTING_VIDEO: "提交视频生成任务",
-    STAGE_QUEUED: "任务已入队",
-    STAGE_POLLING_VIDEO: "等待视频生成完成",
-    STAGE_CONCATENATING: "拼接视频片段",
-    STAGE_POST_PROCESSING: "后期剪辑处理中",
-    STAGE_COVER_GENERATING: "生成封面图中",
-    STAGE_COMPLETED: "全部完成",
-    STAGE_FAILED: "失败",
-    STAGE_CANCELLED: "已停止",
-}
 
 # —— 图文视频 stage 常量 ——
 STAGE_IV_DECODING_IMAGES = "iv_decoding_images"
@@ -432,22 +361,6 @@ PV_STAGE_LABELS = {
 }
 
 
-def _set_stage(task_id: str, stage: str, **extras) -> None:
-    """原子更新任务 sub-step。"""
-    if not task_id:
-        return
-    stored = _task_store.get(task_id) or {}
-    history = list(stored.get("stage_history") or [])
-    if not history or history[-1] != stage:
-        history.append(stage)
-    _task_store[task_id] = {
-        **stored,
-        "stage": stage,
-        "stage_label": STAGE_LABELS.get(stage, stage),
-        "stage_history": history,
-        "stage_updated_at": time.time(),
-        **extras,
-    }
 
 
 def _set_generic_stage(
@@ -481,16 +394,6 @@ def _set_mv_stage(task_id: str, stage: str, **extras) -> None:
     _set_generic_stage(_mashup_task_store, MV_STAGE_LABELS, task_id, stage, **extras)
 
 
-class CoverGenerateRequest(BaseModel):
-    task_id: str
-    image_url: str = ""
-    gender: str = "female"
-
-
-class CancelVideoTaskRequest(BaseModel):
-    task_id: str
-
-
 class ManualEditRequest(BaseModel):
     upload_id: str
     script: str
@@ -507,12 +410,12 @@ class EditVideoRequest(BaseModel):
     video_base64: str = ""
     preset: str = "default"
     subtitle_text: str = ""
-    subtitle_file_path: str = ""  # 预生成字幕文件路径（ASR 自动字幕），优先级高于 subtitle_text
+    subtitle_file_path: str = ""
     business_card_text: str = ""
     bgm_dir: str = ""
     bgm_volume: float = 0.32
     source: str = "generated"
-    slide_images_base64: list[str] = []  # 图片素材 base64 列表，用于视频下方轮播
+    slide_images_base64: list[str] = []
     enable_bgm: bool = True
     enable_subtitles: bool = True
 
@@ -531,6 +434,28 @@ class EditTaskStatusResponse(BaseModel):
 class ManualUploadResponse(BaseModel):
     upload_id: str
     file_url: str = ""
+
+
+class CoverGenerateRequest(BaseModel):
+    script: str
+    reference_image_base64: str = ""
+    reference_image_url: str = ""
+    aspect_ratio: str = "9:16"
+    resolution: str = "1k"
+    linked_task_id: str = ""
+    source: str = ""
+
+
+class CoverSubmitResponse(BaseModel):
+    cover_task_id: str
+
+
+class CoverStatusResponse(BaseModel):
+    cover_task_id: str
+    status: str
+    cover_url: str = ""
+    error: str = ""
+    stage_label: str = ""
     original_name: str = ""
     size: int = 0
 
@@ -792,17 +717,15 @@ async def agent_chat(req: AgentRequest):
 # ════════════════════════════════════════════════════════════════════════
 
 # 内存存储任务状态（生产环境应替换为数据库）
-_task_store: dict[str, dict] = {}
-_poll_tasks: dict[str, object] = {}
-_dh_pipeline_tasks: dict[str, asyncio.Task] = {}
 _edit_task_store: dict[str, dict] = {}
 _edit_tasks: dict[str, object] = {}
 _manual_upload_store: dict[str, dict] = {}
 _image_task_store: dict[str, dict] = {}
 _mashup_task_store: dict[str, dict] = {}
+_cover_task_store: dict[str, dict] = {}
+_cover_pipeline_tasks: dict[str, asyncio.Task] = {}
 _image_pipeline_tasks: dict[str, asyncio.Task] = {}
 _mashup_pipeline_tasks: dict[str, asyncio.Task] = {}
-_VIDEO_PROMPT_MODES = {"natural", "mode2", "mode3"}
 
 
 def _get_rh_client() -> "RunningHubClient":
@@ -815,9 +738,6 @@ def _get_rh_client() -> "RunningHubClient":
     return RunningHubClient(RUNNINGHUB_API_KEY)
 
 
-def _normalize_video_prompt_mode(mode: str) -> str:
-    cleaned = (mode or "").strip()
-    return cleaned if cleaned in _VIDEO_PROMPT_MODES else "natural"
 
 
 async def _base64_to_temp_file(b64: str, suffix: str) -> str:
@@ -1078,579 +998,155 @@ def _generated_video_public_url(abs_path: str) -> str:
     raise ValueError(f"视频产物不在 generated 缓存目录内：{abs_path}")
 
 
-async def _run_cover_generation(task_id: str, *, image_url: str, gender: str) -> str:
-    stored = _task_store.get(task_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="视频任务不存在")
-
-    image_url = (image_url or "").strip()
-    if not image_url:
-        raise HTTPException(status_code=400, detail="缺少 image_url，无法生成封面")
-
-    rh = _get_rh_client()
-    cover_script = (stored.get("script") or "").strip()
-    cover_prompt = build_cover_prompt(gender, cover_script)
-    _set_stage(task_id, STAGE_COVER_GENERATING, cover_status="running", cover_error="")
-
-    cover_task_id = await rh.submit_cover_image(
-        prompt=cover_prompt,
-        image_urls=[image_url],
-        aspect_ratio="3:4",
-        resolution="1k",
-    )
-    _set_stage(task_id, STAGE_COVER_GENERATING, cover_status="running", cover_error="", cover_task_id=cover_task_id)
-
-    print(f"[cover/{task_id}] Polling cover task {cover_task_id} (max 10 min)...")
-    cover_result = await rh.wait_for_completion(cover_task_id, max_wait=600)
-    cover_url = _pick_first_result_url(cover_result)
-    if not cover_url:
-        raise RunningHubError("封面图生成完成但未返回结果 URL")
-
-    print(f"[cover/{task_id}] Cover done: {cover_url[:80]}")
-    _set_stage(
-        task_id, STAGE_COMPLETED,
-        cover_url=cover_url, cover_status="success", cover_error="", cover_task_id=cover_task_id,
-    )
-    return cover_url
-
-
-# ── POST /api/video/generate ──────────────────────────────────
-
-
-@app.post("/api/video/generate", response_model=TaskStatusResponse)
-async def video_generate(req: VideoGenerateRequest, request: Request):
-    """
-    提交视频创作任务
-
-    流程: 解码 Base64 → 上传文件到 RunningHub → 音频克隆 → 按 20s 切段
-    → 并发提交 n 段视频生成 → 后台轮询拼接 → 返回半成品（用户手动进入自动剪辑）
-    """
-    user = require_user(request)
-    logger.info("video_generate user_id=%s", user.id)
-    if not req.image_base64 or not req.audio_base64 or not req.script.strip():
-        raise HTTPException(status_code=400, detail="缺少必填参数: image_base64, audio_base64, script")
-    if len(req.script) > 5000:
-        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
-    check_base64_size(req.image_base64, max_mb=10, name="image_base64")
-    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
-
-    local_task_id = f"vg_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
-
-    rh = _get_rh_client()
-    image_path = audio_path = None
-    clone_work_dir = ""
-
-    try:
-        # 1. Base64 解码为临时文件
-        image_path = await _base64_to_temp_file(req.image_base64, ".png")
-        audio_path = await _base64_to_temp_file(req.audio_base64, ".mp3")
-
-        # 2. 上传文件到 RunningHub
-        print(f"[video/generate] Uploading image: {image_path}")
-        image_url = await rh.upload_file(image_path)
-
-        print(f"[video/generate] Uploading audio: {audio_path}")
-        audio_url = await rh.upload_file(audio_path)
-
-        # 3. 提交音频克隆任务
-        print(f"[video/generate] Submitting audio clone: {audio_url}")
-        audio_clone_task_id = await rh.submit_audio_clone(audio_url, audio_url, req.script)
-
-        # 4. 等待音频克隆完成
-        print(f"[video/generate] Waiting for audio clone: {audio_clone_task_id}")
-        audio_result = await rh.wait_for_completion(audio_clone_task_id, max_wait=600)
-        audio_clone_url = audio_result.get("results", [{}])[0].get("url", "")
-        if not audio_clone_url:
-            raise HTTPException(status_code=502, detail="音频克隆完成但未返回结果 URL")
-
-        # 5. 下载克隆音频并按 20s 切段
-        clone_work_dir = tempfile.mkdtemp(prefix="dh_clone_")
-        clone_audio_path = os.path.join(clone_work_dir, "clone.mp3")
-        await download_to_path(
-            audio_clone_url,
-            clone_audio_path,
-            max_bytes=MAX_REMOTE_AUDIO_BYTES,
-            timeout=180.0,
-        )
-        _validate_cloned_audio(clone_audio_path)
-
-        segment_dir = os.path.join(clone_work_dir, "segments")
-        try:
-            audio_segments = await asyncio.to_thread(
-                split_audio_segments,
-                clone_audio_path,
-                segment_dir,
-                SEGMENT_DURATION_SEC,
-                ffmpeg_exe=_FFMPEG_EXE,
-            )
-        except SegmentLimitExceeded as e:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "SEGMENT_LIMIT_EXCEEDED", "message": str(e)},
-            ) from e
-
-        segment_count = len(audio_segments)
-        print(f"[video/generate] Split clone audio into {segment_count} segment(s)")
-
-        credit_clone_cost = VIDEO_CLONE_VOICE_COST
-        credit_video_cost = VIDEO_SEGMENT_COST * segment_count
-        consume_voice_clone(
-            user_id=user.id,
-            ref_id=f"{local_task_id}:clone",
-            note="口播音色克隆",
-        )
-        consume_video_creation_segments(
-            user_id=user.id,
-            ref_id=f"{local_task_id}:video",
-            segment_count=segment_count,
-            note=f"口播视频生成 {segment_count} 段",
-        )
-
-        # 6. 逐段上传音频并并发提交视频生成
-        prompt_mode = _normalize_video_prompt_mode(req.video_prompt_mode)
-        raw_video_prompt = req.video_prompt or ""
-        motion_prompt = build_motion_prompt(req.gender, raw_video_prompt)
-        final_prompt_mode = prompt_mode if raw_video_prompt.strip() else "natural"
-
-        segment_audio_urls: list[str] = []
-        for _idx, seg_path in audio_segments:
-            segment_audio_urls.append(await rh.upload_file(seg_path))
-
-        print(
-            f"[video/generate] Submitting {segment_count} video segment(s) "
-            f"(gender={req.gender})"
-        )
-
-        async def _submit_segment(seg_audio_url: str) -> str:
-            return await rh.submit_video(image_url, seg_audio_url, motion_prompt)
-
-        rh_video_task_ids = list(
-            await asyncio.gather(*[_submit_segment(url) for url in segment_audio_urls])
-        )
-
-        # 7. 存储任务状态（以 local_task_id 为主键）
-        _task_store[local_task_id] = {
-            "task_id": local_task_id,
-            "user_id": user.id,
-            "status": "queued",
-            "progress": 5,
-            "video_url": "",
-            "post_video_url": "",
-            "post_stage": "",
-            "post_progress": 0,
-            "post_error": "",
-            "audio_url": audio_clone_url,
-            "script": req.script,
-            "video_prompt": motion_prompt,
-            "video_prompt_mode": final_prompt_mode,
-            "image_url": image_url,
-            "gender": req.gender,
-            "cover_url": "",
-            "cover_status": "idle",
-            "cover_error": "",
-            "cover_task_id": "",
-            "preset": "default",
-            "bgm_dir": "",
-            "bgm_volume": 0.32,
-            "business_card_text": "",
-            "error": "",
-            "estimated_minutes": 30,
-            "segment_count": segment_count,
-            "segments_completed": 0,
-            "segment_duration_sec": SEGMENT_DURATION_SEC,
-            "credit_clone_cost": credit_clone_cost,
-            "credit_video_cost": credit_video_cost,
-            "rh_video_task_ids": rh_video_task_ids,
-            "segment_paths": [],
-            "concat_stage": "idle",
-        }
-        _set_stage(local_task_id, STAGE_QUEUED, progress=5)
-
-        # 8. 启动后台分段管线
-        pipeline_task = asyncio.create_task(_run_dh_segment_pipeline(local_task_id))
-        _dh_pipeline_tasks[local_task_id] = pipeline_task
-
-        return TaskStatusResponse(
-            task_id=local_task_id,
-            status="queued",
-            progress=5,
-            segment_count=segment_count,
-            segments_completed=0,
-            audio_url=audio_clone_url,
-            estimated_minutes=30,
-        )
-
-    except RunningHubError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"视频生成流程异常: {e}")
-    finally:
-        _cleanup_temp(*[p for p in [image_path, audio_path] if p])
-        if clone_work_dir:
-            shutil.rmtree(clone_work_dir, ignore_errors=True)
-
-
-async def _run_post_process(task_id: str, video_url: str):
-    stored = _task_store.get(task_id, {})
-    base_dir = os.path.join(tempfile.gettempdir(), "video-postprocess", task_id)
-    os.makedirs(base_dir, exist_ok=True)
-    input_path = os.path.join(base_dir, "input.mp4")
-    post_video_url = ""
-    try:
-        await download_to_path(
-            video_url,
-            input_path,
-            max_bytes=MAX_REMOTE_VIDEO_BYTES,
-            timeout=180.0,
-        )
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "post_processing",
-            "progress": 100,
-            "video_url": video_url,
-            "post_stage": "running",
-            "post_progress": 10,
-            "post_error": "",
-            "error": "",
-            "estimated_minutes": 0,
-        }
-        result = await asyncio.to_thread(
-            render_video_with_template,
-            task_id=task_id,
-            output_dir=base_dir,
-            script=stored.get("script", ""),
-            business_card_text=stored.get("business_card_text", ""),
-            bgm_dir=_resolve_bgm_dir(stored.get("bgm_dir", "")),
-            bgm_volume=float(stored.get("bgm_volume") or 0.32),
-            input_video_path=input_path,
-        )
-        if result.ok and result.output_path:
-            post_video_url = result.output_path
-            _task_store[task_id] = {
-                **stored,
-                "task_id": task_id,
-                "status": "published",
-                "progress": 100,
-                "video_url": video_url,
-                "post_video_url": post_video_url,
-                "post_stage": "published",
-                "post_progress": 100,
-                "post_error": "",
-                "error": "",
-                "estimated_minutes": 0,
-            }
-        else:
-            _task_store[task_id] = {
-                **stored,
-                "task_id": task_id,
-                "status": "post_failed",
-                "progress": 100,
-                "video_url": video_url,
-                "post_video_url": "",
-                "post_stage": "failed",
-                "post_progress": 0,
-                "post_error": _sanitize_ffmpeg_error(result.error),
-                "error": "",
-                "estimated_minutes": 0,
-            }
-    except Exception as e:
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "post_failed",
-            "progress": 100,
-            "video_url": video_url,
-            "post_video_url": "",
-            "post_stage": "failed",
-            "post_progress": 0,
-            "post_error": str(e),
-            "error": "",
-            "estimated_minutes": 0,
-        }
-    finally:
-        if post_video_url:
-            _task_store[task_id]["post_video_url"] = post_video_url
-
-
-async def _run_dh_segment_pipeline(local_task_id: str) -> None:
-    """后台轮询 n 段 RH 视频任务，下载后 ffmpeg 拼接为半成品（不自动后处理）。"""
-    rh = _get_rh_client()
-    stored = _task_store.get(local_task_id, {})
-    rh_ids = list(stored.get("rh_video_task_ids") or [])
-    segment_count = int(stored.get("segment_count") or len(rh_ids) or 1)
-    output_dir = os.path.join(GENERATED_VIDEO_CACHE_ROOT, local_task_id)
-    os.makedirs(output_dir, exist_ok=True)
-    completed_lock = asyncio.Lock()
-    segments_completed = 0
-
-    try:
-        _set_stage(
-            local_task_id,
-            STAGE_POLLING_VIDEO,
-            status="processing",
-            progress=10,
-            concat_stage="idle",
-        )
-
-        async def _poll_and_download(seg_idx: int, rh_task_id: str) -> tuple[int, str]:
-            nonlocal segments_completed
-            try:
-                result = await rh.wait_for_completion(rh_task_id, max_wait=3000)
-                video_url = _pick_first_result_url(result)
-                if not video_url:
-                    raise RunningHubError(f"第 {seg_idx + 1} 段无有效视频输出")
-                seg_path = os.path.join(output_dir, f"segment_{seg_idx:03d}.mp4")
-                await download_to_path(
-                    video_url,
-                    seg_path,
-                    max_bytes=MAX_REMOTE_VIDEO_BYTES,
-                    timeout=180.0,
-                )
-                async with completed_lock:
-                    segments_completed += 1
-                    progress = 10 + int((segments_completed / max(segment_count, 1)) * 75)
-                    _task_store[local_task_id] = {
-                        **_task_store.get(local_task_id, {}),
-                        "segments_completed": segments_completed,
-                        "progress": progress,
-                    }
-                return seg_idx, seg_path
-            except Exception as e:
-                raise RuntimeError(
-                    f"第 {seg_idx + 1}/{segment_count} 段生成失败：{e}"
-                ) from e
-
-        segment_results = await asyncio.gather(
-            *[_poll_and_download(i, rh_id) for i, rh_id in enumerate(rh_ids)]
-        )
-        segment_results.sort(key=lambda x: x[0])
-        segment_paths = [r[1] for r in segment_results]
-
-        _set_stage(
-            local_task_id,
-            STAGE_CONCATENATING,
-            concat_stage="running",
-            progress=88,
-            segment_paths=segment_paths,
-        )
-
-        concat_path = os.path.join(output_dir, "concat.mp4")
-        await asyncio.to_thread(
-            concatenate_videos_ffmpeg,
-            segment_paths,
-            concat_path,
-            _FFMPEG_EXE,
-        )
-        public_url = _generated_video_public_url(concat_path)
-
-        _task_store[local_task_id] = {
-            **_task_store.get(local_task_id, {}),
-            "task_id": local_task_id,
-            "status": "success",
-            "progress": 100,
-            "video_url": public_url,
-            "segment_paths": segment_paths,
-            "concat_stage": "done",
-            "segments_completed": segment_count,
-            "error": "",
-            "estimated_minutes": 0,
-        }
-        _set_stage(local_task_id, STAGE_COMPLETED, progress=100, concat_stage="done")
-
-        image_url = stored.get("image_url", "")
-        gender = stored.get("gender", "female")
-        if image_url and public_url:
-            try:
-                print(f"[cover] Auto-generating cover for task {local_task_id}")
-                cover_url = await _run_cover_generation(
-                    local_task_id, image_url=image_url, gender=gender
-                )
-                print(f"[cover] Cover generated: {cover_url[:80]}")
-            except Exception as e:
-                _task_store[local_task_id] = {
-                    **_task_store.get(local_task_id, {}),
-                    "cover_status": "failed",
-                    "cover_error": str(e),
-                }
-                print(f"[cover] Cover generation failed (non-blocking): {e}")
-
-    except asyncio.CancelledError:
-        _task_store[local_task_id] = {
-            **stored,
-            "task_id": local_task_id,
-            "status": "failed",
-            "progress": 0,
-            "video_url": "",
-            "concat_stage": "failed",
-            "error": "用户已停止生成（中断任务不会返还积分）",
-            "estimated_minutes": 0,
-        }
-        return
-    except Exception as e:
-        _task_store[local_task_id] = {
-            **stored,
-            "task_id": local_task_id,
-            "status": "failed",
-            "progress": 0,
-            "video_url": "",
-            "concat_stage": "failed",
-            "error": str(e) or "分段视频生成失败",
-            "estimated_minutes": 0,
-        }
-        _set_stage(local_task_id, STAGE_FAILED, concat_stage="failed", error=str(e))
-    finally:
-        _dh_pipeline_tasks.pop(local_task_id, None)
-
-
-async def _poll_video_task(task_id: str):
-    """后台轮询视频生成任务，完成后自动触发后处理与封面图生成"""
-    import asyncio
-    rh = _get_rh_client()
-    stored = _task_store.get(task_id, {})
-    try:
-        result = await rh.wait_for_completion(task_id, max_wait=3000)
-        video_url = ""
-        results = result.get("results", [])
-        if results:
-            video_url = results[0].get("url", "")
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "success",
-            "progress": 100,
-            "video_url": video_url,
-            "error": "",
-            "estimated_minutes": 0,
-        }
-        if video_url:
-            _task_store[task_id] = {
-                **_task_store.get(task_id, {}),
-                "status": "post_processing",
-                "post_stage": "running",
-                "post_progress": 5,
-                "post_error": "",
-            }
-            asyncio.create_task(_run_post_process(task_id, video_url))
-
-        image_url = stored.get("image_url", "")
-        gender = stored.get("gender", "female")
-        if image_url and video_url:
-            try:
-                print(f"[cover] Auto-generating cover for task {task_id}")
-                cover_url = await _run_cover_generation(task_id, image_url=image_url, gender=gender)
-                print(f"[cover] Cover generated: {cover_url[:80]}")
-            except Exception as e:
-                _task_store[task_id] = {
-                    **_task_store.get(task_id, {}),
-                    "cover_status": "failed",
-                    "cover_error": str(e),
-                }
-                print(f"[cover] Cover generation failed (non-blocking): {e}")
-    except asyncio.CancelledError:
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "failed",
-            "progress": 0,
-            "video_url": "",
-            "error": "用户已停止生成（中断任务不会返还积分）",
-            "estimated_minutes": 0,
-        }
-        return
-    except RunningHubError as e:
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "failed",
-            "progress": 0,
-            "video_url": "",
-            "error": str(e),
-            "estimated_minutes": 0,
-        }
-    except Exception as e:
-        _task_store[task_id] = {
-            **stored,
-            "task_id": task_id,
-            "status": "failed",
-            "progress": 0,
-            "video_url": "",
-            "error": f"轮询异常: {e}",
-            "estimated_minutes": 0,
-        }
-    finally:
-        _poll_tasks.pop(task_id, None)
-
-
-@app.post("/api/video/cancel")
-async def video_cancel(req: CancelVideoTaskRequest, request: Request):
-    user = require_user(request)
-    task_id = (req.task_id or "").strip()
-    if not task_id:
-        raise HTTPException(status_code=400, detail="缺少 task_id 参数")
-
-    stored = _task_store.get(task_id, {})
-    assert_task_owner(stored, user, task_id=task_id)
-
-    task = _poll_tasks.pop(task_id, None)
-    if task is not None:
-        try:
-            task.cancel()
-        except Exception:
-            pass
-
-    dh_task = _dh_pipeline_tasks.pop(task_id, None)
-    if dh_task is not None:
-        try:
-            dh_task.cancel()
-        except Exception:
-            pass
-
-    _task_store[task_id] = {
-        **stored,
-        "task_id": task_id,
-        "status": "failed",
-        "progress": 0,
-        "video_url": "",
-        "error": "用户已停止生成（中断任务不会返还积分）",
-        "estimated_minutes": 0,
-    }
-    return {"ok": True, "task_id": task_id}
-
-
-# ── GET /api/video/status ─────────────────────────────────────
-
-
-@app.get("/api/video/status", response_model=TaskStatusResponse)
-async def video_status(taskId: str, request: Request):
-    """查询视频任务状态。
-
-    必须登录；只能查询本人任务（按 _task_store 中 user_id 校验）。
-    响应剥离 script / image_url / audio_url 等可能泄露源素材的字段。
-    """
-    user = require_user(request)
-    if not taskId:
-        raise HTTPException(status_code=400, detail="缺少 taskId 参数")
-
-    stored = _task_store.get(taskId)
-    if not stored:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "TASK_NOT_FOUND", "message": "任务不存在或已过期"},
-        )
-    assert_task_owner(stored, user, task_id=taskId)
-
-    safe = {**stored}
-    for sensitive in ("script", "image_url", "audio_url", "video_prompt", "user_id"):
-        safe.pop(sensitive, None)
-    return TaskStatusResponse(**safe)
 
 
 # ── POST /api/video/cover ────────────────────────────────────
+
+
+def _new_cover_task_id() -> str:
+    return f"cover_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+
+
+def _cover_public_url(cover_task_id: str) -> str:
+    return f"/static/video-covers/{cover_task_id}.png"
+
+
+async def _run_cover_pipeline(cover_task_id: str) -> None:
+    stored = _cover_task_store.get(cover_task_id)
+    if not stored:
+        return
+
+    rh: RunningHubClient | None = None
+    local_ref_path = stored.get("local_ref_path") or ""
+    try:
+        stored["status"] = "running"
+        stored["stage_label"] = "上传参考图"
+        rh = _get_rh_client()
+
+        ref_url = (stored.get("reference_image_url") or "").strip()
+        if local_ref_path and os.path.isfile(local_ref_path):
+            image_url = await rh.upload_file(local_ref_path)
+        elif ref_url:
+            image_url = ref_url
+        else:
+            raise RunningHubError("缺少参考图")
+
+        stored["stage_label"] = "生成封面中"
+        prompt = build_video_cover_prompt(stored.get("script") or "")
+        rh_task_id = await rh.submit_cover_image(
+            prompt=prompt,
+            image_urls=[image_url],
+            aspect_ratio=stored.get("aspect_ratio") or "9:16",
+            resolution=stored.get("resolution") or "1k",
+        )
+        stored["rh_task_id"] = rh_task_id
+
+        result = await rh.wait_for_completion(rh_task_id, max_wait=600)
+        remote_url = _pick_first_result_url(result)
+        if not remote_url:
+            raise RunningHubError("封面生成完成但未返回结果 URL")
+
+        stored["stage_label"] = "下载封面"
+        out_path = os.path.join(COVER_CACHE_ROOT, f"{cover_task_id}.png")
+        await download_to_path(
+            remote_url,
+            out_path,
+            max_bytes=MAX_REMOTE_IMAGE_BYTES,
+            timeout=120.0,
+        )
+
+        stored.update(
+            {
+                "status": "success",
+                "cover_url": _cover_public_url(cover_task_id),
+                "error": "",
+                "stage_label": "封面生成完成",
+            }
+        )
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        stored.update(
+            {
+                "status": "failed",
+                "error": detail or "封面生成失败",
+                "stage_label": "封面生成失败",
+            }
+        )
+    except Exception as e:
+        stored.update(
+            {
+                "status": "failed",
+                "error": str(e),
+                "stage_label": "封面生成失败",
+            }
+        )
+    finally:
+        if rh is not None:
+            await rh.close()
+        if local_ref_path:
+            _cleanup_temp(local_ref_path)
+        _cover_pipeline_tasks.pop(cover_task_id, None)
+
+
+@app.post("/api/video/cover", response_model=CoverSubmitResponse)
+async def video_cover_submit(req: CoverGenerateRequest):
+    script = (req.script or "").strip()
+    if not script:
+        raise HTTPException(status_code=400, detail="缺少文案 script")
+
+    ref_b64 = (req.reference_image_base64 or "").strip()
+    ref_url = (req.reference_image_url or "").strip()
+    if not ref_b64 and not ref_url:
+        raise HTTPException(status_code=400, detail="缺少参考图 reference_image_base64 或 reference_image_url")
+
+    aspect_ratio = (req.aspect_ratio or "9:16").strip() or "9:16"
+    resolution = (req.resolution or "1k").strip() or "1k"
+
+    local_ref_path = ""
+    if ref_b64:
+        check_base64_size(ref_b64, max_mb=30, name="reference_image_base64")
+        local_ref_path = await _base64_to_temp_file(_normalize_b64_payload(ref_b64), "_cover_ref.png")
+
+    cover_task_id = _new_cover_task_id()
+    _cover_task_store[cover_task_id] = {
+        "cover_task_id": cover_task_id,
+        "status": "queued",
+        "stage_label": "排队中",
+        "cover_url": "",
+        "error": "",
+        "rh_task_id": "",
+        "script": script,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "reference_image_url": ref_url,
+        "local_ref_path": local_ref_path,
+        "linked_video_task_id": (req.linked_task_id or "").strip(),
+        "source": (req.source or "").strip(),
+        "created_at": int(time.time()),
+    }
+
+    task = asyncio.create_task(_run_cover_pipeline(cover_task_id))
+    _cover_pipeline_tasks[cover_task_id] = task
+    return CoverSubmitResponse(cover_task_id=cover_task_id)
+
+
+@app.get("/api/video/cover/status", response_model=CoverStatusResponse)
+async def video_cover_status(coverTaskId: str = ""):
+    cover_task_id = (coverTaskId or "").strip()
+    if not cover_task_id:
+        raise HTTPException(status_code=400, detail="缺少 coverTaskId")
+
+    stored = _cover_task_store.get(cover_task_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="封面任务不存在")
+
+    return CoverStatusResponse(
+        cover_task_id=cover_task_id,
+        status=stored.get("status") or "queued",
+        cover_url=stored.get("cover_url") or "",
+        error=stored.get("error") or "",
+        stage_label=stored.get("stage_label") or "",
+    )
 
 
 @app.post("/api/video/manual-upload", response_model=ManualUploadResponse)
@@ -1947,80 +1443,7 @@ async def video_manual_edit(req: ManualEditRequest, request: Request):
     )
 
 
-@app.post("/api/video/cover")
-async def video_cover(req: CoverGenerateRequest, request: Request):
-    """独立提交封面图生成任务"""
-    user = require_user(request)
-    task_id = (req.task_id or "").strip()
-    if not task_id:
-        raise HTTPException(status_code=400, detail="缺少 task_id")
 
-    stored = _task_store.get(task_id)
-    if not stored:
-        raise HTTPException(status_code=404, detail="视频任务不存在")
-    assert_task_owner(stored, user, task_id=task_id)
-
-    try:
-        image_url = (stored.get("image_url") or req.image_url or "").strip()
-        gender = (stored.get("gender") or req.gender or "female").strip() or "female"
-        cover_url = await _run_cover_generation(task_id, image_url=image_url, gender=gender)
-        return {"cover_url": cover_url, "task_id": task_id, "status": "success"}
-    except RunningHubError as e:
-        if task_id in _task_store:
-            _task_store[task_id] = {
-                **_task_store.get(task_id, {}),
-                "cover_status": "failed",
-                "cover_error": str(e),
-            }
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-# ── POST /api/video/clone-voice ───────────────────────────────
-
-
-@app.post("/api/video/clone-voice")
-async def video_clone_voice(req: VoiceCloneRequest, request: Request):
-    """仅音色克隆（不生成视频）"""
-    user = require_user(request)
-    if not req.audio_base64 or not req.script.strip():
-        raise HTTPException(status_code=400, detail="缺少必填参数: audio_base64, script")
-    if len(req.script) > 5000:
-        raise HTTPException(status_code=400, detail={"code": "SCRIPT_TOO_LONG", "message": "脚本超过 5000 字"})
-    check_base64_size(req.audio_base64, max_mb=50, name="audio_base64")
-
-    clone_ref = f"vc_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
-    consume_voice_clone(user_id=user.id, ref_id=clone_ref, note="独立音色克隆")
-
-    rh = _get_rh_client()
-    audio_path = None
-
-    try:
-        audio_path = await _base64_to_temp_file(req.audio_base64, ".mp3")
-        print(f"[clone-voice] Uploading audio: {audio_path}")
-        audio_url = await rh.upload_file(audio_path)
-
-        print(f"[clone-voice] Submitting audio clone")
-        task_id = await rh.submit_audio_clone(audio_url, audio_url, req.script)
-
-        print(f"[clone-voice] Waiting for audio clone: {task_id}")
-        result = await rh.wait_for_completion(task_id, max_wait=600)
-        clone_url = result.get("results", [{}])[0].get("url", "")
-
-        return {
-            "audio_url": clone_url,
-            "task_id": task_id,
-            "ref_id": clone_ref,
-            "message": "音色克隆完成" if clone_url else "克隆完成但无返回 URL",
-        }
-
-    except RunningHubError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"音色克隆流程异常: {e}")
-    finally:
-        _cleanup_temp(*[p for p in [audio_path] if p])
 
 
 # ── 图文视频 / 视频混剪 异步管线 ─────────────────────────────────
@@ -2993,9 +2416,9 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
         scene=scene,
         ref_id=ref_id,
         note=note,
-        cost=req.cost,
+        cost=None,
     )
-    resolved_cost = req.cost if req.cost is not None else SCENE_COST_TABLE[scene]
+    resolved_cost = SCENE_COST_TABLE[scene]
     return {
         "balance": new_balance,
         "cost": resolved_cost,
@@ -3926,12 +3349,14 @@ def central_manifest(client_version: str = "0.0.0"):
             return (0,)
 
     force = _ver_tuple(client_version) < _ver_tuple(min_ver)
+    notes = (os.getenv("CENTRAL_RELEASE_NOTES") or "").strip()
 
     return ManifestResponse(
         latest_version=latest,
         min_supported_version=min_ver,
         update_url=update_url,
         force_update=force,
+        release_notes=notes,
     )
 
 
@@ -4018,6 +3443,7 @@ def central_admin_create_codes(req: CreateCodesRequest, request: Request):
 # ── Promo video（宣传视频）────────────────────────────────────────
 
 from lib.promo_video_service import (
+    augment_storyboard_creative_prompt,
     calculate_promo_video_cost,
     concatenate_videos_ffmpeg,
     crop_storyboard_grid,
@@ -4210,7 +3636,6 @@ async def _promo_crop_frames_from_grid(
             crop_result = await wait_for_runninghub_task(
                 rh_key,
                 crop_task_id,
-                max_wait=600,
                 on_poll=_on_crop_poll,
                 min_urls=expected_frames,
                 task_label="裁切",
@@ -4265,7 +3690,7 @@ async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> No
     try:
         _set_promo_stage(task_id, STAGE_PV_DECODE, status="storyboard_processing", progress=5)
 
-        product_prompt = (req.product_prompt or "").strip()
+        product_prompt = augment_storyboard_creative_prompt((req.product_prompt or "").strip())
         if not product_prompt:
             raise RuntimeError("产品提示词不能为空")
         promo_script = (req.promo_script or "").strip()
@@ -4328,7 +3753,7 @@ async def _run_promo_storyboard(task_id: str, req: PromoStoryboardRequest) -> No
             task["progress"] = min(55, 30 + int(min(elapsed / 180.0, 1.0) * 25))
 
         result = await wait_for_runninghub_task(
-            rh_key, rh_task, max_wait=600, on_poll=_on_rh_poll
+            rh_key, rh_task, on_poll=_on_rh_poll
         )
         grid_url = pick_first_valid_url(result.get("results"))
         if not grid_url:

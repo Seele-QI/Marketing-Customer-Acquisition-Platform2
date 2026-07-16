@@ -38,6 +38,12 @@
   "exclude": [
     "node_modules",
     "superpowers-main",
-    "tests"
+    "tests",
+    "release",
+    "release-run",
+    "release-new",
+    "resources",
+    "electron",
+    ".electron-cache"
   ]
 }

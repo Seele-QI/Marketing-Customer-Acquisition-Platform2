@@ -1,6 +1,7 @@
 import type { MatrixCell } from "@/lib/geo/matrix-types"
 
-export const ARTICLE_BATCH_MAX_JOBS = 20
+/** 同一天×同一渠道可展开的篇数上限 */
+export const ARTICLE_BATCH_COPIES_PER_SLOT_MAX = 10
 
 export type ArticleJob = {
   jobId: string
@@ -46,6 +47,8 @@ export type BatchGenerateRequest = {
   projectId?: string
   dates?: string[]
   platformIds: string[]
+  /** 每个日期×平台（或方向模式下每个平台）生成篇数，默认 1，范围 1–10 */
+  copiesPerSlot?: number
 }
 
 export type BatchJobPreview = {

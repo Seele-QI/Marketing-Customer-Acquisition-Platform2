@@ -14,7 +14,7 @@
  * 触发：`pnpm resources:build`
  */
 
-import { existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, rmSync, statSync, readdirSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -28,6 +28,7 @@ const publicSrc = path.join(projectRoot, 'public');
 const bgmSrc = path.join(projectRoot, 'assets', 'bgm');
 const mainPySrc = path.join(projectRoot, 'main.py');
 const routesSrc = path.join(projectRoot, 'routes');
+const scriptsSrc = path.join(projectRoot, 'scripts');
 
 const target = path.join(projectRoot, 'resources', 'next-standalone');
 const targetStatic = path.join(target, '.next', 'static');
@@ -35,18 +36,25 @@ const targetPublic = path.join(target, 'public');
 const targetBgm = path.join(projectRoot, 'resources', 'bgm');
 const targetMainPy = path.join(projectRoot, 'resources', 'main.py');
 const targetRoutes = path.join(projectRoot, 'resources', 'routes');
+const targetScripts = path.join(projectRoot, 'resources', 'scripts');
 
 console.log('[build-next-standalone] starting...');
 
 /* ============ Step 1: pnpm build ============ */
 
 async function runBuild() {
-  console.log('[build-next-standalone] running pnpm build...');
+  console.log('[build-next-standalone] running pnpm build (desktop FASTAPI → 127.0.0.1:8010)...');
   return new Promise((resolve, reject) => {
     const child = spawn('pnpm', ['build'], {
       cwd: projectRoot,
       stdio: 'inherit',
       shell: process.platform === 'win32',
+      env: {
+        ...process.env,
+        // 构建期写入客户端 bundle + routes-manifest rewrites，避免落到 dev 默认 8000
+        FASTAPI_URL: 'http://127.0.0.1:8010',
+        NEXT_PUBLIC_FASTAPI_URL: 'http://127.0.0.1:8010',
+      },
     });
     child.on('exit', (code) => {
       if (code === 0) resolve();
@@ -56,9 +64,7 @@ async function runBuild() {
   });
 }
 
-if (!existsSync(standaloneSrc)) {
-  await runBuild();
-}
+await runBuild();
 
 if (!existsSync(standaloneSrc)) {
   console.error(`[build-next-standalone] FAIL: ${standaloneSrc} still missing after build`);
@@ -86,6 +92,93 @@ if (existsSync(publicSrc)) {
   cpSync(publicSrc, targetPublic, { recursive: true });
 }
 
+/* ============ Step 4b: serverExternalPackages 补拷 ============ */
+
+const SERVER_EXTERNAL_PACKAGES = ['mammoth'];
+
+function copyPkgToStandalone(destRoot, srcPath, destRel) {
+  const dest = path.join(destRoot, destRel);
+  mkdirSync(path.dirname(dest), { recursive: true });
+  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+  cpSync(srcPath, dest, { recursive: true, dereference: true });
+  console.log(`[build-next-standalone] copied external package: ${destRel}`);
+}
+
+/** Next standalone 在 pnpm 下常缺 hoisted symlink，Electron 运行时无法 resolve */
+const RUNTIME_PNPM_PACKAGES = ['@swc/helpers', 'styled-jsx', '@next/env', 'react', 'react-dom'];
+
+function resolveFromPnpmStore(nodeModulesRoot, pkgPath) {
+  const pnpmDir = path.join(nodeModulesRoot, '.pnpm');
+  if (!existsSync(pnpmDir)) return null;
+  for (const entry of readdirSync(pnpmDir)) {
+    const candidate = path.join(pnpmDir, entry, 'node_modules', ...pkgPath.split('/'));
+    if (existsSync(path.join(candidate, 'package.json'))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function materializePnpmDeps() {
+  const destRoot = path.join(target, 'node_modules');
+  mkdirSync(destRoot, { recursive: true });
+
+  for (const pkg of RUNTIME_PNPM_PACKAGES) {
+    const destPath = path.join(destRoot, ...pkg.split('/'));
+    if (existsSync(path.join(destPath, 'package.json'))) {
+      console.log(`[build-next-standalone] already materialized: ${pkg}`);
+      continue;
+    }
+
+    let src =
+      resolveFromPnpmStore(destRoot, pkg) ||
+      (existsSync(path.join(projectRoot, 'node_modules', ...pkg.split('/')))
+        ? realpathSync(path.join(projectRoot, 'node_modules', ...pkg.split('/')))
+        : null);
+
+    if (!src) {
+      console.error(`[build-next-standalone] WARN: cannot find ${pkg} for materialize`);
+      continue;
+    }
+    copyPkgToStandalone(destRoot, src, pkg);
+  }
+}
+
+function copyServerExternalPackages() {
+  const destRoot = path.join(target, 'node_modules');
+  mkdirSync(destRoot, { recursive: true });
+
+  for (const pkg of SERVER_EXTERNAL_PACKAGES) {
+    const src = path.join(projectRoot, 'node_modules', pkg);
+    if (!existsSync(src)) {
+      console.error(`[build-next-standalone] WARN: missing package ${pkg} in project node_modules`);
+      continue;
+    }
+    copyPkgToStandalone(destRoot, realpathSync(src), pkg);
+  }
+
+  const pdfParseLink = path.join(projectRoot, 'node_modules', 'pdf-parse');
+  if (!existsSync(pdfParseLink)) {
+    console.error('[build-next-standalone] WARN: missing pdf-parse in project node_modules');
+    return;
+  }
+  const pdfParseReal = realpathSync(pdfParseLink);
+  copyPkgToStandalone(destRoot, pdfParseReal, 'pdf-parse');
+
+  const pnpmPeerDir = path.dirname(pdfParseReal);
+  for (const peer of ['pdfjs-dist', '@napi-rs']) {
+    const peerSrc = path.join(pnpmPeerDir, peer);
+    if (!existsSync(peerSrc)) {
+      console.error(`[build-next-standalone] WARN: missing pnpm peer ${peer} for pdf-parse`);
+      continue;
+    }
+    copyPkgToStandalone(destRoot, realpathSync(peerSrc), peer);
+  }
+}
+
+copyServerExternalPackages();
+materializePnpmDeps();
+
 /* ============ Step 5: main.py 复制 ============ */
 
 console.log(`[build-next-standalone] copying main.py → ${targetMainPy}`);
@@ -103,6 +196,21 @@ if (existsSync(routesSrc)) {
   cpSync(routesSrc, targetRoutes, { recursive: true });
 } else {
   console.error(`[build-next-standalone] WARN: ${routesSrc} not found`);
+}
+
+/* ============ Step 6b: scripts/ 复制（main.py 启动时 migrate 依赖） ============ */
+
+console.log(`[build-next-standalone] copying scripts/ → ${targetScripts}`);
+if (existsSync(scriptsSrc)) {
+  if (existsSync(targetScripts)) rmSync(targetScripts, { recursive: true, force: true });
+  mkdirSync(targetScripts, { recursive: true });
+  for (const f of readdirSync(scriptsSrc)) {
+    if (f.endsWith('.py')) {
+      cpSync(path.join(scriptsSrc, f), path.join(targetScripts, f));
+    }
+  }
+} else {
+  console.error(`[build-next-standalone] WARN: ${scriptsSrc} not found`);
 }
 
 /* ============ Step 7: BGM 复制 ============ */

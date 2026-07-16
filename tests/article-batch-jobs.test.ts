@@ -3,8 +3,9 @@ import test from "node:test"
 
 import {
   alignJobSnapshots,
-  ARTICLE_BATCH_MAX_JOBS,
+  ARTICLE_BATCH_COPIES_PER_SLOT_MAX,
   buildRetryJob,
+  clampCopiesPerSlot,
   expandDirectionJobs,
   expandMatrixJobs,
 } from "../lib/geo/article-batch-jobs.ts"
@@ -79,7 +80,7 @@ test("方向模式 3 平台 → 3 jobs", () => {
   assert.ok(jobs[0].title.includes("AI 视频翻译指南"))
 })
 
-test("矩阵模式 2 日期 × 2 平台 → 4 jobs", () => {
+test("矩阵模式 2 日期 × 2 平台 → 有效格子 jobs + skipped", () => {
   const { jobs, skipped } = expandMatrixJobs({
     mode: "matrix",
     project: SAMPLE_PROJECT,
@@ -91,17 +92,14 @@ test("矩阵模式 2 日期 × 2 平台 → 4 jobs", () => {
   assert.ok(skipped.some((s) => s.date === "2026-07-02" && s.platformId === "xiaohongshu"))
 })
 
-test("超过 20 jobs 抛错", () => {
+test("方向模式超过 20 平台不再抛错", () => {
   const platforms = Array.from({ length: 21 }, (_, i) => `p${i}`)
-  assert.throws(
-    () =>
-      expandDirectionJobs({
-        mode: "direction",
-        direction: "测试",
-        platformIds: platforms,
-      }),
-    /单次最多生成 20 篇/,
-  )
+  const { jobs } = expandDirectionJobs({
+    mode: "direction",
+    direction: "测试",
+    platformIds: platforms,
+  })
+  assert.equal(jobs.length, 21)
 })
 
 test("缺 cell 的 date+platform 计入 skipped", () => {
@@ -116,8 +114,45 @@ test("缺 cell 的 date+platform 计入 skipped", () => {
   assert.equal(skipped[0].platformId, "xiaohongshu")
 })
 
-test("ARTICLE_BATCH_MAX_JOBS 为 20", () => {
-  assert.equal(ARTICLE_BATCH_MAX_JOBS, 20)
+test("clampCopiesPerSlot 限制在 1–MAX", () => {
+  assert.equal(clampCopiesPerSlot(undefined), 1)
+  assert.equal(clampCopiesPerSlot(0), 1)
+  assert.equal(clampCopiesPerSlot(3), 3)
+  assert.equal(clampCopiesPerSlot(99), ARTICLE_BATCH_COPIES_PER_SLOT_MAX)
+  assert.equal(ARTICLE_BATCH_COPIES_PER_SLOT_MAX, 10)
+})
+
+test("方向模式 copiesPerSlot=3 → 平台数 × 3", () => {
+  const { jobs } = expandDirectionJobs({
+    mode: "direction",
+    direction: "测试方向",
+    platformIds: ["zhihu", "xiaohongshu"],
+    copiesPerSlot: 3,
+  })
+  assert.equal(jobs.length, 6)
+  const zhihu = jobs.filter((j) => j.platformId === "zhihu")
+  assert.equal(zhihu.length, 3)
+  assert.ok(zhihu[0].title.includes("第 1/3 篇"))
+  assert.ok(zhihu[2].title.includes("第 3/3 篇"))
+  assert.ok(zhihu[0].brief.includes("不同角度"))
+})
+
+test("矩阵模式 copiesPerSlot=3 → 同日同渠道 3 jobs", () => {
+  const { jobs, skipped } = expandMatrixJobs({
+    mode: "matrix",
+    project: SAMPLE_PROJECT,
+    dates: ["2026-07-01"],
+    platformIds: ["zhihu"],
+    copiesPerSlot: 3,
+  })
+  assert.equal(jobs.length, 3)
+  assert.equal(skipped.length, 0)
+  assert.ok(jobs.every((j) => j.date === "2026-07-01" && j.platformId === "zhihu"))
+  assert.ok(jobs[0].title.includes("知乎标题A（第 1/3 篇）"))
+  assert.ok(jobs[1].title.includes("第 2/3 篇"))
+  assert.ok(jobs[2].brief.includes("不同角度"))
+  const ids = new Set(jobs.map((j) => j.jobId))
+  assert.equal(ids.size, 3)
 })
 
 test("alignJobSnapshots 按序对齐服务端 jobId", () => {

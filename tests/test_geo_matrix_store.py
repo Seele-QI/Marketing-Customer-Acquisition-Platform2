@@ -122,3 +122,28 @@ def test_user_isolation():
     with pytest.raises(HTTPException) as exc:
         get_project(p["id"], uid2)
     assert exc.value.status_code == 404
+
+
+def test_list_projects_summary_mode():
+    uid = _make_user("mx7@test.com")
+    p = create_project(user_id=uid, name="摘要测试")
+    matrix = {
+        "platforms": [
+            {
+                "platformId": "xiaohongshu",
+                "cells": [{"date": "2026-07-07", "title": "标题"}],
+            }
+        ],
+    }
+    replace_matrix(p["id"], uid, matrix, enterprise_snapshot="大段企业快照")
+
+    full_items = list_projects(uid, summary=False)
+    summary_items = list_projects(uid, summary=True)
+    full = next(x for x in full_items if x["id"] == p["id"])
+    summary = next(x for x in summary_items if x["id"] == p["id"])
+
+    assert full["enterpriseSnapshot"] == "大段企业快照"
+    assert len(full["matrix"]["platforms"]) == 1
+    assert summary["enterpriseSnapshot"] is None
+    assert summary["matrix"]["platforms"] == []
+    assert summary["hasMatrix"] is True

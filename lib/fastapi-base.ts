@@ -56,6 +56,10 @@ export function getCloudApiBase(): string {
   return getServerFastapiBase()
 }
 
+function isCloudApiConfigured(): boolean {
+  return sanitizeEnvValue(process.env.CLOUD_API_URL).length > 0
+}
+
 /** Node fetch(undici) 不支持转发的 hop-by-hop / 特殊请求头 */
 const PROXY_STRIP_HEADERS = [
   "host",
@@ -70,6 +74,25 @@ const PROXY_STRIP_HEADERS = [
   "content-length",
 ] as const
 
+/**
+ * 上游代理超时：避免 Next→FastAPI 黑洞导致请求永不返回。
+ * 异步视频 submit/status 通常秒级返回；GEO CRUD 也远低于此值。
+ * 可用 FASTAPI_PROXY_TIMEOUT_MS 覆盖（毫秒）。
+ */
+const DEFAULT_PROXY_TIMEOUT_MS = 60_000
+
+function getProxyTimeoutMs(): number {
+  const raw = sanitizeEnvValue(process.env.FASTAPI_PROXY_TIMEOUT_MS)
+  if (!raw) return DEFAULT_PROXY_TIMEOUT_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_PROXY_TIMEOUT_MS
+}
+
+function isAbortOrTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  return err.name === "AbortError" || err.name === "TimeoutError"
+}
+
 function buildProxyHeaders(req: Request): Headers {
   const headers = new Headers(req.headers)
   for (const name of PROXY_STRIP_HEADERS) {
@@ -83,7 +106,11 @@ export async function proxyToFastapi(req: Request, path: string): Promise<Respon
 }
 
 export async function proxyToCloudApi(req: Request, path: string): Promise<Response> {
-  return proxyToBase(req, path, getCloudApiBase(), "CLOUD_API_UNAVAILABLE", "无法连接云端服务，请检查 CLOUD_API_URL 或网络")
+  const base = getCloudApiBase()
+  const message = isCloudApiConfigured()
+    ? "无法连接云端服务，请检查 CLOUD_API_URL 或网络"
+    : `无法连接本地后端（${base || "127.0.0.1:8010"}），请确认 FastAPI 已启动`
+  return proxyToBase(req, path, base, "CLOUD_API_UNAVAILABLE", message)
 }
 
 async function proxyToBase(
@@ -103,10 +130,12 @@ async function proxyToBase(
   }
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
   const headers = buildProxyHeaders(req)
+  const timeoutMs = getProxyTimeoutMs()
   const init: RequestInit = {
     method: req.method,
     headers,
     redirect: "manual",
+    signal: AbortSignal.timeout(timeoutMs),
   }
   if (req.method !== "GET" && req.method !== "HEAD") {
     init.body = await req.text()
@@ -122,11 +151,14 @@ async function proxyToBase(
         : err instanceof Error
           ? err.message
           : String(err)
+    const message = isAbortOrTimeout(err)
+      ? `连接后端超时（${Math.round(timeoutMs / 1000)}s），请稍后重试`
+      : proxyFailedMessage
     return new Response(
       JSON.stringify({
         detail: {
-          code: "FASTAPI_PROXY_FAILED",
-          message: proxyFailedMessage,
+          code: isAbortOrTimeout(err) ? "FASTAPI_PROXY_TIMEOUT" : "FASTAPI_PROXY_FAILED",
+          message,
           cause,
         },
       }),
@@ -149,14 +181,38 @@ export async function proxyMultipartToFastapi(req: Request, path: string): Promi
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
   const headers = buildProxyHeaders(req)
   const formData = await req.formData()
-  const upstream = await fetch(url, {
-    method: req.method,
-    headers,
-    body: formData,
-    redirect: "manual",
-  })
-  const respHeaders = new Headers(upstream.headers)
-  return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+  const timeoutMs = getProxyTimeoutMs()
+  try {
+    const upstream = await fetch(url, {
+      method: req.method,
+      headers,
+      body: formData,
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const respHeaders = new Headers(upstream.headers)
+    return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+  } catch (err) {
+    const cause =
+      err instanceof Error && "cause" in err && err.cause instanceof Error
+        ? err.cause.message
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    const message = isAbortOrTimeout(err)
+      ? `连接后端超时（${Math.round(timeoutMs / 1000)}s），请稍后重试`
+      : "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）"
+    return new Response(
+      JSON.stringify({
+        detail: {
+          code: isAbortOrTimeout(err) ? "FASTAPI_PROXY_TIMEOUT" : "FASTAPI_PROXY_FAILED",
+          message,
+          cause,
+        },
+      }),
+      { status: 503, headers: { "Content-Type": "application/json" } },
+    )
+  }
 }
 
 /** 将当前请求的 query string 拼到 FastAPI path 后。 */

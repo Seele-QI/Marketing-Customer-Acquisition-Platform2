@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import NextImage from "next/image"
 import {
   Target,
   Lightbulb,
@@ -23,6 +24,7 @@ import {
   Database,
   Grid3x3,
   FileEdit,
+  Settings,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserMenu } from "@/components/user-menu"
@@ -59,8 +61,7 @@ const mainNav: NavItem[] = [
   },
   { label: "视频创作", icon: Clapperboard, badge: "NEW", iconColor: "text-rose-500", iconBg: "bg-rose-500/10",
     children: [
-      { label: "数字人口播", view: VIDEO_VIEWS.DIGITAL_HUMAN, icon: Clapperboard, iconColor: "text-rose-500" },
-      { label: "数字人视频创作（新）", view: VIDEO_VIEWS.DH_VIDEO_V2, icon: Sparkles, iconColor: "text-amber-500", badge: "NEW" },
+      { label: "数字人口播视频（新）", view: VIDEO_VIEWS.DH_VIDEO_V2, icon: Sparkles, iconColor: "text-amber-500" },
       { label: "图文视频", view: VIDEO_VIEWS.IMAGE_VIDEO, icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", view: VIDEO_VIEWS.MASHUP, icon: Scissors, iconColor: "text-violet-500" },
       { label: "宣传视频", view: VIDEO_VIEWS.PROMO, icon: Video, iconColor: "text-sky-500" },
@@ -79,6 +80,7 @@ const mainNav: NavItem[] = [
 ]
 
 const bottomNav: NavItem[] = [
+  { label: "设置", icon: Settings, iconColor: "text-slate-500", iconBg: "bg-slate-500/10" },
   { label: "帮助中心", icon: LifeBuoy, iconColor: "text-sky-500", iconBg: "bg-sky-500/10" },
 ]
 
@@ -124,14 +126,15 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
   return (
     <aside className="sticky top-0 hidden h-screen w-[240px] shrink-0 border-r border-sidebar-border bg-sidebar lg:flex lg:flex-col">
       {/* Brand */}
-      <div className="flex h-16 items-center gap-2 px-5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground soft-shadow">
-          <Sparkles className="h-5 w-5" aria-hidden="true" />
-        </div>
-        <div className="flex flex-col leading-tight">
-          <span className="text-[15px] font-semibold text-sidebar-foreground">AgentHub</span>
-          <span className="text-[11px] text-muted-foreground">AI 智能体中心</span>
-        </div>
+      <div className="flex h-[92px] items-center px-3 py-2">
+        <NextImage
+          src="/brand-logo.png"
+          alt="招财猫"
+          width={224}
+          height={72}
+          className="h-[72px] w-full object-contain object-left"
+          priority
+        />
       </div>
 
       {/* Section label */}
@@ -238,7 +241,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
                                   : (child.iconColor || "text-muted-foreground/60")
                               )}
                             />
-                            <span className="flex-1 truncate">{child.label}</span>
+                            <span className="flex-1 leading-snug">{child.label}</span>
                             {childRunning ? (
                               <span
                                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 animate-pulse"

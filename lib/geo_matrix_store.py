@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any, Optional
@@ -44,10 +45,21 @@ def _parse_json(raw: str | None, fallback: Any) -> Any:
         return fallback
 
 
-def _row_to_dict(row) -> dict[str, Any]:
+def _row_to_dict(row, *, include_heavy_fields: bool = True) -> dict[str, Any]:
     keys = row.keys() if hasattr(row, "keys") else []
     provider = row["provider"] if "provider" in keys else "deepseek"
-    return {
+    if include_heavy_fields:
+        matrix = _parse_json(row["matrix_json"], EMPTY_MATRIX)
+        has_matrix = bool((matrix or {}).get("platforms"))
+    else:
+        matrix = EMPTY_MATRIX
+        raw = (row["matrix_json"] or "").strip()
+        has_matrix = bool(
+            raw
+            and raw not in ("{}", '{"platforms":[]}', '{"platforms": []}')
+            and '"platforms"' in raw
+        )
+    result: dict[str, Any] = {
         "id": row["id"],
         "userId": row["user_id"],
         "name": row["name"],
@@ -55,22 +67,28 @@ def _row_to_dict(row) -> dict[str, Any]:
         "modelSkillId": row["model_skill_id"],
         "viralSkillIds": _parse_json(row["viral_skill_ids_json"], []),
         "enterpriseSkillId": row["enterprise_skill_id"],
-        "enterpriseSnapshot": row["enterprise_snapshot"],
         "provider": provider or "deepseek",
-        "matrix": _parse_json(row["matrix_json"], EMPTY_MATRIX),
+        "matrix": matrix,
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
+        "hasMatrix": has_matrix,
     }
+    if include_heavy_fields:
+        result["enterpriseSnapshot"] = row["enterprise_snapshot"]
+    else:
+        result["enterpriseSnapshot"] = None
+    return result
 
 
-def list_projects(user_id: int) -> list[dict[str, Any]]:
+def list_projects(user_id: int, *, summary: bool = False) -> list[dict[str, Any]]:
     _ensure_schema()
     with transaction() as conn:
         rows = conn.execute(
             "SELECT * FROM geo_matrix_projects WHERE user_id = ? ORDER BY updated_at DESC",
             (user_id,),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    include_heavy = not summary
+    return [_row_to_dict(r, include_heavy_fields=include_heavy) for r in rows]
 
 
 def get_project(project_id: str, user_id: int) -> dict[str, Any]:
@@ -100,25 +118,34 @@ def create_project(
     plat = platforms if platforms else list(DEFAULT_PLATFORMS)
     if not plat:
         plat = list(DEFAULT_PLATFORMS)
-    with transaction() as conn:
-        conn.execute(
-            """
-            INSERT INTO geo_matrix_projects (
-                id, user_id, name, platforms_json, model_skill_id,
-                viral_skill_ids_json, enterprise_skill_id, enterprise_snapshot,
-                matrix_json, provider, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, 'deepseek', ?, ?)
-            """,
-            (
-                project_id,
-                user_id,
-                name.strip() or "未命名项目",
-                json.dumps(plat, ensure_ascii=False),
-                json.dumps(EMPTY_MATRIX, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
+    try:
+        with transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO geo_matrix_projects (
+                    id, user_id, name, platforms_json, model_skill_id,
+                    viral_skill_ids_json, enterprise_skill_id, enterprise_snapshot,
+                    matrix_json, provider, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, NULL, '[]', NULL, NULL, ?, 'deepseek', ?, ?)
+                """,
+                (
+                    project_id,
+                    user_id,
+                    name.strip() or "未命名项目",
+                    json.dumps(plat, ensure_ascii=False),
+                    json.dumps(EMPTY_MATRIX, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "LOCAL_USER_MISSING",
+                "message": "本地用户未同步，请重新登录后重试",
+            },
+        ) from e
     return get_project(project_id, user_id)
 
 

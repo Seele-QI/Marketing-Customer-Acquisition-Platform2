@@ -33,6 +33,8 @@ export type MatrixProject = {
   matrix: MatrixData
   createdAt: number
   updatedAt: number
+  /** 列表 summary 模式下是否已生成矩阵（不含 matrix 正文） */
+  hasMatrix?: boolean
 }
 
 export type GenerateMatrixRequest = {

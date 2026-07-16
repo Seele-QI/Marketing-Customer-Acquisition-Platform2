@@ -74,9 +74,10 @@
 | **`VIDEO_BGM_DIR`** | **`main.py:_resolve_bgm_dir`** | **✅** | **视频剪辑 BGM 素材目录，存放 mp3 / wav / aac / m4a** |
 | `SEEDANCE_PRIMARY_BASE_URL` / `SEEDANCE_PRIMARY_API_KEY` / `SEEDANCE_PRIMARY_MODEL` | `lib/dh_video_v2_service.py` | 数字人视频创作（新）首选 | 如 `https://api.7tai.cc` + `sd2-福利`；失败回退 aicost |
 | `SEEDANCE_API_KEY` / `XINGHE_API_KEY` | `lib/dh_video_v2_service.py` | 数字人视频创作（新）备选 | aicost.xyz，见 `接口文档/` |
-| `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` | 可选 | 火山方舟 - 识图/多模态 |
+| `ARK_API_KEY` | `lib/llm/ark-client.ts` / 生图 route | 可选 | 火山方舟 - 识图/多模态/豆包对话 |
+| `ARK_CHAT_MODEL` | `lib/llm/ark-client.ts` | 可选 | 豆包预置模型，默认 `doubao-seed-2-1-pro-260628` |
 | `ARK_ENDPOINT_ID` | 同上 | 可选 | 多模态接入点 ID |
-| `ARK_BASE_URL` | 同上 | 可选 | 火山方舟 API 地域端点 |
+| `ARK_BASE_URL` | 同上 | 可选 | 默认 `https://ark.cn-beijing.volces.com/api/v3` |
 | `ARK_IMAGE_ENDPOINT_ID` | `app/api/ai/ark-images/route.ts` | 可选 | 生图接入点 ID |
 | `ARK_IMAGE_API_KEY` | 同上 | 可选 | 生图专用 API Key |
 | `POSITIONING_PRODUCT_ARK_ENDPOINT_ID` | 身份定位·产品档案 | 可选 | 人设专用豆包端点 |

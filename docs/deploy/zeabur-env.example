@@ -1,7 +1,8 @@
 # Zeabur 云端部署环境变量模板
 # 1. 运行 node scripts/generate-zeabur-secrets.mjs --admin-password "你的密码"
 # 2. 将输出填入 Zeabur 控制台（api / web 服务分别配置）
-# 3. 部署后把下方 ZEABUR_* 占位符替换为控制台实际域名
+# 3. 生产域名（阿里云北京 preview）：mcap-cloud-api / mcap-cloud-web.preview.aliyun-zeabur.cn
+# 4. 香港旧机保留不删；桌面更新见 DESKTOP-UPDATE-OSS.md
 
 # ── api 服务 ─────────────────────────────────────────────
 DATA_DIR=/data
@@ -10,9 +11,9 @@ VIDEO_BGM_DIR=/app/assets/bgm
 DEV_EMAIL_MODE=0
 PYTHONUNBUFFERED=1
 
-# 域名（部署后在 Zeabur 绑定域名并替换）
-APP_PUBLIC_BASE=https://mcap-prod-test1-web.zeabur.app
-CORS_ALLOW_ORIGINS=https://mcap-prod-test1-web.zeabur.app
+# 域名（北京 Zeabur 预生成）
+APP_PUBLIC_BASE=https://mcap-cloud-web.preview.aliyun-zeabur.cn
+CORS_ALLOW_ORIGINS=https://mcap-cloud-web.preview.aliyun-zeabur.cn
 
 # 安全（generate-zeabur-secrets.mjs 生成）
 EMAIL_HASH_SALT=
@@ -22,17 +23,20 @@ CREDIT_ADMIN_ACCESS_KEY=
 DEEPSEEK_API_KEY=
 RUNNINGHUB_API_KEY=
 
-# 中央激活 / 版本（与桌面端共用同一 api 服务时可合并）
+# 中央激活 / 版本（与桌面端共用同一 api；更新包在 OSS）
 CENTRAL_SIGNING_PRIVATE_KEY=
 CENTRAL_SIGNING_KEY_ID=v1
 CENTRAL_LATEST_VERSION=0.1.0
 CENTRAL_FORCE_UPDATE_BELOW=0.0.1
-CENTRAL_UPDATE_URL=
+CENTRAL_UPDATE_URL=https://mcap-desktop-releases.oss-cn-beijing.aliyuncs.com/releases/
+# 可选：强更/设置页展示的短文本
+# CENTRAL_RELEASE_NOTES=修复登录与更新体验
 
 # ── web 服务 ─────────────────────────────────────────────
 NODE_ENV=production
-FASTAPI_URL=http://api:8000
-NEXT_PUBLIC_FASTAPI_URL=https://mcap-prod-test1-api.zeabur.app
+# 内网主机名以 Zeabur 网络面板为准（服务名可能是 zhongtai-cloud-api）
+FASTAPI_URL=http://zhongtai-cloud-api.zeabur.internal:8080
+NEXT_PUBLIC_FASTAPI_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
 
 # 管理员 UI 登录（与 api 无关，仅 web 校验）
 ADMIN_LOGIN_NAME=admin
@@ -41,6 +45,9 @@ ADMIN_PASSWORD_SALT=
 CREDIT_ADMIN_ACCESS_KEY=
 
 # ── 桌面 Electron 构建机（.env.electron-build.local）──
-CLOUD_API_URL=https://mcap-prod-test1-api.zeabur.app
-CENTRAL_SERVICE_URL=https://mcap-prod-test1-api.zeabur.app
+CLOUD_API_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
+CENTRAL_SERVICE_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
+UPDATE_FEED_URL=https://mcap-desktop-releases.oss-cn-beijing.aliyuncs.com/releases/
 CENTRAL_SIGNING_PUBLIC_KEY=
+# OSS 上传：OSS_REGION / OSS_BUCKET / OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET / OSS_PREFIX=releases
+

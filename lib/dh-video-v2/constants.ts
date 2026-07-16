@@ -110,10 +110,11 @@ export function estimateDhVideoV2Cost(
   _resolution: DhVideoV2Resolution,
   segmentCount?: number,
 ): number {
+  // 计费：每段 15 秒 × 单价（Seedance = 450）；段数优先，否则由计划时长反推
   const segments =
-    segmentCount && segmentCount > 0
-      ? segmentCount
-      : Math.max(1, Math.floor((Math.max(DH_V2_SEGMENT_SEC, planDuration) + 14) / 15))
+    typeof segmentCount === "number" && segmentCount > 0
+      ? Math.floor(segmentCount)
+      : Math.max(1, Math.ceil(Math.max(0, planDuration) / DH_V2_SEGMENT_SEC) || 1)
   return segments * segmentCostForProvider(provider)
 }
 

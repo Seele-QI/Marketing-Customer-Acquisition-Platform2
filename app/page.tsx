@@ -12,8 +12,10 @@ import { VideoWorkspace } from "@/components/video/video-workspace"
 import { GeoWorkspace } from "@/components/geo/geo-workspace"
 import {
   VIDEO_VIEWS,
+  DEFAULT_VIDEO_VIEW,
   getVideoBreadcrumb,
   isVideoView,
+  type VideoView,
 } from "@/lib/video/workspace"
 import { getGeoBreadcrumb, isGeoView } from "@/lib/geo/workspace"
 import { AgentCenter } from "@/components/agent-center"
@@ -37,10 +39,21 @@ import type { ComponentType } from "react"
 
 /* Map agent names to their icons */
 const agentIconMap: Record<string, ComponentType<{ className?: string }>> = {
-  "实体店获客脚本创作": Store,
-  "私域裂变脚本": Share2,
-  "高效口播脚本": Mic,
-  "爆款脚本洗稿": RefreshCw,
+  "数字人口播文案": Store,
+  "图文视频混剪文案": Share2,
+  "宣传视频文案创作": Mic,
+  "爆款脚本二创": RefreshCw,
+}
+
+const agentVideoRouteMap: Record<string, VideoView> = {
+  "数字人口播文案": VIDEO_VIEWS.DH_VIDEO_V2,
+  "图文视频混剪文案": VIDEO_VIEWS.IMAGE_VIDEO,
+  "宣传视频文案创作": VIDEO_VIEWS.PROMO,
+  "爆款脚本二创": VIDEO_VIEWS.MASHUP,
+}
+
+function getVideoRouteForAgent(agentName: string): VideoView {
+  return agentVideoRouteMap[agentName] ?? DEFAULT_VIDEO_VIEW
 }
 
 type ActiveAgent = {
@@ -53,18 +66,34 @@ type ActiveAgent = {
 }
 
 const agentColorMap: Record<string, string> = {
-  "实体店获客脚本创作": "var(--color-rose-500)",
-  "私域裂变脚本": "var(--color-violet-500)",
-  "高效口播脚本": "var(--color-amber-500)",
-  "爆款脚本洗稿": "var(--color-emerald-500)",
+  "数字人口播文案": "var(--color-rose-500)",
+  "图文视频混剪文案": "var(--color-violet-500)",
+  "宣传视频文案创作": "var(--color-amber-500)",
+  "爆款脚本二创": "var(--color-emerald-500)",
 }
 
 /** Quick prompts for each copywriting agent (used in agent switcher) */
 const agentQuickPromptsMap: Record<string, string[]> = {
-  "实体店获客脚本创作": ["我是做餐饮的，帮我写一条引流短视频脚本", "写一条本地生活探店风格的获客脚本", "帮我生成3个不同行业的获客钩子"],
-  "私域裂变脚本": ["设计一个社群裂变活动脚本", "帮我写一条朋友圈裂变文案", "生成企微好友邀请话术模板"],
-  "高效口播脚本": ["写一段30秒产品口播稿，带开场钩子", "把这段卖点改成交互式口播稿", "给我一版数字人口播用的分段停顿稿"],
-  "爆款脚本洗稿": ["把这个热门脚本改写成我的风格", "保留爆款结构，换成餐饮行业的内容", "把这条抖音爆款改成小红书口吻"],
+  "数字人口播文案": [
+    "我是做餐饮的，帮我写一条引流短视频口播稿",
+    "写一条本地生活探店风格的数字人口播稿",
+    "帮我生成3个不同行业的获客钩子口播稿",
+  ],
+  "图文视频混剪文案": [
+    "我有5张产品图，帮我写图文视频旁白",
+    "写一段混剪视频的转场旁白",
+    "按图片顺序写配音文案，每张3-5秒",
+  ],
+  "宣传视频文案创作": [
+    "写一段30秒品牌宣传口播稿，带开场钩子",
+    "给我的产品写60秒宣传片文案",
+    "生成3个不同语气的宣传视频脚本",
+  ],
+  "爆款脚本二创": [
+    "把这个热门脚本改写成我的风格",
+    "保留爆款结构，换成餐饮行业的内容",
+    "把这条抖音爆款改成小红书口吻",
+  ],
 }
 
 /** Build allAgents list for CopywritingChatWorkspace agent switcher */
@@ -108,6 +137,8 @@ function getBreadcrumb(view: MainView): { parent: string; current: string } {
       return { parent: "工作台", current: "文案创作" }
     case "身份定位":
       return { parent: "工作台", current: "身份定位" }
+    case "设置":
+      return { parent: "更多", current: "设置" }
     case "自动保存图片":
       return { parent: "更多", current: "自动保存图片" }
     case "帮助中心":
@@ -165,10 +196,10 @@ function ContentArea({
       <CopywritingExtractView
         onJumpToVideo={(script) => {
           setInitialVideoScript(script)
-          onNavigate(VIDEO_VIEWS.DIGITAL_HUMAN)
+          onNavigate(VIDEO_VIEWS.DH_VIDEO_V2)
         }}
         onAiRewrite={(text) => {
-          setInlineCopywritingAgent("高效口播脚本")
+          setInlineCopywritingAgent("宣传视频文案创作")
           setInitialExtractedText(text)
           onNavigate("文案创作")
         }}
@@ -188,7 +219,7 @@ function ContentArea({
         onAgentSwitch={(name) => setInlineCopywritingAgent(name)}
         onJumpToVideo={(script) => {
           setInitialVideoScript(script)
-          onNavigate(VIDEO_VIEWS.DIGITAL_HUMAN)
+          onNavigate(getVideoRouteForAgent(inlineCopywritingAgent))
         }}
         initialUserMessage={initialExtractedText}
         welcomePrompts={[
@@ -213,7 +244,7 @@ function ContentArea({
     return <AccountPositioning />
   }
 
-  if (activeView === "自动保存图片") {
+  if (activeView === "设置" || activeView === "自动保存图片") {
     return <SettingsView />
   }
 
@@ -246,7 +277,7 @@ export default function Page() {
   /** Distinguish: copywriting agents (no avatar) vs team agents (with avatar) */
   const [isCopywritingMode, setIsCopywritingMode] = useState(false)
   /** Track the active copywriting agent when in inline mode */
-  const [inlineCopywritingAgent, setInlineCopywritingAgent] = useState("高效口播脚本")
+  const [inlineCopywritingAgent, setInlineCopywritingAgent] = useState("宣传视频文案创作")
   /** Cross-navigate: script passed from copywriting → video creation */
   const [initialVideoScript, setInitialVideoScript] = useState("")
   /** Cross-navigate: extracted text passed from 文案提取 → AI 改写 */
@@ -312,7 +343,7 @@ export default function Page() {
               onJumpToVideo={(script) => {
                 setInitialVideoScript(script)
                 setAgentChatOpen(false)
-                setActiveView(VIDEO_VIEWS.DIGITAL_HUMAN)
+                setActiveView(getVideoRouteForAgent(activeAgent.name))
               }}
             />
           ) : (

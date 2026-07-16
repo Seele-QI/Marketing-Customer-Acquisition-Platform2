@@ -62,6 +62,8 @@ async function handleBatchGenerate(
   const platformIds = Array.isArray(body.platformIds)
     ? body.platformIds.map(String).filter(Boolean)
     : []
+  const copiesPerSlot =
+    typeof body.copiesPerSlot === "number" ? body.copiesPerSlot : Number(body.copiesPerSlot)
 
   let preview
   try {
@@ -70,6 +72,7 @@ async function handleBatchGenerate(
         mode: "direction",
         direction: String(body.direction ?? ""),
         platformIds,
+        copiesPerSlot: Number.isFinite(copiesPerSlot) ? copiesPerSlot : undefined,
       })
     } else {
       const projectId = String(body.projectId ?? "").trim()
@@ -86,6 +89,7 @@ async function handleBatchGenerate(
         project,
         dates,
         platformIds,
+        copiesPerSlot: Number.isFinite(copiesPerSlot) ? copiesPerSlot : undefined,
       })
     }
   } catch (err) {

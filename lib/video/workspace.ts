@@ -10,7 +10,6 @@ export const VIDEO_WORKSPACE_LABEL = "视频创作"
 
 /** 内部 view key → 侧边栏展示名 */
 export const VIDEO_VIEWS = {
-  DIGITAL_HUMAN: "视频创作",
   DH_VIDEO_V2: "数字人视频创作（新）",
   IMAGE_VIDEO: "图文视频",
   MASHUP: "视频混剪",
@@ -21,8 +20,7 @@ export const VIDEO_VIEWS = {
 export type VideoView = (typeof VIDEO_VIEWS)[keyof typeof VIDEO_VIEWS]
 
 export const VIDEO_VIEW_LABELS: Record<VideoView, string> = {
-  [VIDEO_VIEWS.DIGITAL_HUMAN]: "数字人口播",
-  [VIDEO_VIEWS.DH_VIDEO_V2]: "数字人视频创作（新）",
+  [VIDEO_VIEWS.DH_VIDEO_V2]: "数字人口播视频（新）",
   [VIDEO_VIEWS.IMAGE_VIDEO]: "图文视频",
   [VIDEO_VIEWS.MASHUP]: "视频混剪",
   [VIDEO_VIEWS.PROMO]: "宣传视频",
@@ -44,3 +42,6 @@ export function getVideoBreadcrumb(view: VideoView): {
     current: VIDEO_VIEW_LABELS[view],
   }
 }
+
+/** 文案 / 提取跳转视频创作时的默认子页 */
+export const DEFAULT_VIDEO_VIEW: VideoView = VIDEO_VIEWS.DH_VIDEO_V2

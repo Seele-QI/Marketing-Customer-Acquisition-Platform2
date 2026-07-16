@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 
+import { ARTICLE_MAX_CHARS } from "@/lib/geo/article-format"
 import { buildSkillContextBlock } from "@/lib/geo/build-skill-context"
 import { getMatrixPlatformLabel, resolveViralSkillIds } from "@/lib/geo/matrix-platforms"
 import { skillSummary } from "@/lib/geo/skill-summary"
@@ -26,19 +27,21 @@ export type ArticlePromptContext = {
 }
 
 export function buildArticleSystemPrompt(): string {
-  const skillBody = readSkillExcerpt(DEEP_ARTICLE_SKILL, 3500)
-  const template = readSkillExcerpt(OUTPUT_TEMPLATE, 2000)
+  const skillBody = readSkillExcerpt(DEEP_ARTICLE_SKILL, 2800)
+  const template = readSkillExcerpt(OUTPUT_TEMPLATE, 1600)
 
-  return `你是 GEO（Generative Engine Optimization）深度长文创作专家。
-请严格遵循「深度优化文章创作准则」，输出可直接发布的 Markdown 长文。
+  return `你是 GEO（Generative Engine Optimization）短文创作专家。
+请严格遵循「深度优化文章创作准则」，输出可直接发布的**纯文本**短文（各平台通用上限）。
 
 ## 硬规则
-1. 语义清晰：概念先定义，H2/H3 对齐用户检索意图
-2. 对话式：用用户会问的自然语言问题组织段落
+1. 语义清晰：首段先给定义/结论，小标题用自然语言问法
+2. 对话式：用用户会问的问题组织段落
 3. 证据驱动：关键结论标注「需验证」或「经验性观点」，不伪造 URL/数据
-4. 结构化 FAQ：文末至少 3 条 Q&A
-5. 篇幅：1200–2500 汉字（不含 Markdown 符号）
-6. 只输出 Markdown 正文，不要 JSON-LD，不要解释性前言
+4. 篇幅：全文不超过 ${ARTICLE_MAX_CHARS} 个汉字/字符（不含空白），宜 600–900 字
+5. **纯文本**：禁止 Markdown 标记（# * \` \`\`\` | []() 等）、禁止 emoji 与装饰符号（★◆▶ 等）
+6. **文章标签**：文末单独一行，格式固定为：标签：#标签1 #标签2 #标签3（3–5 个，无其它符号）
+7. 可含 1–2 条简短 FAQ（问答各一两句），不要 JSON-LD、不要代码块
+8. 只输出正文 + 标签行，不要解释性前言
 
 ## 准则摘录
 ${skillBody}
@@ -79,9 +82,9 @@ export function buildArticleUserPrompt(
 - 计划发布日：${job.date ?? "待定"}`
       : ""
 
-  return `请为 **${platformLabel}** 平台撰写一篇 GEO 优化长文。
+  return `请为 **${platformLabel}** 平台撰写一篇 GEO 优化短文（纯文本）。
 
-## 标题（H1 使用）
+## 标题（作为首行，勿加 #）
 ${job.title}
 
 ## 创作方向
@@ -96,8 +99,9 @@ ${viralBlock}
 
 ${enterpriseBlock ? `${enterpriseBlock}\n` : ""}
 ## 平台原生要求
-- 标题、段落节奏、话术必须符合 ${platformLabel} 用户阅读习惯
-- 与通用长文不同：钩子、分段、emoji/标签（如适用）按 B 层策略调整
+- 标题、分段节奏、话术符合 ${platformLabel} 阅读习惯
+- 禁止 emoji；话题标签仅出现在文末「标签：」行
+- 全文（含标签行）不超过 ${ARTICLE_MAX_CHARS} 字
 
-请直接输出完整 Markdown 长文。`
+请直接输出纯文本正文，并以「标签：#… #…」结束。`
 }

@@ -2,7 +2,6 @@
  * 全局任务运行时 — 注册 / 轮询 / 订阅 / 完成写历史
  * 单例，与 React 树解耦；Provider 仅负责挂载与 toast。
  */
-import { digitalHumanAdapter } from "@/lib/task-runtime/adapters/digital-human"
 import { dhVideoV2Adapter } from "@/lib/task-runtime/adapters/dh-video-v2"
 import { imageVideoAdapter, mashupAdapter } from "@/lib/task-runtime/adapters/clip"
 import { extractAdapter } from "@/lib/task-runtime/adapters/extract"
@@ -21,12 +20,12 @@ import type {
   TaskAdapter,
   TaskKind,
 } from "@/lib/task-runtime/types"
+import { getTaskHardTimeoutMs } from "@/lib/task-runtime/constants"
 import { ALL_TASK_KINDS } from "@/lib/task-runtime/types"
 
 type Listener = (event: RuntimeEvent) => void
 
 const adapters: Record<TaskKind, TaskAdapter> = {
-  "digital-human": digitalHumanAdapter,
   "dh-video-v2": dhVideoV2Adapter,
   "image-video": imageVideoAdapter,
   mashup: mashupAdapter,
@@ -43,8 +42,6 @@ class TaskRuntime {
   private pollErrors = new Map<TaskKind, number>()
   private listeners = new Set<Listener>()
   private started = false
-  /** 半成品历史已写（digital-human 封面等待期） */
-  private semiHistoryWritten = new Set<string>()
 
   start(): void {
     if (this.started) return
@@ -91,7 +88,6 @@ class TaskRuntime {
     const prev = this.tasks[input.kind]
     if (prev?.status === "running" && prev.taskId !== input.taskId) {
       this.clearTimer(input.kind)
-      this.semiHistoryWritten.delete(prev.taskId)
     }
 
     const task = createRuntimeTask(input)
@@ -107,8 +103,6 @@ class TaskRuntime {
   /** 停止跟踪（不取消后端任务） */
   abandon(kind: TaskKind): void {
     this.clearTimer(kind)
-    const t = this.tasks[kind]
-    if (t) this.semiHistoryWritten.delete(t.taskId)
     delete this.tasks[kind]
     this.persist()
     this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
@@ -138,6 +132,11 @@ class TaskRuntime {
       this.schedulePoll(kind, 0)
     }
     return next
+  }
+
+  /** 封面等异步完成后刷新创作历史列表 */
+  notifyHistoryUpdated(): void {
+    this.emit({ type: "history-updated" })
   }
 
   /** 用户主动标记失败（如点停止） */
@@ -206,6 +205,26 @@ class TaskRuntime {
     this.inflight.add(kind)
     const adapter = adapters[kind]
     try {
+      const hardTimeoutMs = getTaskHardTimeoutMs(kind)
+      if (
+        hardTimeoutMs != null &&
+        task.createdAt > 0 &&
+        Date.now() - task.createdAt > hardTimeoutMs
+      ) {
+        await this.finalize(
+          kind,
+          {
+            ...task,
+            status: "failed",
+            error: "任务超时（已超过 50 分钟）",
+            stageLabel: "超时",
+            updatedAt: Date.now(),
+          },
+          { writeHistory: adapter.writeHistory },
+        )
+        return
+      }
+
       const outcome = await adapter.poll(task)
       // 任务可能在 await 期间被 abandon
       const current = this.tasks[kind]
@@ -228,24 +247,7 @@ class TaskRuntime {
         this.persist()
         this.emit({ type: "task-updated", task: next })
 
-        // digital-human：半成品视频就绪时先写一次历史
-        if (
-          kind === "digital-human" &&
-          outcome.meta?.semiFinishedReady &&
-          next.result?.videoUrl &&
-          !this.semiHistoryWritten.has(next.taskId)
-        ) {
-          this.semiHistoryWritten.add(next.taskId)
-          void writeHistoryFromTask({ ...next, status: "success" }).then(() => {
-            this.emit({ type: "history-updated" })
-          })
-        }
-
-        const interval =
-          kind === "digital-human" && outcome.meta?.coverWaitStartedAt
-            ? 10_000
-            : adapter.pollIntervalMs
-        this.schedulePoll(kind, interval)
+        this.schedulePoll(kind, adapter.pollIntervalMs)
         return
       }
 
@@ -328,7 +330,6 @@ class TaskRuntime {
     this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
 
     if (options.writeHistory) {
-      // 半成品已写过则 success 时再 upsert 一次（带封面）
       try {
         await writeHistoryFromTask(task)
         this.emit({ type: "history-updated" })
@@ -336,7 +337,6 @@ class TaskRuntime {
         /* ignore history errors */
       }
     }
-    this.semiHistoryWritten.delete(task.taskId)
   }
 }
 

@@ -15,11 +15,17 @@ export type { DhV2PlanScriptRequest, DhV2ScriptPlan }
 /** 分镜 AI 慢速阈值（毫秒） */
 export const PLAN_SCRIPT_SLOW_MS = 120_000
 
+/** 安装包 sync 后等待 Next 注入 Key 的轮询上限 */
+const PLAN_READY_POLL_MS = 90_000
+const PLAN_READY_INTERVAL_MS = 1_500
+
 const JSON_HEADERS = { "Content-Type": "application/json" }
 const FETCH_OPTS: RequestInit = { credentials: "include" }
 
 const NETWORK_HINT =
-  "无法连接后端服务，请确认已启动 FastAPI（pnpm dev:all 或 uvicorn main:app --port 8000）"
+  typeof window !== "undefined" && window.electronAPI?.isElectron
+    ? "无法连接本地服务，请稍候重试；若持续失败请从托盘打开日志文件夹查看 next.log"
+    : "无法连接后端服务，请确认已启动 FastAPI（pnpm dev:all 或 uvicorn main:app --port 8000）"
 
 async function dhV2Fetch(path: string, init?: RequestInit): Promise<Response> {
   try {
@@ -51,18 +57,100 @@ function throwDhV2ApiError(
 ): never {
   const msg = parseApiErrorResponse(status, { detail: data.detail ?? data.error }, parseDetail(data))
   if (status === 401) promptLoginRequired(msg)
-  throw new Error(formatDhVideoV2Error(msg))
+  throw new Error(formatDhVideoV2Error(msg, status, data.detail))
 }
 
-export function formatDhVideoV2Error(raw: string): string {
+export function formatDhVideoV2Error(
+  raw: string,
+  status?: number,
+  detail?: unknown,
+): string {
   const s = raw.trim()
   if (!s) return "视频生成失败，请稍后重试"
+
+  const code =
+    detail && typeof detail === "object"
+      ? String((detail as { code?: string }).code || "")
+      : ""
+
+  if (code === "PLAN_LLM_NOT_CONFIGURED" || /PLAN_LLM_NOT_CONFIGURED|未配置分镜大模型/i.test(s)) {
+    return s.includes("桌面安装包")
+      ? s
+      : "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。"
+  }
+  if (code === "PLAN_LLM_ALL_FAILED" || (status === 502 && /NewAPI|DeepSeek|sonetto|分镜/i.test(s))) {
+    if (/NewAPI|DeepSeek|sonetto|timeout|ETIMEDOUT|ECONNREFUSED|fetch failed/i.test(s)) {
+      return `分镜大模型调用失败（可能是外网不通或代理干扰）：${s}`
+    }
+    return s.startsWith("分镜") ? s : `分镜生成失败：${s}`
+  }
+
   if (/尚未接入|501/i.test(s)) return "后端接口预留中，敬请期待"
-  if (/Authorization|API Key|401|403/i.test(s)) return "引擎 API 密钥无效或未配置"
+  // 勿把「未配置分镜…API Key」吞成笼统引擎密钥错误
+  if (/Authorization|401|403/i.test(s) && !/分镜|NEWAPI|DEEPSEEK/i.test(s)) {
+    return "引擎 API 密钥无效或未配置"
+  }
+  if (/API Key/i.test(s) && !/分镜|NEWAPI|DEEPSEEK|未配置分镜/i.test(s)) {
+    return "引擎 API 密钥无效或未配置"
+  }
   if (/too many images|超过.*9.*图/i.test(s)) return "参考图最多 9 张，请减少后重试"
   if (/too many audios|音频.*3/i.test(s)) return "音频参考最多 3 个，请减少后重试"
   if (/unsupported resolution|1080p/i.test(s)) return "当前模型不支持该分辨率，请改用 720p 或切换 Xinghe 2.0"
   return s
+}
+
+export type PlanScriptReady = { ready: boolean; providers: string[] }
+
+export async function queryDhVideoV2PlanScriptReady(): Promise<PlanScriptReady> {
+  const r = await dhV2Fetch("/api/dh-video-v2/plan-script/ready")
+  const data = (await r.json().catch(() => ({}))) as {
+    ready?: boolean
+    providers?: string[]
+  }
+  return {
+    ready: Boolean(data.ready),
+    providers: Array.isArray(data.providers) ? data.providers.map(String) : [],
+  }
+}
+
+/**
+ * 桌面安装包：触发云端 Key sync，并轮询直到分镜 LLM 可用（或超时）。
+ * 开发机（非 Electron）：仅探测一次，不可用则抛出明确错误。
+ */
+export async function ensureDhVideoV2PlanScriptReady(options?: {
+  onStatus?: (msg: string) => void
+}): Promise<PlanScriptReady> {
+  const onStatus = options?.onStatus
+  const isElectron = Boolean(window.electronAPI?.isElectron)
+
+  if (isElectron && window.electronAPI?.syncConfig) {
+    onStatus?.("正在同步云端配置…")
+    try {
+      await window.electronAPI.syncConfig()
+    } catch {
+      // sync 失败仍继续探测（可能已有缓存 Key）
+    }
+  }
+
+  const deadline = Date.now() + (isElectron ? PLAN_READY_POLL_MS : 0)
+  for (;;) {
+    try {
+      const ready = await queryDhVideoV2PlanScriptReady()
+      if (ready.ready) return ready
+      if (!isElectron || Date.now() >= deadline) {
+        throw new Error(
+          "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。",
+        )
+      }
+      onStatus?.("等待分镜大模型配置就绪…")
+      await new Promise((r) => setTimeout(r, PLAN_READY_INTERVAL_MS))
+    } catch (e) {
+      if (e instanceof Error && /未配置分镜大模型/.test(e.message)) throw e
+      if (!isElectron || Date.now() >= deadline) throw e
+      onStatus?.("本地服务重启中，请稍候…")
+      await new Promise((r) => setTimeout(r, PLAN_READY_INTERVAL_MS))
+    }
+  }
 }
 
 /** 从上游原始响应提取 task_id */

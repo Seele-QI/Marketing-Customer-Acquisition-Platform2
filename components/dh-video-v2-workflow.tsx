@@ -22,6 +22,15 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
 import { resolveMediaUrl } from "@/lib/video/utils"
+import { VideoCoverSettings } from "@/components/video-cover-settings"
+import {
+  DEFAULT_COVER_ASPECT_RATIO,
+  DEFAULT_COVER_RESOLUTION,
+  type CoverAspectRatio,
+  type CoverResolution,
+} from "@/lib/video/cover-constants"
+import { startCoverGeneration } from "@/lib/video/cover-runtime"
+import { PreviewVideoCoverPanel } from "@/components/video/preview-video-cover-panel"
 import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { isLoginRequiredError } from "@/lib/auth/prompt-login"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
@@ -51,17 +60,18 @@ import {
   DH_V2_SEEDANCE_RATIOS,
   DH_V2_STEP_LABELS,
   buildSubmitPayload,
-  dataUrlToRawBase64,
   estimateDhVideoV2Cost,
   validateDhVideoV2Compose,
   validateDhVideoV2ScriptPlan,
 } from "@/lib/dh-video-v2/constants"
 import {
   PLAN_SCRIPT_SLOW_MS,
+  ensureDhVideoV2PlanScriptReady,
   requestDhVideoV2ScriptPlan,
   retryDhVideoV2Segment,
   submitDhVideoV2,
 } from "@/lib/dh-video-v2/api"
+import { compressImagesForPlanScript } from "@/lib/dh-video-v2/plan-image-compress"
 import {
   assessScriptDuration,
   type DhV2ScriptPlan,
@@ -160,7 +170,7 @@ function inferMode(images: number, _audios: number): DhVideoV2Mode {
   return "first_frame"
 }
 
-export default function DhVideoV2Workflow() {
+export default function DhVideoV2Workflow({ initialScript = "" }: { initialScript?: string }) {
   const { resolvedTheme } = useTheme()
   const { requireLogin, promptLogin } = useLoginRequired()
   const runtimeApi = useTaskRuntimeApi()
@@ -205,9 +215,16 @@ export default function DhVideoV2Workflow() {
   const [audios, setAudios] = useState<MaterialSlotItem[]>([])
   const [script, setScript] = useState("")
   const [creativeIdea, setCreativeIdea] = useState("")
+
+  useEffect(() => {
+    const s = initialScript.trim()
+    if (s) setScript(s)
+  }, [initialScript])
   const [scriptPlan, setScriptPlan] = useState<DhV2ScriptPlan | null>(null)
 
   const [aspectRatio, setAspectRatio] = useState<DhVideoV2Ratio>("9:16")
+  const [coverAspectRatio, setCoverAspectRatio] = useState<CoverAspectRatio>(DEFAULT_COVER_ASPECT_RATIO)
+  const [coverResolution, setCoverResolution] = useState<CoverResolution>(DEFAULT_COVER_RESOLUTION)
 
   const [planning, setPlanning] = useState(false)
   const [planErr, setPlanErr] = useState("")
@@ -219,6 +236,9 @@ export default function DhVideoV2Workflow() {
   const [genStage, setGenStage] = useState("")
   const [genErr, setGenErr] = useState("")
   const [videoUrl, setVideoUrl] = useState("")
+  const [coverUrl, setCoverUrl] = useState("")
+  const [coverStatus, setCoverStatus] = useState<"idle" | "running" | "success" | "failed">("idle")
+  const [coverError, setCoverError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [segCompleted, setSegCompleted] = useState(0)
   const [segTotal, setSegTotal] = useState(0)
@@ -287,6 +307,8 @@ export default function DhVideoV2Workflow() {
       setScript(draft.script)
       setCreativeIdea(draft.creativeIdea)
       setAspectRatio((draft.aspectRatio as DhVideoV2Ratio) || "9:16")
+      setCoverAspectRatio(draft.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO)
+      setCoverResolution(draft.coverResolution ?? DEFAULT_COVER_RESOLUTION)
       if (draft.scriptPlanJson) {
         try {
           setScriptPlan(JSON.parse(draft.scriptPlanJson) as DhV2ScriptPlan)
@@ -314,6 +336,8 @@ export default function DhVideoV2Workflow() {
       script,
       creativeIdea,
       aspectRatio,
+      coverAspectRatio,
+      coverResolution,
       scriptPlanJson: scriptPlan ? JSON.stringify(scriptPlan) : "",
       planErr,
       showAdvancedPlan,
@@ -332,6 +356,8 @@ export default function DhVideoV2Workflow() {
     script,
     creativeIdea,
     aspectRatio,
+    coverAspectRatio,
+    coverResolution,
     scriptPlan,
     planErr,
     showAdvancedPlan,
@@ -347,12 +373,20 @@ export default function DhVideoV2Workflow() {
 
   const durationPreview = useMemo(() => assessScriptDuration(script), [script])
   const mode = inferMode(images.length, audios.length)
-  const estimatedCost = estimateDhVideoV2Cost(
-    "seedance",
-    scriptPlan?.plan_duration ?? durationPreview.plan_duration,
-    "720p",
-    scriptPlan?.segment_count,
-  )
+  // 优先用已确认分镜段数；否则用口播评估段数。避免只按单段 450 显示、与「计划 N 段」不一致
+  const billingSegmentCount =
+    (scriptPlan?.segment_count && scriptPlan.segment_count > 0
+      ? scriptPlan.segment_count
+      : durationPreview.segment_count) || 0
+  const estimatedCost =
+    billingSegmentCount > 0
+      ? estimateDhVideoV2Cost(
+          "seedance",
+          billingSegmentCount * 15,
+          "720p",
+          billingSegmentCount,
+        )
+      : 0
 
   const steps = buildSteps(step, genStatus)
 
@@ -435,6 +469,22 @@ export default function DhVideoV2Workflow() {
           }
         }),
       )
+    }
+
+    // 封面与成片并行：成片已完成后 patch 封面仍会触发本 effect
+    const nextCoverUrl = String(dhRuntime.result?.coverUrl ?? "")
+    const metaCoverStatus = String(dhRuntime.meta?.coverStatus ?? "")
+    if (nextCoverUrl) {
+      setCoverUrl(nextCoverUrl)
+      setCoverStatus("success")
+      setCoverError("")
+    } else if (metaCoverStatus === "running" || metaCoverStatus === "failed") {
+      setCoverStatus(metaCoverStatus)
+      if (metaCoverStatus === "failed") {
+        setCoverError(String(dhRuntime.meta?.coverError ?? "封面生成失败"))
+      }
+    } else if (metaCoverStatus === "success" && !nextCoverUrl) {
+      setCoverStatus("success")
     }
 
     if (dhRuntime.status === "running") {
@@ -593,14 +643,23 @@ export default function DhVideoV2Workflow() {
     setPlanning(true)
     setPlanSlow(false)
     setPlanErr("")
-    setComposePhase("正在生成分镜脚本，预计 2–3 分钟…")
+    setComposePhase("正在准备分镜环境…")
     try {
+      await ensureDhVideoV2PlanScriptReady({
+        onStatus: (msg) => setComposePhase(msg),
+      })
+      if (controller.signal.aborted) return null
+
+      setComposePhase("正在压缩参考图并生成分镜脚本，预计 2–3 分钟…")
+      const imagesBase64 = await compressImagesForPlanScript(images.map((i) => i.dataUrl))
+      if (controller.signal.aborted) return null
+
       const { plan } = await requestDhVideoV2ScriptPlan(
         {
           script: script.trim(),
           creative_idea: creativeIdea.trim() || "专业数字人口播，竖屏 9:16，自然表情",
           image_count: images.length,
-          images_base64: images.map((i) => dataUrlToRawBase64(i.dataUrl)),
+          images_base64: imagesBase64,
           has_audio_ref: audios.length > 0,
         },
         { signal: controller.signal },
@@ -763,6 +822,9 @@ export default function DhVideoV2Workflow() {
       setGenProgress(5)
       setGenStage("已提交，正在生成…")
       setStep("generating")
+      setCoverUrl("")
+      setCoverError("")
+      setCoverStatus(images[0]?.dataUrl ? "running" : "idle")
       runtimeApi.register({
         kind: "dh-video-v2",
         taskId: res.task_id,
@@ -770,6 +832,16 @@ export default function DhVideoV2Workflow() {
         stageLabel: "视频生成中",
         meta: { script: script.trim().slice(0, 80), segmentCount: plan.segment_count },
       })
+      if (images[0]?.dataUrl) {
+        startCoverGeneration({
+          kind: "dh-video-v2",
+          script: script.trim(),
+          referenceImage: { dataUrl: images[0].dataUrl },
+          aspectRatio: coverAspectRatio,
+          resolution: coverResolution,
+          linkedTaskId: res.task_id,
+        })
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "提交失败"
       setGenErr(msg)
@@ -912,6 +984,9 @@ export default function DhVideoV2Workflow() {
     setGenStage("")
     setGenErr("")
     setVideoUrl("")
+    setCoverUrl("")
+    setCoverStatus("idle")
+    setCoverError("")
     setSegCompleted(0)
     setSegTotal(0)
     setRuntimeSegments([])
@@ -938,6 +1013,9 @@ export default function DhVideoV2Workflow() {
     setGenStage("")
     setGenErr("")
     setVideoUrl("")
+    setCoverUrl("")
+    setCoverStatus("idle")
+    setCoverError("")
     setSegCompleted(0)
     setSegTotal(0)
     setRuntimeSegments([])
@@ -1053,6 +1131,14 @@ export default function DhVideoV2Workflow() {
                   </select>
                   <p className={cn("mt-2 text-[10px]", tokens.muted)}>Seedance 2.0 Fast · 每段 15 秒</p>
                 </div>
+
+                <VideoCoverSettings
+                  accent="rose"
+                  aspectRatio={coverAspectRatio}
+                  resolution={coverResolution}
+                  onAspectRatioChange={setCoverAspectRatio}
+                  onResolutionChange={setCoverResolution}
+                />
 
                 {durationPreview.char_count > 0 && (
                   <div className={cn("rounded-2xl border p-3 text-[11px]", tokens.cardBorder, tokens.card)}>
@@ -1335,40 +1421,42 @@ export default function DhVideoV2Workflow() {
                   <SegmentStrip segments={segmentStripItems} tokens={tokens} readOnly />
                 </div>
               )}
-              {videoUrl ? (
-                <video
-                  src={resolveMediaUrl(videoUrl)}
-                  controls
-                  className={cn(
-                    "mx-auto max-h-[480px] w-full max-w-md rounded-xl border",
-                    tokens.cardBorder,
-                  )}
-                />
-              ) : (
-                <div
-                  className={cn(
-                    "mx-auto flex aspect-[9/16] max-h-[400px] w-full max-w-xs items-center justify-center rounded-xl border border-dashed",
-                    tokens.cardBorder,
-                  )}
-                >
-                  <p className={cn("px-4 text-center text-[12px]", tokens.muted)}>
-                    {DH_V2_MOCK_ENABLED ? "Mock 模式无真实视频 URL" : "等待 video_url"}
-                  </p>
-                </div>
-              )}
-              <div className="mt-5 flex flex-wrap gap-2">
-                {videoUrl ? (
-                  <Button asChild className={tokens.btnPrimary}>
-                    <a href={resolveMediaUrl(videoUrl)} download target="_blank" rel="noreferrer">
-                      <Download className="mr-1.5 h-4 w-4" />
-                      下载视频
-                    </a>
-                  </Button>
-                ) : null}
-                <Button variant="outline" onClick={reset} className={tokens.btnOutline}>
-                  创建新视频
-                </Button>
-              </div>
+              <PreviewVideoCoverPanel
+                videoUrl={videoUrl}
+                coverUrl={coverUrl}
+                coverStatus={coverStatus}
+                coverError={coverError}
+                videoEmptyHint={
+                  DH_V2_MOCK_ENABLED ? "Mock 模式无真实视频 URL" : "等待 video_url"
+                }
+                borderClassName={tokens.cardBorder}
+                mutedClassName={tokens.muted}
+                spinnerClassName={tokens.slotIcon}
+                showDefaultDownloads={false}
+                actions={
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    {videoUrl ? (
+                      <Button asChild className={tokens.btnPrimary}>
+                        <a href={resolveMediaUrl(videoUrl)} download target="_blank" rel="noreferrer">
+                          <Download className="mr-1.5 h-4 w-4" />
+                          下载视频
+                        </a>
+                      </Button>
+                    ) : null}
+                    {coverUrl ? (
+                      <Button asChild variant="outline" className={tokens.btnOutline}>
+                        <a href={resolveMediaUrl(coverUrl)} download target="_blank" rel="noreferrer">
+                          <Download className="mr-1.5 h-4 w-4" />
+                          下载封面
+                        </a>
+                      </Button>
+                    ) : null}
+                    <Button variant="outline" onClick={reset} className={tokens.btnOutline}>
+                      创建新视频
+                    </Button>
+                  </div>
+                }
+              />
             </div>
           </div>
         )}

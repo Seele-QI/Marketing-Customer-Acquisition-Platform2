@@ -26,6 +26,14 @@ import {
 } from "@/components/video-workflow-shell"
 import { submitMashup, cancelMashup } from "@/lib/video/api"
 import { VideoClipOptions } from "@/components/video-clip-options"
+import { VideoCoverSettings } from "@/components/video-cover-settings"
+import {
+  DEFAULT_COVER_ASPECT_RATIO,
+  DEFAULT_COVER_RESOLUTION,
+  type CoverAspectRatio,
+  type CoverResolution,
+} from "@/lib/video/cover-constants"
+import { startCoverGeneration } from "@/lib/video/cover-runtime"
 import { formatClipNetworkError } from "@/lib/mashup-video-task-runtime"
 import { fileToBase64, resolveMediaUrl } from "@/lib/video/utils"
 import type { MashupVideoResponse } from "@/lib/video/types"
@@ -40,10 +48,12 @@ import {
 import {
   clearClipWorkflow,
   hydrateClipAudio,
+  hydrateClipCoverImage,
   hydrateMashupVideos,
   mashupDraftFromState,
   persistClipAudio,
   persistClipImage,
+  persistMashupCoverImage,
 } from "@/lib/workflow-clip-persist"
 import { deleteWorkflowAsset } from "@/lib/workflow-asset-store"
 
@@ -74,6 +84,13 @@ type VideoItem = {
 type AudioItem = {
   file: File
   name: string
+  base64: string
+}
+
+type CoverImageItem = {
+  id: string
+  file: File
+  previewUrl: string
   base64: string
 }
 
@@ -130,6 +147,12 @@ function StepMaterialPrep({
   onAudioChange,
   onEnableBgmChange,
   onEnableSubtitlesChange,
+  coverImage,
+  onCoverImageChange,
+  coverAspectRatio,
+  coverResolution,
+  onCoverAspectRatioChange,
+  onCoverResolutionChange,
   onSubmit,
   isProcessing,
 }: {
@@ -138,6 +161,12 @@ function StepMaterialPrep({
   audioSample: AudioItem | null
   enableBgm: boolean
   enableSubtitles: boolean
+  coverImage: CoverImageItem | null
+  onCoverImageChange: (img: CoverImageItem | null) => void
+  coverAspectRatio: CoverAspectRatio
+  coverResolution: CoverResolution
+  onCoverAspectRatioChange: (v: CoverAspectRatio) => void
+  onCoverResolutionChange: (v: CoverResolution) => void
   onVideosChange: (vids: VideoItem[]) => void
   onScriptChange: (s: string) => void
   onAudioChange: (a: AudioItem | null) => void
@@ -147,6 +176,25 @@ function StepMaterialPrep({
   isProcessing: boolean
 }) {
   const videoInputRef = React.useRef<HTMLInputElement>(null)
+  const coverInputRef = React.useRef<HTMLInputElement>(null)
+
+  const handleCoverImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "请上传图片文件", variant: "destructive" })
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "封面参考图超过 10MB 限制", variant: "destructive" })
+      return
+    }
+    const base64 = await fileToBase64(file)
+    onCoverImageChange({
+      id: `cover_${Date.now()}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+      base64,
+    })
+  }
 
   const handleAddVideos = async (files: FileList | null) => {
     if (!files) return
@@ -292,6 +340,49 @@ function StepMaterialPrep({
         onEnableSubtitlesChange={onEnableSubtitlesChange}
       />
 
+      <div className="rounded-2xl border border-slate-200/60 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+        <p className="text-[13px] font-medium text-violet-600 dark:text-violet-400">封面参考图</p>
+        <p className="mt-1 text-[11px] text-slate-500">用于并行生成短视频封面；未上传则跳过封面生成</p>
+        <div className="mt-3 flex items-center gap-3">
+          {coverImage ? (
+            <>
+              <img
+                src={coverImage.previewUrl}
+                alt="封面参考"
+                className="h-16 w-16 rounded-lg object-cover ring-1 ring-violet-200"
+              />
+              <Button type="button" variant="outline" size="sm" onClick={() => onCoverImageChange(null)}>
+                移除
+              </Button>
+            </>
+          ) : (
+            <Button type="button" variant="outline" size="sm" onClick={() => coverInputRef.current?.click()}>
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              上传参考图
+            </Button>
+          )}
+          <input
+            ref={coverInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) void handleCoverImage(file)
+              e.target.value = ""
+            }}
+          />
+        </div>
+      </div>
+
+      <VideoCoverSettings
+        accent="violet"
+        aspectRatio={coverAspectRatio}
+        resolution={coverResolution}
+        onAspectRatioChange={onCoverAspectRatioChange}
+        onResolutionChange={onCoverResolutionChange}
+      />
+
       <div className="flex flex-col items-center gap-2 pt-2">
         <Button size="lg" disabled={!canSubmit} onClick={onSubmit} className="min-w-[240px] rounded-full bg-violet-600 hover:bg-violet-700">
           {isProcessing ? (<><Loader2 className="mr-2 h-4 w-4 animate-spin" />处理中...</>) : (<><Play className="mr-2 h-4 w-4" />一键混剪视频</>)}
@@ -403,6 +494,10 @@ export function MashupVideoWorkflow() {
   const [hydrating, setHydrating] = React.useState(true)
   const [videoRefs, setVideoRefs] = React.useState<AssetRef[]>([])
   const [audioRef, setAudioRef] = React.useState<AssetRef | null>(null)
+  const [coverImageRef, setCoverImageRef] = React.useState<AssetRef | null>(null)
+  const [coverImage, setCoverImage] = React.useState<CoverImageItem | null>(null)
+  const [coverAspectRatio, setCoverAspectRatio] = React.useState<CoverAspectRatio>(DEFAULT_COVER_ASPECT_RATIO)
+  const [coverResolution, setCoverResolution] = React.useState<CoverResolution>(DEFAULT_COVER_RESOLUTION)
   const [state, setState] = React.useState<WorkflowState>({
     currentStep: 1,
     videos: [],
@@ -426,9 +521,14 @@ export function MashupVideoWorkflow() {
       const draft = loadDraft("mashup") ?? defaultMashupDraft()
       const videos = await hydrateMashupVideos(draft.videoRefs)
       const audioSample = await hydrateClipAudio(draft.audioRef)
+      const coverImg = await hydrateClipCoverImage(draft.coverImageRef ?? null)
       if (cancelled) return
       setVideoRefs(draft.videoRefs)
       setAudioRef(draft.audioRef)
+      setCoverImageRef(draft.coverImageRef ?? null)
+      setCoverImage(coverImg)
+      setCoverAspectRatio(draft.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO)
+      setCoverResolution(draft.coverResolution ?? DEFAULT_COVER_RESOLUTION)
       setState({
         currentStep: draft.currentStep,
         videos,
@@ -451,8 +551,18 @@ export function MashupVideoWorkflow() {
 
   React.useEffect(() => {
     if (hydrating) return
-    saveDraft("mashup", mashupDraftFromState({ ...state, videoRefs, audioRef }))
-  }, [state, videoRefs, audioRef, hydrating])
+    saveDraft(
+      "mashup",
+      mashupDraftFromState({
+        ...state,
+        videoRefs,
+        audioRef,
+        coverImageRef,
+        coverAspectRatio,
+        coverResolution,
+      }),
+    )
+  }, [state, videoRefs, audioRef, coverImageRef, coverAspectRatio, coverResolution, hydrating])
 
   const handleVideosChange = React.useCallback(async (videos: VideoItem[]) => {
     setState((s) => ({ ...s, videos }))
@@ -490,6 +600,23 @@ export function MashupVideoWorkflow() {
     }
     if (saved) setAudioRef(saved.ref)
   }, [audioRef])
+
+  const handleCoverImageChange = React.useCallback(async (img: CoverImageItem | null) => {
+    setCoverImage(img)
+    if (!img) {
+      if (coverImageRef) await deleteWorkflowAsset(coverImageRef.id)
+      setCoverImageRef(null)
+      return
+    }
+    const saved = await persistMashupCoverImage(img.file, img.base64, img.previewUrl)
+    if (coverImageRef && coverImageRef.id !== saved?.id) {
+      await deleteWorkflowAsset(coverImageRef.id)
+    }
+    if (saved) {
+      setCoverImageRef(saved.ref)
+      setCoverImage((prev) => (prev ? { ...prev, id: saved.id } : prev))
+    }
+  }, [coverImageRef])
 
   React.useEffect(() => {
     if (!runtimeTask) return
@@ -606,6 +733,21 @@ export function MashupVideoWorkflow() {
         stageLabel: "任务已入队",
         meta: { script: script.trim() },
       })
+      if (coverImage) {
+        startCoverGeneration({
+          kind: "mashup",
+          script: script.trim(),
+          referenceImage: { base64: coverImage.base64, previewUrl: coverImage.previewUrl },
+          aspectRatio: coverAspectRatio,
+          resolution: coverResolution,
+          linkedTaskId: taskId,
+        })
+      } else {
+        toast({
+          title: "未上传封面参考图",
+          description: "视频将正常生成，本次跳过封面并行生成。",
+        })
+      }
     } catch (err: unknown) {
       const msg = formatClipNetworkError(err)
       setState((s) => ({
@@ -685,6 +827,12 @@ export function MashupVideoWorkflow() {
           onAudioChange={(a) => { void handleAudioChange(a) }}
           onEnableBgmChange={(v) => setState((s) => ({ ...s, enableBgm: v }))}
           onEnableSubtitlesChange={(v) => setState((s) => ({ ...s, enableSubtitles: v }))}
+          coverImage={coverImage}
+          onCoverImageChange={(img) => { void handleCoverImageChange(img) }}
+          coverAspectRatio={coverAspectRatio}
+          coverResolution={coverResolution}
+          onCoverAspectRatioChange={setCoverAspectRatio}
+          onCoverResolutionChange={setCoverResolution}
           onSubmit={handleSubmit}
           isProcessing={state.isProcessing}
         />

@@ -24,6 +24,10 @@ export const PROMO_STEP_LABELS = [
 /** RH 分镜 AI App 2004879210508419073 — node 5 channel */
 export const PROMO_RH_STORYBOARD_APP_ID = "2004879210508419073"
 
+/** 多宫格分镜图提交时由后端自动追加到产品提示词（勿在前端拼接） */
+export const PROMO_STORYBOARD_NO_LABEL_SUFFIX =
+  "不要生成任何类似「分镜1」「分镜2」的文字"
+
 /** RH 多宫格裁切 AI App 2037785424789245953 — node 19-22 */
 export const PROMO_RH_CROP_APP_ID = "2037785424789245953"
 

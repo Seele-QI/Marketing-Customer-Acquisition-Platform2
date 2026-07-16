@@ -58,6 +58,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { parseApiErrorResponse } from "@/lib/api/parse-detail"
+import { consumeBillingAwareSseStream } from "@/lib/credit/balance-sync"
+import {
+  type PendingImage,
+  MAX_PENDING_IMAGES,
+  MAX_IMAGE_FILE_BYTES,
+  compressImageFile,
+  fileToBase64Data,
+} from "@/lib/chat-image-upload"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -107,87 +115,6 @@ type ChatMessage = {
   attachedImageCount?: number
   /** 發送時寫入�?data:image/...;base64,...，供歷史氣泡點擊查看原圖 */
   attachedImagePreviews?: string[]
-}
-
-type PendingImage = {
-  id: string
-  file: File
-  previewUrl: string
-}
-
-const MAX_PENDING_IMAGES = 6
-const MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
-
-/** 将图片通过 Canvas 压缩到合理大小（最�?1280px 边长，JPEG 质量 0.7），避免 base64 过大导致请求失败 */
-const COMPRESS_MAX_SIDE = 1280
-const COMPRESS_QUALITY = 0.7
-
-function compressImageFile(file: File): Promise<File> {
-  return new Promise((resolve) => {
-    // 小于 200KB 的图片不压缩
-    if (file.size < 200 * 1024) {
-      resolve(file)
-      return
-    }
-    const img = new window.Image()
-    const url = URL.createObjectURL(file)
-    img.onload = () => {
-      URL.revokeObjectURL(url)
-      let { width, height } = img
-      if (width <= COMPRESS_MAX_SIDE && height <= COMPRESS_MAX_SIDE && file.size < 500 * 1024) {
-        resolve(file)
-        return
-      }
-      // 等比缩放
-      if (width > COMPRESS_MAX_SIDE || height > COMPRESS_MAX_SIDE) {
-        const ratio = Math.min(COMPRESS_MAX_SIDE / width, COMPRESS_MAX_SIDE / height)
-        width = Math.round(width * ratio)
-        height = Math.round(height * ratio)
-      }
-      const canvas = document.createElement("canvas")
-      canvas.width = width
-      canvas.height = height
-      const ctx = canvas.getContext("2d")
-      if (!ctx) {
-        resolve(file)
-        return
-      }
-      ctx.drawImage(img, 0, 0, width, height)
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            resolve(file)
-            return
-          }
-          resolve(new File([blob], file.name.replace(/\.\w+$/, ".jpg"), { type: "image/jpeg" }))
-        },
-        "image/jpeg",
-        COMPRESS_QUALITY,
-      )
-    }
-    img.onerror = () => {
-      URL.revokeObjectURL(url)
-      resolve(file)
-    }
-    img.src = url
-  })
-}
-
-function fileToBase64Data(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const r = reader.result
-      if (typeof r !== "string") {
-        reject(new Error("读文件失败"))
-        return
-      }
-      const comma = r.indexOf(",")
-      resolve(comma >= 0 ? r.slice(comma + 1) : r)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error("读文件失败"))
-    reader.readAsDataURL(file)
-  })
 }
 
 function stripLeadingWhitespacePerLine(text: string): string {
@@ -310,47 +237,6 @@ function ensureChatMessageIds(messages: ChatMessage[]): ChatMessage[] {
     return { ...m, id: crypto.randomUUID() }
   })
   return changed ? next : messages
-}
-
-async function consumeDeepSeekStream(
-  response: Response,
-  onDelta: (chunk: string) => void,
-): Promise<void> {
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error("响应无可读流")
-  const decoder = new TextDecoder()
-  let carry = ""
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    carry += decoder.decode(value, { stream: true })
-    const lines = carry.split("\n")
-    carry = lines.pop() ?? ""
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-      if (!line.startsWith("data:")) continue
-      const payload = line.slice(5).trim()
-      if (payload === "[DONE]") return
-      try {
-        const json = JSON.parse(payload) as Record<string, unknown>
-        const cc = json as { choices?: { delta?: { content?: string } }[] }
-        const ccPiece = cc.choices?.[0]?.delta?.content
-        if (typeof ccPiece === "string" && ccPiece.length > 0) {
-          onDelta(ccPiece)
-          continue
-        }
-        const typ = json.type
-        if (
-          typ === "response.output_text.delta" &&
-          typeof json.delta === "string" &&
-          json.delta.length > 0
-        ) {
-          onDelta(json.delta)
-        }
-      } catch {
-      }
-    }
-  }
 }
 
 const quickPrompts: PromptItem[] = [
@@ -975,7 +861,7 @@ export function ChatWorkspace({
         return
       }
 
-      await consumeDeepSeekStream(response, (delta) => {
+      await consumeBillingAwareSseStream(response, (delta) => {
         if (abortRef.current !== controller) return
         if (agentNameRef.current !== requestAgentName) return
         setMessages((prev) => {

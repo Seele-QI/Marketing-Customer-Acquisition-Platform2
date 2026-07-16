@@ -142,6 +142,10 @@ export function getWorkflowKnowledgeForAgent(agentName: string): string {
   const videoAgents = [
     "短视频脚本文案",
     "口播文案创作",
+    "数字人口播文案",
+    "图文视频混剪文案",
+    "宣传视频文案创作",
+    "爆款脚本二创",
     "灵犀",
     "视频导演",
   ]

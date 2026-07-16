@@ -91,7 +91,7 @@ async function exportAsTextBundle(logsDir: string, defaultName: string, files: {
   if (!savePath.filePath) return;
 
   const out = fs.createWriteStream(savePath.filePath, { encoding: 'utf-8' });
-  out.write(`中台助手 日志导出 ${new Date().toISOString()}\n\n`);
+  out.write(`招财猫 日志导出 ${new Date().toISOString()}\n\n`);
   for (const f of files) {
     out.write(`\n=== ${f.name} ===\n`);
     out.write(fs.readFileSync(f.path, 'utf-8'));

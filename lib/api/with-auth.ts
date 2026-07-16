@@ -17,28 +17,49 @@ function notLoggedIn(): Response {
 /** Next.js Route Handler 统一登录校验。未登录直接 401。 */
 export function withAuth(handler: AuthedHandler) {
   return async (req: Request): Promise<Response> => {
-    const sid = (await cookies()).get("session_id")?.value
-    if (!sid) return notLoggedIn()
+    try {
+      const sid = (await cookies()).get("session_id")?.value
+      if (!sid) return notLoggedIn()
 
-    const base = getCloudApiBase()
-    if (!base) {
+      const base = getCloudApiBase()
+      if (!base) {
+        return NextResponse.json(
+          { detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置" } },
+          { status: 503 },
+        )
+      }
+
+      let meResp: Response
+      try {
+        meResp = await fetch(`${base}/api/auth/me`, {
+          headers: { Cookie: `session_id=${sid}` },
+          cache: "no-store",
+        })
+      } catch {
+        return NextResponse.json(
+          { detail: { code: "FASTAPI_UNAVAILABLE", message: "无法连接后端服务" } },
+          { status: 503 },
+        )
+      }
+      if (!meResp.ok) return notLoggedIn()
+
+      let body: { user?: { id?: number } }
+      try {
+        body = (await meResp.json()) as { user?: { id?: number } }
+      } catch {
+        return notLoggedIn()
+      }
+      const userId = body?.user?.id
+      if (typeof userId !== "number") return notLoggedIn()
+
+      return await handler(req, { userId, cookieHeader: `session_id=${sid}` })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "服务内部错误"
       return NextResponse.json(
-        { detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置" } },
-        { status: 503 },
+        { detail: { code: "INTERNAL_ERROR", message } },
+        { status: 500 },
       )
     }
-
-    const meResp = await fetch(`${base}/api/auth/me`, {
-      headers: { Cookie: `session_id=${sid}` },
-      cache: "no-store",
-    })
-    if (!meResp.ok) return notLoggedIn()
-
-    const body = (await meResp.json()) as { user?: { id?: number } }
-    const userId = body?.user?.id
-    if (typeof userId !== "number") return notLoggedIn()
-
-    return handler(req, { userId, cookieHeader: `session_id=${sid}` })
   }
 }
 

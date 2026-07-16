@@ -23,7 +23,7 @@ logger = logging.getLogger("dh_video_v2_service")
 
 DEFAULT_BASE_URL = "https://www.aicost.xyz"
 SEEDANCE_AICOST_MODEL = "seedance2.0-fast"
-DEFAULT_PRIMARY_MODEL = "sd2-福利"
+DEFAULT_PRIMARY_MODEL = "SD2.0-480p-fast"
 SEGMENT_SEC = 15
 POLL_INTERVAL = 5.0
 SEEDANCE_FIRST_FRAME_SUFFIX = "\n\n@图1 当前图片为视频固定首帧"
@@ -46,47 +46,105 @@ class SeedanceEndpoint:
 
 
 def _is_fast_seedance_model(model: str) -> bool:
+    """是否走 duration=auto（fast 系）。裸 seedance2.0 / sd2.0 仍用固定秒数。"""
     m = (model or "").strip()
-    if m == "seedance2.0-fast":
+    if not m:
+        return False
+    lower = m.lower()
+    if lower == "seedance2.0-fast":
         return True
-    if m.startswith("sd2-"):
+    # sd2-福利 / sd2-xxx
+    if m.startswith("sd2-") or lower.startswith("sd2-"):
+        return True
+    # SD2.0-480p-fast / sd2.0-*-fast（须含 fast，避免误伤 seedance2.0）
+    if "fast" in lower and (
+        lower.startswith("sd2.0")
+        or lower.startswith("seedance2.0")
+        or "480p-fast" in lower
+        or "720p-fast" in lower
+    ):
         return True
     return False
 
 
-def list_seedance_endpoints() -> list[SeedanceEndpoint]:
-    """首选 SEEDANCE_PRIMARY_*，备选 SEEDANCE_* / aicost。"""
-    out: list[SeedanceEndpoint] = []
-    primary_base = (os.getenv("SEEDANCE_PRIMARY_BASE_URL") or "").strip().rstrip("/")
-    primary_key = (os.getenv("SEEDANCE_PRIMARY_API_KEY") or "").strip()
-    primary_model = (os.getenv("SEEDANCE_PRIMARY_MODEL") or DEFAULT_PRIMARY_MODEL).strip()
-    primary_media = (os.getenv("SEEDANCE_PRIMARY_MEDIA_MODE") or "url").strip().lower()
-    if primary_media not in ("url", "base64"):
-        primary_media = "url"
-    if primary_base and primary_key:
-        out.append(
-            SeedanceEndpoint(
-                name="primary",
-                base_url=primary_base,
-                api_key=primary_key,
-                model=primary_model or DEFAULT_PRIMARY_MODEL,
-                media_mode=primary_media,
-            )
-        )
+def _normalize_media_mode(raw: str | None, default: str = "url") -> str:
+    mode = (raw or default).strip().lower()
+    return mode if mode in ("url", "base64") else default
 
-    fallback_key = (os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip()
-    fallback_base = (os.getenv("SEEDANCE_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/")
-    if fallback_key:
-        out.append(
-            SeedanceEndpoint(
-                name="fallback",
-                base_url=fallback_base,
-                api_key=fallback_key,
-                model=SEEDANCE_AICOST_MODEL,
-                media_mode="base64",
-            )
+
+def _append_seedance_tier(
+    out: list[SeedanceEndpoint],
+    *,
+    name: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    media_mode: str,
+) -> None:
+    base = (base_url or "").strip().rstrip("/")
+    key = (api_key or "").strip()
+    if not base or not key:
+        return
+    out.append(
+        SeedanceEndpoint(
+            name=name,
+            base_url=base,
+            api_key=key,
+            model=(model or SEEDANCE_AICOST_MODEL).strip(),
+            media_mode=_normalize_media_mode(media_mode),
         )
-    return out
+    )
+
+
+def list_seedance_endpoints() -> list[SeedanceEndpoint]:
+    """首选 → 次选 → 三选；次选/三选缺省时兼容旧 env 别名。"""
+    out: list[SeedanceEndpoint] = []
+
+    _append_seedance_tier(
+        out,
+        name="primary",
+        base_url=os.getenv("SEEDANCE_PRIMARY_BASE_URL") or "",
+        api_key=os.getenv("SEEDANCE_PRIMARY_API_KEY") or "",
+        model=(os.getenv("SEEDANCE_PRIMARY_MODEL") or DEFAULT_PRIMARY_MODEL).strip(),
+        media_mode=os.getenv("SEEDANCE_PRIMARY_MEDIA_MODE") or "url",
+    )
+
+    sec_base = (os.getenv("SEEDANCE_SECONDARY_BASE_URL") or os.getenv("SEEDANCE_BASE_URL") or "").strip()
+    sec_key = (os.getenv("SEEDANCE_SECONDARY_API_KEY") or os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip()
+    sec_model = (os.getenv("SEEDANCE_SECONDARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
+    sec_media = os.getenv("SEEDANCE_SECONDARY_MEDIA_MODE") or "base64"
+    _append_seedance_tier(
+        out,
+        name="secondary",
+        base_url=sec_base or DEFAULT_BASE_URL,
+        api_key=sec_key,
+        model=sec_model,
+        media_mode=sec_media,
+    )
+
+    ter_base = (os.getenv("SEEDANCE_TERTIARY_BASE_URL") or os.getenv("XINGHE_BASE_URL") or DEFAULT_BASE_URL).strip()
+    ter_key = (os.getenv("SEEDANCE_TERTIARY_API_KEY") or os.getenv("XINGHE_API_KEY") or "").strip()
+    ter_model = (os.getenv("SEEDANCE_TERTIARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
+    ter_media = os.getenv("SEEDANCE_TERTIARY_MEDIA_MODE") or "base64"
+    _append_seedance_tier(
+        out,
+        name="tertiary",
+        base_url=ter_base,
+        api_key=ter_key,
+        model=ter_model,
+        media_mode=ter_media,
+    )
+
+    # 去重：同一 base_url+api_key 只保留首次出现
+    seen: set[tuple[str, str]] = set()
+    deduped: list[SeedanceEndpoint] = []
+    for ep in out:
+        sig = (ep.base_url, ep.api_key)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        deduped.append(ep)
+    return deduped
 
 
 def get_seedance_endpoint(name: str | None = None) -> SeedanceEndpoint:
@@ -101,11 +159,20 @@ def get_seedance_endpoint(name: str | None = None) -> SeedanceEndpoint:
 
 
 def segment_poll_timeout() -> float:
-    raw = (os.getenv("DH_V2_SEGMENT_POLL_TIMEOUT") or "900").strip()
+    raw = (os.getenv("DH_V2_SEGMENT_POLL_TIMEOUT") or "3000").strip()
     try:
         return max(60.0, float(raw))
     except ValueError:
-        return 900.0
+        return 3000.0
+
+
+def task_timeout() -> float:
+    """整任务超时（秒），默认 3000 = 50 分钟。"""
+    raw = (os.getenv("DH_V2_TASK_TIMEOUT") or os.getenv("DH_V2_SEGMENT_POLL_TIMEOUT") or "3000").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 3000.0
 
 
 # 兼容旧引用
@@ -766,7 +833,7 @@ async def submit_aicost_seedance(
     errors: list[str] = []
     for i, ep in enumerate(endpoints):
         use_model = ep.model
-        if model and ep.name == "fallback":
+        if model and ep.name in ("secondary", "fallback"):
             use_model = model.strip()
         payload = await build_seedance_submit_payload_for_endpoint(
             ep,
@@ -896,34 +963,179 @@ def _normalize_download_url(url: str, upstream_id: str = "", *, base_url: str | 
     return u
 
 
+def _download_retries_default() -> int:
+    try:
+        return max(1, int(os.getenv("DH_V2_DOWNLOAD_RETRIES", "6")))
+    except ValueError:
+        return 6
+
+
+def _download_retry_base_sec() -> float:
+    try:
+        return max(1.0, float(os.getenv("DH_V2_DOWNLOAD_RETRY_BASE_SEC", "3")))
+    except ValueError:
+        return 3.0
+
+
+def _is_likely_mp4(data: bytes, content_type: str = "") -> bool:
+    if content_type and "video" in content_type.lower():
+        return True
+    if len(data) < 12:
+        return False
+    if data[4:8] == b"ftyp":
+        return True
+    return b"ftyp" in data[:32]
+
+
+def _is_api_content_url(fetch_url: str, base_url: str) -> bool:
+    base = base_url.rstrip("/")
+    return fetch_url.startswith(base) and "/v1/videos/" in fetch_url
+
+
+def _log_download_failure(
+    *,
+    context: str,
+    fetch_url: str,
+    attempt: int,
+    retries: int,
+    exc: Exception,
+    resp: httpx.Response | None = None,
+) -> None:
+    parts = [
+        f"context={context}",
+        f"url={fetch_url[:200]}",
+        f"attempt={attempt}/{retries}",
+        f"err={exc!r}",
+    ]
+    if resp is not None:
+        ct = resp.headers.get("content-type", "")
+        preview = ""
+        try:
+            if any(x in ct for x in ("text", "json", "html")):
+                preview = resp.text[:200]
+            elif resp.content:
+                preview = repr(resp.content[:80])
+        except Exception:
+            pass
+        parts.append(f"status={resp.status_code} content-type={ct} preview={preview}")
+    logger.warning("DH v2 download failed: %s", " | ".join(parts))
+
+
+async def _fetch_video_bytes(
+    fetch_url: str,
+    headers: dict[str, str] | None,
+    *,
+    timeout: float = 300.0,
+) -> bytes:
+    async with _http_client(timeout=timeout, follow_redirects=True) as client:
+        resp = await client.get(fetch_url, headers=headers or {})
+        resp.raise_for_status()
+        data = resp.content
+        ct = resp.headers.get("content-type", "")
+    if len(data) < 1024:
+        raise RuntimeError(f"下载的视频过小 ({len(data)} bytes)，可能不是有效 mp4")
+    if not _is_likely_mp4(data, ct):
+        preview = data[:200].decode("utf-8", errors="replace") if data else ""
+        raise RuntimeError(
+            f"响应不是有效 MP4 (content-type={ct}, size={len(data)}): {preview[:120]}"
+        )
+    return data
+
+
 async def download_video_file(
     url: str,
     dest_path: str,
     *,
     upstream_id: str = "",
     endpoint_name: str | None = None,
-    retries: int = 4,
+    retries: int | None = None,
+    debug_context: str = "",
 ) -> str:
     ep = get_seedance_endpoint(endpoint_name)
-    headers = {"Authorization": f"Bearer {ep.api_key}"}
-    fetch_url = _normalize_download_url(url, upstream_id, base_url=ep.base_url)
+    auth_headers = {"Authorization": f"Bearer {ep.api_key}"}
+    base = ep.base_url.rstrip("/")
+    total_retries = retries if retries is not None else _download_retries_default()
+    base_sec = _download_retry_base_sec()
+    ctx = debug_context or "download"
+
+    primary_url = _normalize_download_url(url, upstream_id, base_url=ep.base_url)
+    content_url = f"{base}/v1/videos/{upstream_id}/content" if upstream_id else ""
+
+    url_plans: list[tuple[str, bool]] = [(primary_url, True)]
+    if content_url and content_url != primary_url:
+        url_plans.append((content_url, True))
+
     last_err: Exception | None = None
-    for attempt in range(retries):
-        try:
-            async with _http_client(timeout=300.0, follow_redirects=True) as client:
-                resp = await client.get(fetch_url, headers=headers)
-                resp.raise_for_status()
-                data = resp.content
-                if len(data) < 1024:
-                    raise RuntimeError(f"下载的视频过小 ({len(data)} bytes)，可能不是有效 mp4")
+    for attempt in range(total_retries):
+        plans = list(url_plans)
+        if attempt > 0 and len(plans) > 1:
+            plans = [plans[-1]] + plans[:-1]
+
+        for fetch_url, use_auth in plans:
+            hdrs = auth_headers if use_auth else {}
+            try:
+                data = await _fetch_video_bytes(fetch_url, hdrs)
                 with open(dest_path, "wb") as f:
                     f.write(data)
-            return dest_path
-        except Exception as e:
-            last_err = e
-            if attempt + 1 < retries:
-                await asyncio.sleep(2.0 * (attempt + 1))
-    raise RuntimeError(f"视频下载失败（已重试 {retries} 次）: {last_err}")
+                logger.info(
+                    "DH v2 download OK: context=%s url=%s bytes=%s auth=%s",
+                    ctx,
+                    fetch_url[:120],
+                    len(data),
+                    use_auth,
+                )
+                return dest_path
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                _log_download_failure(
+                    context=ctx,
+                    fetch_url=fetch_url,
+                    attempt=attempt + 1,
+                    retries=total_retries,
+                    exc=e,
+                    resp=e.response,
+                )
+                if (
+                    use_auth
+                    and e.response.status_code in (401, 403)
+                    and not _is_api_content_url(fetch_url, base)
+                ):
+                    try:
+                        data = await _fetch_video_bytes(fetch_url, {})
+                        with open(dest_path, "wb") as f:
+                            f.write(data)
+                        logger.info(
+                            "DH v2 download OK (no auth): context=%s url=%s bytes=%s",
+                            ctx,
+                            fetch_url[:120],
+                            len(data),
+                        )
+                        return dest_path
+                    except Exception as e2:
+                        last_err = e2
+                        _log_download_failure(
+                            context=f"{ctx}/no-auth",
+                            fetch_url=fetch_url,
+                            attempt=attempt + 1,
+                            retries=total_retries,
+                            exc=e2,
+                            resp=getattr(e2, "response", None),
+                        )
+            except Exception as e:
+                last_err = e
+                _log_download_failure(
+                    context=ctx,
+                    fetch_url=fetch_url,
+                    attempt=attempt + 1,
+                    retries=total_retries,
+                    exc=e,
+                    resp=getattr(e, "response", None) if isinstance(e, httpx.HTTPStatusError) else None,
+                )
+
+        if attempt + 1 < total_retries:
+            await asyncio.sleep(base_sec * (attempt + 1))
+
+    raise RuntimeError(f"视频下载失败（已重试 {total_retries} 次）: {last_err}")
 
 
 def build_segment_prompt(
@@ -1005,7 +1217,7 @@ async def _submit_one_segment(
                 media_refs_dir=media_refs_dir,
             )
         upstream_id = str(submit_res.get("id") or submit_res.get("task_id") or "").strip()
-        endpoint_name = str(submit_res.get("_seedance_endpoint") or "fallback")
+        endpoint_name = str(submit_res.get("_seedance_endpoint") or "secondary")
         if not upstream_id:
             err = "Seedance 未返回任务 ID"
             if on_segment_update:
@@ -1055,6 +1267,7 @@ async def _poll_download_one_segment(
                 out_path,
                 upstream_id=upstream_id,
                 endpoint_name=endpoint_name,
+                debug_context=f"seg_{seg_index + 1}",
             )
         if on_segment_update:
             on_segment_update(seg_index, "completed", {"local_path": out_path})
@@ -1239,7 +1452,7 @@ async def render_aicost_segment_to_file(
         media_refs_dir=media_refs_dir,
     )
     upstream_id = str(submit_res.get("id") or submit_res.get("task_id") or "").strip()
-    endpoint_name = str(submit_res.get("_seedance_endpoint") or "fallback")
+    endpoint_name = str(submit_res.get("_seedance_endpoint") or "secondary")
     if not upstream_id:
         raise RuntimeError("Seedance 未返回任务 ID")
     result = await poll_aicost_task(

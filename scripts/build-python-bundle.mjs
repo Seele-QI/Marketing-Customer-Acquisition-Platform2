@@ -1,43 +1,59 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
- * 构建 embeddable Python + 依赖 + lib/ 到 resources/python/
+ * 构建桌面打包用 Python 运行时 + 依赖 + 项目 lib/
  *
- * 流程：
- * 1. 下载 Python 3.13 embeddable zip（python.org/ftp）
- * 2. 解压到 resources/python/
- * 3. 改 python313._pth 启用 site-packages
- * 4. 下载 get-pip.py，bootstrap pip
- * 5. pip install --target 装 requirements.txt 全部依赖
- * 6. cp lib/ → resources/python/lib/
+ * Windows: embeddable zip → resources/python/
+ * Darwin:  python-build-standalone (arm64 + x64) → resources/runtime/darwin-{arch}/python/
  *
  * 触发：pnpm resources:build
- *
- * 注意：embeddable Python 没有 tkinter / IDLE，但 fastapi 不需要这些。
  */
 
-import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, statSync, readdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  cpSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  statSync,
+  readdirSync,
+  chmodSync,
+  symlinkSync,
+  unlinkSync,
+} from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-
-const target = path.join(projectRoot, 'resources', 'python');
 const cacheDir = path.join(projectRoot, '.electron-cache', 'python');
-
-/* ============ 配置 ============ */
-
-// Python 3.13 embeddable（amd64）
-// 来源：https://www.python.org/ftp/python/
-const PY_VERSION = '3.13.13';
-const PY_EMBED_URL = 'https://www.python.org/ftp/python/' + PY_VERSION + '/python-' + PY_VERSION + '-embed-amd64.zip';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 
-/* ============ Step 1: 下载 embeddable zip ============ */
+/* Windows embeddable */
+const PY_EMBED_VERSION = '3.13.13';
+const PY_EMBED_URL =
+  'https://www.python.org/ftp/python/' + PY_EMBED_VERSION + '/python-' + PY_EMBED_VERSION + '-embed-amd64.zip';
+
+/* Darwin python-build-standalone */
+const PY_STANDALONE_TAG = '20260623';
+const PY_STANDALONE_VERSION = '3.13.14';
+const PY_STANDALONE_BASE =
+  `https://github.com/astral-sh/python-build-standalone/releases/download/${PY_STANDALONE_TAG}`;
+
+const DARWIN_ARCHS = [
+  {
+    folder: 'darwin-arm64',
+    triple: 'aarch64-apple-darwin',
+  },
+  {
+    folder: 'darwin-x64',
+    triple: 'x86_64-apple-darwin',
+  },
+];
 
 async function downloadFile(url, dest) {
   if (existsSync(dest)) {
@@ -54,179 +70,246 @@ async function downloadFile(url, dest) {
   console.log('[build-python] downloaded: ' + (statSync(dest).size / 1024 / 1024).toFixed(1) + 'MB');
 }
 
-async function step1_downloadEmbed() {
-  const zipPath = path.join(cacheDir, 'python-' + PY_VERSION + '-embed-amd64.zip');
-  await downloadFile(PY_EMBED_URL, zipPath);
-  return zipPath;
-}
-
-/* ============ Step 2: 解压到 target ============ */
-
-async function step2_extract(zipPath) {
-  console.log('[build-python] extracting to ' + target);
-  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
-  mkdirSync(target, { recursive: true });
-
-  // Windows 用 tar.exe 解 .zip
-  const isWin = process.platform === 'win32';
-  const cmd = isWin ? 'tar' : 'unzip';
-  const args = isWin ? ['-xf', zipPath, '-C', target] : ['-o', zipPath, '-d', target];
-
-  const result = spawnSync(cmd, args, { stdio: 'inherit' });
-  if (result.status !== 0) {
-    throw new Error(cmd + ' exit ' + result.status);
-  }
-}
-
-/* ============ Step 3: 改 _pth 文件启用 site-packages ============ */
-
-function step3_enableSite() {
-  const entries = readdirSync(target);
-  const pthFile = entries.find((e) => /^python[\d.]+\._pth$/.test(e));
-  if (!pthFile) {
-    throw new Error('pythonX.Y._pth file not found in target');
-  }
-  const pthPath = path.join(target, pthFile);
-  let content = readFileSync(pthPath, 'utf-8');
-
-  // 取消注释 # import site
-  content = content.replace(/^#\s*import\s+site\s*$/m, 'import site');
-
-  // 添加 site-packages 到搜索路径
-  if (!content.includes('site-packages')) {
-    content += '\n./site-packages\n./lib\n';
-  }
-
-  writeFileSync(pthPath, content, 'utf-8');
-  console.log('[build-python] enabled site: ' + pthFile);
-}
-
-/* ============ Step 4: bootstrap pip ============ */
-
-async function step4_bootstrapPip() {
-  const exeExt = process.platform === 'win32' ? '.exe' : '';
-  const pythonExe = path.join(target, 'python' + exeExt);
-
-  // 校验 python.exe 可执行
-  const ver = spawnSync(pythonExe, ['--version'], { encoding: 'utf-8' });
-  if (ver.status !== 0) {
-    throw new Error('python --version failed: ' + ver.stderr);
-  }
-  console.log('[build-python] ' + ver.stdout.trim());
-
-  // 下载 get-pip.py
-  const getPipPath = path.join(cacheDir, 'get-pip.py');
-  await downloadFile(GET_PIP_URL, getPipPath);
-
-  // 跑 get-pip.py（embeddable 默认没 pip）
-  console.log('[build-python] bootstrapping pip...');
-  const result = spawnSync(pythonExe, [getPipPath], {
-    cwd: target,
-    stdio: 'inherit',
-    env: Object.assign({}, process.env, { PYTHONPATH: path.join(target, 'site-packages') }),
-  });
-  if (result.status !== 0) {
-    throw new Error('get-pip.py failed: exit ' + result.status);
-  }
-
-  // 校验 pip
-  const pipCheck = spawnSync(pythonExe, ['-m', 'pip', '--version'], {
-    cwd: target,
-    env: Object.assign({}, process.env, { PYTHONPATH: path.join(target, 'site-packages') }),
-    encoding: 'utf-8',
-  });
-  if (pipCheck.status !== 0) {
-    throw new Error('pip not available: ' + pipCheck.stderr);
-  }
-  console.log('[build-python] pip ready: ' + pipCheck.stdout.trim());
-}
-
-/* ============ Step 5: pip install --target ============ */
-
-function step5_installDeps() {
-  const exeExt = process.platform === 'win32' ? '.exe' : '';
-  const pythonExe = path.join(target, 'python' + exeExt);
-  const sitePackages = path.join(target, 'site-packages');
-  mkdirSync(sitePackages, { recursive: true });
-
-  // 升级 pip + setuptools
-  console.log('[build-python] upgrading pip + setuptools...');
-  spawnSync(
-    pythonExe,
-    ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel', '--quiet'],
-    {
-      cwd: target,
-      env: Object.assign({}, process.env, { PYTHONPATH: sitePackages }),
-      stdio: 'inherit',
-    },
-  );
-
-  // 装 requirements.txt
-  console.log('[build-python] installing requirements...');
-  const result = spawnSync(
-    pythonExe,
-    [
-      '-m', 'pip', 'install',
-      '-r', path.join(projectRoot, 'requirements.txt'),
-      '--target', sitePackages,
-      '--upgrade',
-      '--no-warn-script-location',
-    ],
-    {
-      cwd: target,
-      env: Object.assign({}, process.env, { PYTHONPATH: sitePackages }),
-      stdio: 'inherit',
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error('pip install requirements.txt failed: exit ' + result.status);
-  }
-}
-
-/* ============ Step 6: 拷 lib/ ============ */
-
-function step6_copyLib() {
+function copyProjectLib(destDir) {
   const libSrc = path.join(projectRoot, 'lib');
-  const libDst = path.join(target, 'lib');
   if (!existsSync(libSrc)) {
     throw new Error('lib/ not found at ' + libSrc);
   }
-  console.log('[build-python] copying lib/ -> ' + libDst);
-  if (existsSync(libDst)) rmSync(libDst, { recursive: true, force: true });
-  // Node fs.cpSync can crash (STATUS_STACK_BUFFER_OVERRUN) on some Windows paths; use shell copy.
+  console.log('[build-python] copying lib/ -> ' + destDir);
+  if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true });
   if (process.platform === 'win32') {
-    mkdirSync(libDst, { recursive: true });
+    mkdirSync(destDir, { recursive: true });
     const result = spawnSync(
       'powershell',
-      ['-NoProfile', '-Command', `Copy-Item -Path '${libSrc.replace(/'/g, "''")}' -Destination '${libDst.replace(/'/g, "''")}' -Recurse -Force`],
+      [
+        '-NoProfile',
+        '-Command',
+        `Copy-Item -Path '${libSrc.replace(/'/g, "''")}' -Destination '${destDir.replace(/'/g, "''")}' -Recurse -Force`,
+      ],
       { stdio: 'inherit' },
     );
     if (result.status !== 0) {
       throw new Error('Copy-Item lib/ failed: exit ' + result.status);
     }
   } else {
-    cpSync(libSrc, libDst, { recursive: true });
+    cpSync(libSrc, destDir, { recursive: true });
   }
 }
 
-/* ============ Step 7: smoke test ============ */
+function ensurePythonLink(pythonRootDir) {
+  const binPy = path.join(pythonRootDir, 'bin', 'python3');
+  const rootPy = path.join(pythonRootDir, 'python');
+  if (!existsSync(binPy)) {
+    throw new Error('missing bin/python3 at ' + binPy);
+  }
+  chmodSync(binPy, 0o755);
+  if (existsSync(rootPy)) {
+    try {
+      unlinkSync(rootPy);
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    symlinkSync(path.join('bin', 'python3'), rootPy);
+  } catch {
+    cpSync(binPy, rootPy);
+    chmodSync(rootPy, 0o755);
+  }
+}
 
-function step7_smokeTest() {
-  const exeExt = process.platform === 'win32' ? '.exe' : '';
-  const pythonExe = path.join(target, 'python' + exeExt);
-  const sitePackages = path.join(target, 'site-packages');
-  const env = Object.assign({}, process.env, { PYTHONPATH: sitePackages });
+function runPipInstall(pythonExe, pythonRootDir, appLibName) {
+  const sitePackages = path.join(pythonRootDir, 'site-packages');
+  mkdirSync(sitePackages, { recursive: true });
 
-  console.log('[build-python] smoke test: import fastapi, uvicorn, pydantic...');
+  console.log('[build-python] upgrading pip + setuptools...');
+  spawnSync(
+    pythonExe,
+    ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel', '--quiet'],
+    {
+      cwd: pythonRootDir,
+      env: { ...process.env, PYTHONPATH: sitePackages },
+      stdio: 'inherit',
+    },
+  );
+
+  console.log('[build-python] installing requirements into', sitePackages);
   const result = spawnSync(
     pythonExe,
-    ['-c', 'import fastapi, uvicorn, pydantic, httpx, cryptography, qrcode, PIL, resend, yt_dlp; print("all imports OK, pydantic", pydantic.VERSION)'],
-    { cwd: target, env: env, encoding: 'utf-8' },
+    [
+      '-m',
+      'pip',
+      'install',
+      '-r',
+      path.join(projectRoot, 'requirements.txt'),
+      '--target',
+      sitePackages,
+      '--upgrade',
+      '--no-warn-script-location',
+    ],
+    {
+      cwd: pythonRootDir,
+      env: { ...process.env, PYTHONPATH: sitePackages },
+      stdio: 'inherit',
+    },
   );
   if (result.status !== 0) {
-    throw new Error('smoke test failed: ' + result.stderr);
+    throw new Error('pip install requirements.txt failed: exit ' + result.status);
   }
-  console.log('[build-python] ' + result.stdout.trim());
+
+  copyProjectLib(path.join(pythonRootDir, appLibName));
+}
+
+function smokeTest(pythonExe, pythonRootDir, appLibName) {
+  const sitePackages = path.join(pythonRootDir, 'site-packages');
+  const appLib = path.join(pythonRootDir, appLibName);
+  const env = {
+    ...process.env,
+    PYTHONPATH: [sitePackages, appLib].join(path.delimiter),
+  };
+  console.log('[build-python] smoke test:', pythonExe);
+  const result = spawnSync(
+    pythonExe,
+    [
+      '-c',
+      'import fastapi, uvicorn, pydantic, httpx, cryptography, qrcode, PIL, resend, yt_dlp; print("all imports OK, pydantic", pydantic.VERSION)',
+    ],
+    { cwd: pythonRootDir, env, encoding: 'utf-8' },
+  );
+  if (result.status !== 0) {
+    throw new Error('smoke test failed: ' + (result.stderr || result.stdout));
+  }
+  console.log('[build-python]', result.stdout.trim());
+}
+
+/* ============ Windows ============ */
+
+async function buildWindowsEmbed() {
+  const target = path.join(projectRoot, 'resources', 'python');
+
+  const zipPath = path.join(cacheDir, 'python-' + PY_EMBED_VERSION + '-embed-amd64.zip');
+  await downloadFile(PY_EMBED_URL, zipPath);
+
+  console.log('[build-python] extracting to ' + target);
+  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  const result = spawnSync('tar', ['-xf', zipPath, '-C', target], { stdio: 'inherit' });
+  if (result.status !== 0) throw new Error('tar exit ' + result.status);
+
+  const entries = readdirSync(target);
+  const pthFile = entries.find((e) => /^python[\d.]+\._pth$/.test(e));
+  if (!pthFile) throw new Error('pythonX.Y._pth file not found in target');
+  const pthPath = path.join(target, pthFile);
+  let content = readFileSync(pthPath, 'utf-8');
+  content = content.replace(/^#\s*import\s+site\s*$/m, 'import site');
+  if (!content.includes('site-packages')) {
+    content += '\n./site-packages\n./lib\n';
+  }
+  writeFileSync(pthPath, content, 'utf-8');
+  console.log('[build-python] enabled site: ' + pthFile);
+
+  const pythonExe = path.join(target, 'python.exe');
+  const ver = spawnSync(pythonExe, ['--version'], { encoding: 'utf-8' });
+  if (ver.status !== 0) throw new Error('python --version failed: ' + ver.stderr);
+  console.log('[build-python] ' + ver.stdout.trim());
+
+  const getPipPath = path.join(cacheDir, 'get-pip.py');
+  await downloadFile(GET_PIP_URL, getPipPath);
+
+  console.log('[build-python] bootstrapping pip...');
+  const pipBoot = spawnSync(pythonExe, [getPipPath], {
+    cwd: target,
+    stdio: 'inherit',
+    env: { ...process.env, PYTHONPATH: path.join(target, 'site-packages') },
+  });
+  if (pipBoot.status !== 0) throw new Error('get-pip.py failed: exit ' + pipBoot.status);
+
+  runPipInstall(pythonExe, target, 'lib');
+  smokeTest(pythonExe, target, 'lib');
+
+  const all = readdirSync(target, { recursive: true });
+  const totalSize = all
+    .map((f) => path.join(target, f))
+    .filter((f) => {
+      try {
+        return statSync(f).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .reduce((acc, f) => acc + statSync(f).size, 0);
+  console.log('[build-python] OK (win): total ' + (totalSize / 1024 / 1024).toFixed(1) + 'MB in ' + target);
+}
+
+/* ============ Darwin ============ */
+
+async function extractStandaloneTar(tarGzPath, target) {
+  const tmpParent = path.join(projectRoot, '.electron-cache', 'python-extract-' + Date.now());
+  mkdirSync(tmpParent, { recursive: true });
+  try {
+    const r = spawnSync('tar', ['-xzf', tarGzPath, '-C', tmpParent], { stdio: 'inherit' });
+    if (r.status !== 0) throw new Error('tar -xzf exit ' + r.status);
+    const extracted = path.join(tmpParent, 'python');
+    if (!existsSync(extracted)) {
+      throw new Error('expected python/ root inside standalone archive');
+    }
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    mkdirSync(path.dirname(target), { recursive: true });
+    cpSync(extracted, target, { recursive: true });
+  } finally {
+    rmSync(tmpParent, { recursive: true, force: true });
+  }
+}
+
+async function ensurePipOnStandalone(pythonExe, pythonRootDir) {
+  const check = spawnSync(pythonExe, ['-m', 'pip', '--version'], {
+    cwd: pythonRootDir,
+    encoding: 'utf-8',
+  });
+  if (check.status === 0) {
+    console.log('[build-python] pip ready:', check.stdout.trim());
+    return;
+  }
+  const getPipPath = path.join(cacheDir, 'get-pip.py');
+  await downloadFile(GET_PIP_URL, getPipPath);
+  console.log('[build-python] bootstrapping pip for standalone...');
+  const boot = spawnSync(pythonExe, [getPipPath], {
+    cwd: pythonRootDir,
+    stdio: 'inherit',
+  });
+  if (boot.status !== 0) throw new Error('get-pip.py failed: exit ' + boot.status);
+}
+
+async function buildDarwinArch(arch) {
+  const archiveName = `cpython-${PY_STANDALONE_VERSION}+${PY_STANDALONE_TAG}-${arch.triple}-install_only.tar.gz`;
+  const url = `${PY_STANDALONE_BASE}/${archiveName}`;
+  const tarPath = path.join(cacheDir, archiveName);
+  await downloadFile(url, tarPath);
+
+  const target = path.join(projectRoot, 'resources', 'runtime', arch.folder, 'python');
+  console.log('[build-python] extracting standalone →', target);
+  await extractStandaloneTar(tarPath, target);
+  ensurePythonLink(target);
+
+  const pythonExe = path.join(target, 'python');
+  const ver = spawnSync(pythonExe, ['--version'], { encoding: 'utf-8' });
+  if (ver.status !== 0) {
+    throw new Error(
+      `python --version failed for ${arch.folder} (Rosetta needed for x86_64 on Apple Silicon?): ${ver.stderr}`,
+    );
+  }
+  console.log('[build-python]', arch.folder, ver.stdout.trim());
+
+  await ensurePipOnStandalone(pythonExe, target);
+  runPipInstall(pythonExe, target, 'applib');
+  smokeTest(pythonExe, target, 'applib');
+  console.log('[build-python] OK:', arch.folder);
+}
+
+async function buildDarwinDual() {
+  for (const arch of DARWIN_ARCHS) {
+    await buildDarwinArch(arch);
+  }
 }
 
 /* ============ Main ============ */
@@ -234,22 +317,15 @@ function step7_smokeTest() {
 async function main() {
   try {
     mkdirSync(cacheDir, { recursive: true });
-    const zipPath = await step1_downloadEmbed();
-    await step2_extract(zipPath);
-    step3_enableSite();
-    await step4_bootstrapPip();
-    step5_installDeps();
-    step6_copyLib();
-    step7_smokeTest();
-
-    const entries = readdirSync(target, { recursive: true });
-    const totalSize = entries
-      .map((f) => path.join(target, f))
-      .filter((f) => statSync(f).isFile())
-      .reduce((acc, f) => acc + statSync(f).size, 0);
-    console.log('[build-python] OK: total ' + (totalSize / 1024 / 1024).toFixed(1) + 'MB in ' + target);
+    if (process.platform === 'darwin') {
+      await buildDarwinDual();
+    } else if (process.platform === 'win32') {
+      await buildWindowsEmbed();
+    } else {
+      throw new Error(`unsupported platform for python bundle: ${process.platform}`);
+    }
   } catch (err) {
-    console.error('[build-python] FAILED:', err.message);
+    console.error('[build-python] FAILED:', err instanceof Error ? err.message : err);
     process.exit(1);
   }
 }

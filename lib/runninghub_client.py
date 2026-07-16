@@ -83,9 +83,7 @@ def build_motion_prompt(gender: str, custom_prompt: str = "") -> str:
 def build_cover_prompt(gender: str, script: str = "") -> str:
     """生成封面图 prompt（抖音竖屏发布封面），可选结合视频脚本文案主题。
 
-    Args:
-        gender: "male" | "female" — 用于选择合适的代词
-        script: 视频口播文案全文，截取前 60 字作为封面语境
+    .. deprecated:: 请改用 build_video_cover_prompt(script)
     """
     pronoun = "她" if gender == "female" else "他"
     parts = [
@@ -103,6 +101,13 @@ def build_cover_prompt(gender: str, script: str = "") -> str:
         f"高品质视觉设计，电影级光影，字体级排版感。"
     )
     return "".join(parts)
+
+
+def build_video_cover_prompt(script: str) -> str:
+    """根据用户口播/宣传文案生成短视频封面图 prompt。"""
+    trimmed = " ".join((script or "").split())
+    snippet = trimmed[:2000]
+    return f"我准备拍摄一个短视频，文案如下（{snippet}），请你根据我的文案来创作一个短视频封面"
 
 
 class RunningHubError(Exception):
@@ -143,6 +148,7 @@ class RunningHubClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(120.0),
+                trust_env=False,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                 },

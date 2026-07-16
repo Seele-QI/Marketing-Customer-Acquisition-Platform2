@@ -246,6 +246,15 @@ async def promo_video_storyboard_status(taskId: str):
     task = _promo_video_task_store.get(tid)
 
     if not task:
+        from main import POST_PROCESS_ROOT
+        from lib.promo_video_service import recover_storyboard_task_from_disk
+
+        recovered = recover_storyboard_task_from_disk(tid, POST_PROCESS_ROOT)
+        if recovered:
+            _promo_video_task_store[tid] = recovered
+            task = recovered
+
+    if not task:
 
         raise HTTPException(status_code=404, detail="Task not found")
 

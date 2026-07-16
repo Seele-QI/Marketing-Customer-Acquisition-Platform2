@@ -32,7 +32,7 @@ export async function extractFromUrl(url: string): Promise<RetrievalItem | null>
   const res = await fetch(url, {
     headers: {
       Accept: "text/html,application/xhtml+xml",
-      "User-Agent": "Mozilla/5.0 (compatible; AgentHub-GEO/1.0)",
+      "User-Agent": "Mozilla/5.0 (compatible; CuocuoAI-GEO/1.0)",
     },
     signal: AbortSignal.timeout(15_000),
     redirect: "follow",

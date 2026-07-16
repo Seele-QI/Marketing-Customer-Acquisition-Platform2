@@ -119,7 +119,7 @@ async def download_to_path(
     redirects = 0
     timeout_cfg = httpx.Timeout(timeout, connect=5.0, read=30.0)
 
-    async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=False, trust_env=False) as client:
         while True:
             async with client.stream("GET", current) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):

@@ -33,7 +33,7 @@ function envHint(m: AiModelOption): string {
     return "需配置 NEWAPI_KEY"
   }
   if (m.provider === "deepseek") return "需配置 DEEPSEEK_API_KEY"
-  if (m.provider === "ark") return "需配置 ARK_API_KEY、ARK_CHAT_MODEL"
+  if (m.provider === "ark") return "需配置 ARK_API_KEY（可选 ARK_CHAT_MODEL）"
   return "未配置"
 }
 

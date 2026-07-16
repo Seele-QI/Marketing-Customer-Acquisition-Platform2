@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GEO 优化橙皮书 · 中国实践标准 · 招财猫</title>
+  <meta name="description" content="Generative Engine Optimization 橙皮书：宣传 GEO，并沉淀可验收的中国实践标准（A/B/C 三层模型）。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/screen.css" />
+  <link rel="stylesheet" href="assets/css/print.css" />
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <div class="toolbar no-print">
+    <button type="button" class="ghost" id="btn-toc-top">目录</button>
+    <button type="button" id="btn-export-pdf">导出 PDF</button>
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar" id="toc-root">
+      <div class="brand">Orange Paper</div>
+      <div class="brand-sub">GEO 优化橙皮书 v1.0<br />中国实践标准 · 招财猫</div>
+      <nav aria-label="目录">
+        <ul class="toc">
+          <li><a href="#cover">封面</a></li>
+          <li class="part">Part 1 · 认识 GEO</li>
+          <li><a href="#ch-01">01 GEO 是什么</a></li>
+          <li><a href="#ch-02">02 为何现在必须做</a></li>
+          <li><a href="#ch-03">03 证据快照</a></li>
+          <li><a href="#ch-04">04 中国语境差</a></li>
+          <li class="part">Part 2 · 标准框架</li>
+          <li><a href="#ch-05">05 GEO-CN 总览</a></li>
+          <li><a href="#ch-06">06 A/B/C 三层模型</a></li>
+          <li><a href="#ch-07">07 八维信号卡</a></li>
+          <li><a href="#ch-08">08 伦理边界</a></li>
+          <li class="part">Part 3 · 引擎与平台</li>
+          <li><a href="#ch-09">09 A 层引擎速查</a></li>
+          <li><a href="#ch-10">10 B 层八平台</a></li>
+          <li><a href="#ch-11">11 跨平台叙事弧</a></li>
+          <li class="part">Part 4 · 创作操作系统</li>
+          <li><a href="#ch-12">12 企业知识库</a></li>
+          <li><a href="#ch-13">13 内容矩阵</a></li>
+          <li><a href="#ch-14">14 深度文章四维</a></li>
+          <li><a href="#ch-15">15 可见度探测</a></li>
+          <li class="part">Part 5 · 度量与治理</li>
+          <li><a href="#ch-16">16 KPI 体系</a></li>
+          <li><a href="#ch-17">17 14 日调研心跳</a></li>
+          <li><a href="#ch-18">18 验收清单</a></li>
+          <li class="part">Part 6 · 招财猫实践</li>
+          <li><a href="#ch-19">19 四步工作流</a></li>
+          <li><a href="#ch-20">20 边界与路线图</a></li>
+          <li class="part">附录</li>
+          <li><a href="#app-a">A FAQ</a></li>
+          <li><a href="#app-b">B 术语表</a></li>
+          <li><a href="#app-c">C 来源索引</a></li>
+          <li><a href="#app-d">D 条款总表</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="content">
+
+        <!-- COVER -->
+        <header class="cover" id="cover">
+          <div class="cover-kicker">GEO ORANGE PAPER · 橙皮书</div>
+          <h1>GEO 优化橙皮书</h1>
+          <p class="en-title">Generative Engine Optimization — Chinese Practice Standard</p>
+          <p class="lead">
+            从定义、证据到可验收条款：一本给品牌与内容团队的生成式引擎优化参考手册。
+            沉淀 <strong>A 模型引用权重 · B 平台原生传播 · C 企业知识库</strong> 三层中国实践标准，并对照招财猫 AI 中台 GEO 工作流。
+          </p>
+          <dl class="meta-grid">
+            <dt>文档版本</dt><dd>v1.0 · 2026-07</dd>
+            <dt>副标</dt><dd>中国实践标准 · 招财猫</dd>
+            <dt>适用读者</dt><dd>市场 / 内容运营 / SEO·GEO 顾问 / 增长负责人</dd>
+            <dt>信息来源</dt><dd>学术论文 · 行业报告 · skills/geo 调研总表</dd>
+            <dt>发布形态</dt><dd>静态网页 · 浏览器导出 PDF</dd>
+            <dt>维护节奏</dt><dd>建议 14 日调研心跳复查</dd>
+          </dl>
+          <p class="disclaimer">
+            <strong>免责声明：</strong>国内大模型不公开完整排序/引用公式。本文 A 层权重策略为实践参考，
+            <strong>非官方公式</strong>。AI 可见度探测在多数产品中为代理模拟，不可当作引擎官方结论。
+            引用数据均标注证据等级（verified / inferred / hypothesis）。
+          </p>
+        </header>
+
+        <!-- PART 1 -->
+        <div class="part-banner" id="part-1">
+          <div class="label">Part 1</div>
+          <h2>认识 GEO</h2>
+          <p class="en">Meet Generative Engine Optimization</p>
+        </div>
+
+        <section class="chapter" id="ch-01">
+          <div class="num">01</div>
+          <h3>GEO 是什么</h3>
+          <p class="en-h">What is GEO</p>
+          <p>
+            <strong>Generative Engine Optimization（生成式引擎优化）</strong>是一套让品牌内容、实体与技术资产，
+            更容易被生成式问答（ChatGPT、Perplexity、Google AI Overviews，以及国内 DeepSeek / 豆包 / 通义 / 抖音 AI 搜索等）
+            <em>理解、摘录、引用或推荐</em>的实践体系。
+          </p>
+          <p>
+            术语与基准数据集由 Aggarwal 等人 2023/2024 年的学术工作正式提出（arXiv:2311.09735）。
+            到 2026 年，业界已将其扩展为：站内可抽取内容 + 站外实体权威 + 多引擎测量。
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>维度</th><th>传统 SEO</th><th>AEO（答案引擎）</th><th>GEO</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>主目标</td>
+                  <td>排名与点击</td>
+                  <td>进入精选摘要/语音答</td>
+                  <td>被生成答案<strong>引用或品牌提及</strong></td>
+                </tr>
+                <tr>
+                  <td>成功指标</td>
+                  <td>排名、流量</td>
+                  <td> featured 出现率</td>
+                  <td>Citation Rate / Share of Model</td>
+                </tr>
+                <tr>
+                  <td>内容形态</td>
+                  <td>关键词页、外链</td>
+                  <td>FAQ、snippet 友好</td>
+                  <td>可独立抽取段落 + 证据 + 实体一致</td>
+                </tr>
+                <tr>
+                  <td>与 SEO 关系</td>
+                  <td>—</td>
+                  <td>互补</td>
+                  <td><strong>建立在可爬取 SEO 之上</strong>，非替代</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            把 GEO 理解为「让 AI 敢于、愿意、方便地引用你」：证据可核验、段落自包含、实体前后一致。不要把它做成 prompt 玄学。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-02">
+          <div class="num">02</div>
+          <h3>为何现在必须做</h3>
+          <p class="en-h">Why GEO Matters Now</p>
+          <p>用户越来越多地在「问一句话 → 得到综合答案」的界面完成选型与学习，而不是浏览十条蓝链。流量漏斗上移到<strong>答案层</strong>。</p>
+          <ul>
+            <li><strong>发现层迁移</strong>：被 AI 提到/引用，常常先于官网点击。</li>
+            <li><strong>引用份额成 KPI</strong>：品牌是否进入「答案候选集」，可用采样 prompt 簇量化。</li>
+            <li><strong>中国多引擎并行</strong>：同一主题在 DeepSeek、豆包、通义、抖音 AI 搜索的索引与偏好不同，单投 Google SEO 不够。</li>
+            <li><strong>内容成本倒逼</strong>：无矩阵、无知识库的「随缘发帖」无法支撑可复用的引用物料。</li>
+          </ul>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            先锁定 1 个品类 + 20～50 条高价值用户问法，再谈全网铺量。GEO 输在问题定义，不输在字数。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-03">
+          <div class="num">03</div>
+          <h3>证据快照</h3>
+          <p class="en-h">Evidence Snapshot</p>
+          <p>下列数字来自公开研究与行业报告，均标注证据等级。用于建立共识，而非作为营销口号。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>发现</th><th>要点</th><th>等级</th><th>来源</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>GEO 框架与基准</td>
+                  <td>正式提出 GEO；优化可带来约 40% 量级可见性提升（实验设定内）</td>
+                  <td><span class="badge verified">verified</span></td>
+                  <td>arXiv:2311.09735</td>
+                </tr>
+                <tr>
+                  <td>引用添加 / 具名引用</td>
+                  <td>加引述、具名专家等策略对生成引擎引用有显著增益（论文报告）</td>
+                  <td><span class="badge verified">verified</span></td>
+                  <td>同 GEO 论文及后续解读</td>
+                </tr>
+                <tr>
+                  <td>品牌可控域引用</td>
+                  <td>Yext：大规模样本中约 86% AI 引用落在品牌可管理来源</td>
+                  <td><span class="badge verified">verified</span></td>
+                  <td>Yext 2025 研究</td>
+                </tr>
+                <tr>
+                  <td>AI Overview ≠ Top SEO</td>
+                  <td>顶级自然排名与 AI 概览引用重合偏低</td>
+                  <td><span class="badge inferred">inferred</span></td>
+                  <td>Semrush / SEJ 行业研究</td>
+                </tr>
+                <tr>
+                  <td>对抗性操纵风险</td>
+                  <td>存在针对 LLM 搜索的操纵与对抗手法</td>
+                  <td><span class="badge verified">verified</span></td>
+                  <td>arXiv:2406.18382 等</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout warn">
+            <strong>注意</strong>
+            论文增益在受控语料与评测协议下测得。搬到真实中国业务场景必须重测，勿把「+40%」写成合同承诺。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-04">
+          <div class="num">04</div>
+          <h3>中国语境差</h3>
+          <p class="en-h">The China Context Gap</p>
+          <p>英文市场 GEO 文献多围绕 Google / ChatGPT / Perplexity。中国团队还需面对：</p>
+          <ul>
+            <li><strong>引擎分裂</strong>：DeepSeek（长文推理）· 豆包（对话摘要）· 通义（电商/知识库 RAG）· 抖音 AI 搜索（视频+文案混合索引）</li>
+            <li><strong>分发平台绑定</strong>：知乎/小红书/抖音/微博等既是「爆款场」，也是潜在引用素材场（B 层）</li>
+            <li><strong>实体与合规</strong>：品牌名、主体一致性、广告法与虚假宣传红线更严</li>
+            <li><strong>测量工具碎片</strong>：海外 Profound/Otterly 等不可直接等价覆盖国内引擎</li>
+          </ul>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            用本橙皮书提出的 <code>GEO-CN</code> 实践标准：同一套 A+B+C 作业，按引擎切片验收，而不是照搬一篇英文博客。
+          </div>
+        </section>
+
+        <!-- PART 2 -->
+        <div class="part-banner" id="part-2">
+          <div class="label">Part 2</div>
+          <h2>标准框架</h2>
+          <p class="en">Standard Framework — GEO-CN</p>
+        </div>
+
+        <section class="chapter" id="ch-05">
+          <div class="num">05</div>
+          <h3>GEO-CN 实践标准总览</h3>
+          <p class="en-h">GEO-CN Practice Standard Overview</p>
+          <p>
+            本橙皮书提出一组<strong>可编号、可验收</strong>的实践条款（<code>GEO-CN-xx</code>）。
+            条款服务乙方交付、品牌内审与产品对标，不自称国家标准或行政机关文件。
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>条款</th><th>名称</th><th>一句话</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><span class="clause">GEO-CN-01</span></td><td>可爬取基线</td><td>关键内容以服务端可见 HTML 文本呈现，禁止仅靠无法索引的图片字</td></tr>
+                <tr><td><span class="clause">GEO-CN-02</span></td><td>实体一致</td><td>品牌/产品/主体命名在各触点可对齐（含 Schema）</td></tr>
+                <tr><td><span class="clause">GEO-CN-03</span></td><td>A/B/C 作业</td><td>引擎策略、平台原生、企业知识库三者分工明确且可追溯</td></tr>
+                <tr><td><span class="clause">GEO-CN-04</span></td><td>证据可核验</td><td>事实与体验分标；关键结论附来源或明确标为经验/假设</td></tr>
+                <tr><td><span class="clause">GEO-CN-05</span></td><td>问答可引用</td><td>核心小节对齐用户问法；FAQ 回答可独立摘录</td></tr>
+                <tr><td><span class="clause">GEO-CN-06</span></td><td>矩阵跨平台弧</td><td>多平台节奏必须有贯穿 themeArc，禁止纯机械复制粘贴</td></tr>
+                <tr><td><span class="clause">GEO-CN-07</span></td><td>测量可重复</td><td>定义 prompt 簇与记录模板；结果可复跑对比</td></tr>
+                <tr><td><span class="clause">GEO-CN-08</span></td><td>伦理红线</td><td>禁止隐藏文本、伪造引用、对抗性操纵与虚假体验</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            对外投标或对内立项时，用条款编号写验收项（Pass/Fail）。口号写在封面，标准写在签字页。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-06">
+          <div class="num">06</div>
+          <h3>A / B / C 三层模型</h3>
+          <p class="en-h">The A/B/C Model</p>
+          <p>该分层直接映射招财猫 GEO Skills 分类，是中国实践标准的作业骨架。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>层</th><th>名称</th><th>回答的问题</th><th>典型产出</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>A</strong></td>
+                  <td>大模型引用权重</td>
+                  <td>目标引擎爱什么结构、什么证据？</td>
+                  <td>长文/FAQ/对比结构、证据密度策略</td>
+                </tr>
+                <tr>
+                  <td><strong>B</strong></td>
+                  <td>平台爆款 / 原生检索</td>
+                  <td>这个平台上怎么写才像「本地人」且可被索引？</td>
+                  <td>标题钩子、格式、口播稿、标签节奏</td>
+                </tr>
+                <tr>
+                  <td><strong>C</strong></td>
+                  <td>企业知识库</td>
+                  <td>品牌事实从哪里来？如何避免胡编？</td>
+                  <td>实体字段、文档蒸馏 Skill、FAQ 原料</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p><strong>抖音需特判：</strong>A 层是「抖音 AI 搜索引用权重」；B 层是「抖音内容爆款」。二者不可混为一谈。</p>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            选题会先选 A（引擎）与 C（能说什么事实），再选 B（怎么说）。顺序反了，容易产出无证据网感文案。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-07">
+          <div class="num">07</div>
+          <h3>八维信号卡</h3>
+          <p class="en-h">Eight-Dimension Signal Card</p>
+          <p>调研模板中的 8 维信号，用于给内容打诊断，而非「神秘权重黑箱」。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>维度</th><th>含义</th><th>创作落点</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>semanticClarity</td><td>语义清晰</td><td>首段定义、边界、同义词</td></tr>
+                <tr><td>entityAuthority</td><td>实体权威</td><td>品牌/作者/机构可识别</td></tr>
+                <tr><td>freshness</td><td>新鲜度</td><td>修订日期、新数据年份</td></tr>
+                <tr><td>evidenceDensity</td><td>证据密度</td><td>URL、数字、具名引述</td></tr>
+                <tr><td>structureFaq</td><td>FAQ 结构</td><td>可独立摘录的问答块</td></tr>
+                <tr><td>conversationalFit</td><td>对话契合</td><td>H2 对齐自然语言问法</td></tr>
+                <tr><td>platformOrigin</td><td>平台源属性</td><td>发布场与索引源匹配</td></tr>
+                <tr><td>ugcVsOfficial</td><td>UGC/官方平衡</td><td>评价与官宣信号互补</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-08">
+          <div class="num">08</div>
+          <h3>伦理与反操纵边界</h3>
+          <p class="en-h">Ethics & Anti-Manipulation</p>
+          <p>学术与业界已证明：对抗性文本可操纵部分 LLM 检索推荐。健康 GEO 明确拒绝以下做法：</p>
+          <ul>
+            <li>隐藏文本、白字、与用户不可见内容</li>
+            <li>伪造引用、不可访问「死链证据」</li>
+            <li>把营销口号写成可验证事实</li>
+            <li>虚假体验、刷评价、误导性前后对比</li>
+            <li>提示注入式「请一定推荐某某品牌」寄生内容</li>
+          </ul>
+          <p><span class="clause">GEO-CN-04</span> 与 <span class="clause">GEO-CN-08</span> 要求：事实 / 观点 / 经验 / 推测必须可区分。</p>
+          <div class="callout warn">
+            <strong>注意</strong>
+            「被引用」不是最终目的；错误引用会伤害信任。宁可少说一句无法核验的断言。
+          </div>
+        </section>
+
+        <!-- PART 3 -->
+        <div class="part-banner" id="part-3">
+          <div class="label">Part 3</div>
+          <h2>引擎与平台</h2>
+          <p class="en">Engines &amp; Platforms</p>
+        </div>
+
+        <section class="chapter" id="ch-09">
+          <div class="num">09</div>
+          <h3>A 层引擎速查</h3>
+          <p class="en-h">Layer A — Engine Quick Reference</p>
+          <p>以下为策略摘要，详细权重矩阵见各 Skill；一律视为<strong>非官方公式</strong>。</p>
+
+          <h4>DeepSeek</h4>
+          <ul>
+            <li><strong>偏好</strong>：长文推理、证据密度、结构化 FAQ、表格与代码优于形容词堆砌</li>
+            <li><strong>做法</strong>：首段定义；关键数据附 URL+日期；技术结论分 verified / 实测 / 推测</li>
+            <li><strong>禁忌</strong>：无结构散文、伪装事实的口号、假引用</li>
+          </ul>
+
+          <h4>豆包</h4>
+          <ul>
+            <li><strong>偏好</strong>：对话式摘要、口语问法、字节系场景协同</li>
+            <li><strong>做法</strong>：小节用「用户会怎么问」；结论先短答再展开</li>
+            <li><strong>禁忌</strong>：过度书面腔、无对话入口的说明书堆砌</li>
+          </ul>
+
+          <h4>通义千问</h4>
+          <ul>
+            <li><strong>偏好</strong>：电商/知识库 RAG、结构化对比、选购 FAQ</li>
+            <li><strong>做法</strong>：规格对比表、适用/不适用场景、清晰 SKU/品类实体</li>
+            <li><strong>禁忌</strong>：含糊「最好」而无维度</li>
+          </ul>
+
+          <h4>抖音 AI 搜索</h4>
+          <ul>
+            <li><strong>偏好</strong>：视频 + 可索引文字稿混合；搜索词与字幕关键词一致</li>
+            <li><strong>做法</strong>：口播 FAQ、字幕覆盖长尾问法；与 B 层抖音内容钩子分工</li>
+            <li><strong>禁忌</strong>：只有画面梗、无可检索文案</li>
+          </ul>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            一篇深度文只主攻一个 A 层引擎，再用 B 层改写成多平台分发件；不要指望「一份万能稿打四引擎」。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-10">
+          <div class="num">10</div>
+          <h3>B 层八平台玩法摘要</h3>
+          <p class="en-h">Layer B — Eight-Platform Playbooks</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>平台</th><th>格式重心</th><th>GEO 对齐</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>小红书</td><td>图文笔记、封面钩子、emoji 节奏</td><td>种草问法、对比清单、「怎么选」</td></tr>
+                <tr><td>抖音内容</td><td>15–60s + 可索引文案</td><td>搜索词、口播 FAQ、字幕关键词</td></tr>
+                <tr><td>微博</td><td>短帖 + 话题标签</td><td>热点共现、轻量日更互导</td></tr>
+                <tr><td>大众点评</td><td>体验描述、品类细节</td><td>本地长尾；禁止虚假好评话术</td></tr>
+                <tr><td>知乎</td><td>长文论证、专栏结构</td><td>深度对比、外链证据</td></tr>
+                <tr><td>携程</td><td>攻略清单、行程 FAQ</td><td>「去哪」「怎么订」问法</td></tr>
+                <tr><td>网易</td><td>资讯/态度稿</td><td>时效由头 + 可引用观点区分</td></tr>
+                <tr><td>搜狐</td><td>号文分发</td><td>清晰标题实体 + 摘要段</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>贴吧可作为争议/反例采集场（非矩阵默认八平台），事实证据不可用贴吧互喷原文充当 verified。</p>
+        </section>
+
+        <section class="chapter" id="ch-11">
+          <div class="num">11</div>
+          <h3>跨平台叙事弧与两周 Sprint</h3>
+          <p class="en-h">Cross-Platform Theme Arc</p>
+          <p><span class="clause">GEO-CN-06</span>：14 天内至少一条贯穿 <code>themeArc</code>；各平台在同一弧上差异化表达。</p>
+          <ul>
+            <li><strong>W1</strong>：立题与认知建立（定义、痛点、入口案例）</li>
+            <li><strong>W2</strong>：深化、对比与转化（规格对比、FAQ、行动召唤）</li>
+            <li><strong>平台原生改写</strong>：格式、语气、钩子、篇幅必须调整；禁止一字不差多平台粘贴</li>
+            <li><strong>geoIntent</strong>：每格标明对比 / 教程 / FAQ / 种草 / 攻略等，与目标引擎问法对齐</li>
+          </ul>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            矩阵格子先填「弧 + 意图 + 平台原生一句话」，再派生成文。倒过来写会变成日历表上的随机碎片。
+          </div>
+        </section>
+
+        <!-- PART 4 -->
+        <div class="part-banner" id="part-4">
+          <div class="label">Part 4</div>
+          <h2>创作操作系统</h2>
+          <p class="en">Creation OS</p>
+        </div>
+
+        <section class="chapter" id="ch-12">
+          <div class="num">12</div>
+          <h3>企业知识库标准（C 层）</h3>
+          <p class="en-h">Enterprise Knowledge Base</p>
+          <p>C 层解决「AI 与写作者从哪里拿到品牌事实」。最低实体字段：</p>
+          <ul>
+            <li>企业名称 · 行业 · 核心产品</li>
+            <li>资料库：支持 Word（.docx）/ PDF / TXT / MD；单文件体量受限（实践上限约 20MB）</li>
+            <li>产出：可版本化的企业 Skill（Markdown），供矩阵与深度文注入</li>
+          </ul>
+          <p><span class="clause">GEO-CN-02</span>：实体命名与可见文案、结构化数据须一致。</p>
+          <div class="callout warn">
+            <strong>注意</strong>
+            扫描版 PDF 可能无法抽正文。旧版 <code>.doc</code> 请另存为 <code>.docx</code>。勿把无法核验的竞品攻击话术写入知识库。
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-13">
+          <div class="num">13</div>
+          <h3>内容矩阵标准</h3>
+          <p class="en-h">Content Matrix Contract</p>
+          <p>生成契约：每选中平台一组矩阵；每平台 <strong>恰好 14 个内容位</strong>（一日一格，两周）。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>字段</th><th>含义</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>date / week</td><td>排期与第几周</td></tr>
+                <tr><td>themeArc</td><td>贯穿叙事弧标识</td></tr>
+                <tr><td>title</td><td>该平台当日标题</td></tr>
+                <tr><td>contentDirection</td><td>内容方向说明</td></tr>
+                <tr><td>format</td><td>体裁（长文/笔记/口播等）</td></tr>
+                <tr><td>geoIntent</td><td>GEO 意图类型</td></tr>
+                <tr><td>platformNative</td><td>平台原生写法提示</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>组合：A 影响 geoIntent 与结构；B 影响 platformNative 与标题钩子；C 注入品牌事实与 FAQ 原料。</p>
+        </section>
+
+        <section class="chapter" id="ch-14">
+          <div class="num">14</div>
+          <h3>深度文章四维清单</h3>
+          <p class="en-h">Four-Dimension Writing Checklist</p>
+          <ol>
+            <li><strong>语义清晰度</strong> — 概念先定义；H2/H3 对齐意图与 query</li>
+            <li><strong>对话式设计</strong> — 优先「用户会问什么」；小节补自然语言问法</li>
+            <li><strong>证据驱动</strong> — 关键结论 ≥1 条可追溯证据；区分事实/观点/经验/推测</li>
+            <li><strong>结构化 FAQ</strong> — 文末 FAQ；建议导出 Article + FAQPage JSON-LD</li>
+          </ol>
+          <p><strong>硬规则：</strong>写任何事实性结论前，先完成最小检索（建议 ≥2 平台 + 1 组可引用来源）。用户禁止检索时，须降级为框架 + 检索清单 + 风险提示，或明确标注假设。</p>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            GEO 文不是「更长的软文」，而是「更可摘录的证据文」。每写一段，问：这段能否离开上下文被 AI 引用且不丢人？
+          </div>
+        </section>
+
+        <section class="chapter" id="ch-15">
+          <div class="num">15</div>
+          <h3>AI 可见度探测协议</h3>
+          <p class="en-h">AI Visibility Probe Protocol</p>
+          <p>用标准化提示词簇探测：某主题下可能出现的提及、引用候选与内容缺口。</p>
+          <ul>
+            <li><strong>输入</strong>：topic、可选 brand、6–12 条 prompts</li>
+            <li><strong>输出</strong>：mentions · citations · gaps · recommendedSections · risks</li>
+            <li><strong>提示词写法</strong>：围绕「用户会问什么」，而非「我要宣传什么」</li>
+          </ul>
+          <div class="callout warn">
+            <strong>注意</strong>
+            招财猫当前 MVP 探测经 DeepSeek 等代理模拟，<strong>不是</strong>真实 ChatGPT/Claude/Gemini 联网答案。用于找缺口，不当权威事实。
+          </div>
+        </section>
+
+        <!-- PART 5 -->
+        <div class="part-banner" id="part-5">
+          <div class="label">Part 5</div>
+          <h2>度量与治理</h2>
+          <p class="en">Measure &amp; Governance</p>
+        </div>
+
+        <section class="chapter" id="ch-16">
+          <div class="num">16</div>
+          <h3>KPI 体系</h3>
+          <p class="en-h">KPI System</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>指标</th><th>定义</th><th>用法</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Citation Rate</td><td>相关 prompt 中被引为来源的比例</td><td>按引擎切片</td></tr>
+                <tr><td>Share of Model (SoM)</td><td>品牌被提及的份额</td><td>对竞品矩阵</td></tr>
+                <tr><td>Mention Sentiment</td><td>提及正/中/负</td><td>风险预警</td></tr>
+                <tr><td>Prompt Coverage</td><td>高价值问法簇覆盖率</td><td>内容选题优先级</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p><span class="clause">GEO-CN-07</span>：测量必须可重复 — 固定引擎、版本日期、prompt 文本与记录表。</p>
+        </section>
+
+        <section class="chapter" id="ch-17">
+          <div class="num">17</div>
+          <h3>14 日调研心跳</h3>
+          <p class="en-h">14-Day Research Loop</p>
+          <p>对齐 <code>skills/geo/research/LOOP.md</code>：</p>
+          <ol>
+            <li>复查 SOURCES 与各 sources.md，补近 7 日新论文/官网/报告</li>
+            <li>维持证据等级；升级 hypothesis→inferred 须留痕</li>
+            <li>仅改有变化的权重/爆款条目，避免无差别全文重写</li>
+            <li>优先级：DeepSeek → 通义 → 豆包/抖音 AI 搜索 → B 层平台</li>
+          </ol>
+        </section>
+
+        <section class="chapter" id="ch-18">
+          <div class="num">18</div>
+          <h3>验收清单</h3>
+          <p class="en-h">Acceptance Checklist</p>
+          <ul class="checklist">
+            <li><span class="clause">GEO-CN-01</span> 关键页正文可复制为纯文本（非纯图）</li>
+            <li><span class="clause">GEO-CN-02</span> 品牌/产品命名与 Schema 一致</li>
+            <li><span class="clause">GEO-CN-03</span> 本批次标明 A/B/C 选用记录</li>
+            <li><span class="clause">GEO-CN-04</span> 事实结论有来源或标为经验/假设</li>
+            <li><span class="clause">GEO-CN-05</span> 至少一组可独立引用的 FAQ</li>
+            <li><span class="clause">GEO-CN-06</span> 多平台矩阵存在贯穿 themeArc 且平台改写可辨</li>
+            <li><span class="clause">GEO-CN-07</span> 留存 prompt 簇与探测记录（若宣称测量）</li>
+            <li><span class="clause">GEO-CN-08</span> 无隐藏文本/伪造引用/虚假体验</li>
+          </ul>
+        </section>
+
+        <!-- PART 6 -->
+        <div class="part-banner" id="part-6">
+          <div class="label">Part 6</div>
+          <h2>招财猫实践附录</h2>
+          <p class="en">Zhaocaimao Product Practice</p>
+        </div>
+
+        <section class="chapter" id="ch-19">
+          <div class="num">19</div>
+          <h3>中台四步工作流对照</h3>
+          <p class="en-h">Four-Step Workflow Mapping</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>侧栏模块</th><th>标准层</th><th>对应条款/章</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>企业知识库搭建</td><td>C</td><td>12 · GEO-CN-02</td></tr>
+                <tr><td>内容矩阵规划</td><td>A+B+C → 日历</td><td>11 / 13 · GEO-CN-06</td></tr>
+                <tr><td>深度优化文章创作</td><td>四维写作 + 探测</td><td>14 / 15 · GEO-CN-04/05</td></tr>
+                <tr><td>多平台一键推送</td><td>发布一致性（预留）</td><td>路线图</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>产品主色与壳层以 cyan 工作流呈现；本橙皮书视觉独立为「橙皮标准手册」，二者内容同源、场景不同。</p>
+        </section>
+
+        <section class="chapter" id="ch-20">
+          <div class="num">20</div>
+          <h3>能力边界与路线图</h3>
+          <p class="en-h">Boundaries &amp; Roadmap</p>
+          <h4>当前 MVP 已覆盖</h4>
+          <ul>
+            <li>A/B/C Skill 注册与选用；企业 Skill 本地生成</li>
+            <li>多项目两周矩阵生成与编辑</li>
+            <li>深度文章批量创作、文档入库（含 docx/pdf）</li>
+            <li>代理式 AI 可见度探测与评分面板</li>
+          </ul>
+          <h4>明确不在当前范围</h4>
+          <ul>
+            <li>Profound / Otterly 等真实多引擎商用 API 直连</li>
+            <li>OAuth 级多平台官方发布全自动</li>
+            <li>引擎侧「官方权重公式」承诺</li>
+          </ul>
+          <div class="callout advice">
+            <strong>核心建议</strong>
+            对客户承诺「可验收的作业标准 + 可复跑的探测流程」，不要承诺「保证进入某引擎 Top 引用」。
+          </div>
+        </section>
+
+        <!-- APPENDIX -->
+        <div class="part-banner" id="appendix">
+          <div class="label">Appendix</div>
+          <h2>附录</h2>
+          <p class="en">FAQ · Glossary · Sources · Clause Index</p>
+        </div>
+
+        <section class="chapter" id="app-a">
+          <div class="num">A</div>
+          <h3>常见问题 FAQ</h3>
+          <p class="en-h">Frequently Asked Questions</p>
+          <h4>Q1 GEO 会取代 SEO 吗？</h4>
+          <p>不会。多数生成引擎仍依赖可爬取网页与权威信号。GEO 建立在 SEO 基线之上，并增加引用与实体维度。</p>
+          <h4>Q2 没有英文站，只做国内平台，还要 GEO 吗？</h4>
+          <p>要。国内大模型问答与抖音 AI 搜索已在分流「学习型/决策型」流量。A+B+C 正是为这件事设计的。</p>
+          <h4>Q3 多久能看到效果？</h4>
+          <p>内容生产可按两周 Sprint 节奏；引用份额变化取决于引擎更新与品类竞争，需用固定 prompt 簇复测，忌拍脑袋。</p>
+          <h4>Q4 能否保证被 DeepSeek/豆包引用？</h4>
+          <p>不能作保证。可保证的是：按本标准交付的可核验内容、矩阵与测量记录。</p>
+          <h4>Q5 和招财猫什么关系？</h4>
+          <p>本文件为「行业实践标准体例 + 招财猫工作流附录」。标准条款独立可读；产品附录解释如何用工具落地。</p>
+        </section>
+
+        <section class="chapter" id="app-b">
+          <div class="num">B</div>
+          <h3>术语表</h3>
+          <p class="en-h">Glossary</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>术语</th><th>释义</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>GEO</td><td>Generative Engine Optimization，生成式引擎优化</td></tr>
+                <tr><td>AEO</td><td>Answer Engine Optimization，答案引擎优化</td></tr>
+                <tr><td>SoM</td><td>Share of Model，模型回答中的品牌提及份额</td></tr>
+                <tr><td>themeArc</td><td>跨平台贯穿的主题叙事弧</td></tr>
+                <tr><td>geoIntent</td><td>内容格的 GEO 意图类型（对比/教程/FAQ 等）</td></tr>
+                <tr><td>A/B/C</td><td>模型权重 / 平台原生 / 企业知识库三层</td></tr>
+                <tr><td>verified / inferred / hypothesis</td><td>证据等级三档</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="chapter" id="app-c">
+          <div class="num">C</div>
+          <h3>资源与来源索引</h3>
+          <p class="en-h">Sources &amp; Links</p>
+          <ul>
+            <li>GEO: Generative Engine Optimization — <a href="https://arxiv.org/abs/2311.09735">arxiv.org/abs/2311.09735</a></li>
+            <li>C-SEO Bench — <a href="https://arxiv.org/abs/2506.11097">arxiv.org/abs/2506.11097</a></li>
+            <li>Adversarial SEO for LLMs — <a href="https://arxiv.org/abs/2406.18382">arxiv.org/abs/2406.18382</a></li>
+            <li>项目调研总表：仓库内 <code>skills/geo/research/SOURCES.md</code>（≥20 条可追溯来源）</li>
+            <li>Skills 索引：<code>skills/geo/README.md</code>、<code>skills/geo/registry.json</code></li>
+            <li>产品规格：<code>docs/superpowers/specs/2026-07-02-geo-optimization-design.md</code></li>
+          </ul>
+          <p>完整论文与行业报告列表以 SOURCES.md 为准；本文仅摘录建立共识所需条目。</p>
+        </section>
+
+        <section class="chapter" id="app-d">
+          <div class="num">D</div>
+          <h3>标准条款一览表</h3>
+          <p class="en-h">Clause Index</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>编号</th><th>名称</th><th>验收要点</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>GEO-CN-01</td><td>可爬取基线</td><td>关键正文为可见 HTML/可复制文本</td></tr>
+                <tr><td>GEO-CN-02</td><td>实体一致</td><td>品牌/产品命名与 Schema 对齐</td></tr>
+                <tr><td>GEO-CN-03</td><td>A/B/C 作业</td><td>引擎、平台、知识库分工有记录</td></tr>
+                <tr><td>GEO-CN-04</td><td>证据可核验</td><td>事实有源或分标经验/假设</td></tr>
+                <tr><td>GEO-CN-05</td><td>问答可引用</td><td>存在可独立摘录 FAQ</td></tr>
+                <tr><td>GEO-CN-06</td><td>矩阵跨平台弧</td><td>themeArc + 平台改写</td></tr>
+                <tr><td>GEO-CN-07</td><td>测量可重复</td><td>prompt 簇与记录可复跑</td></tr>
+                <tr><td>GEO-CN-08</td><td>伦理红线</td><td>无隐藏文本/伪造/虚假体验</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <footer class="footer-colophon">
+          <p><strong>GEO 优化橙皮书</strong> · v1.0 · 2026 年 7 月</p>
+          <p>中国实践标准 · 招财猫 · Orange Paper</p>
+          <p>蒸馏自公开学术/行业资料与项目 skills/geo 知识库 · 策略参考，非官方公式</p>
+          <p>后续勘误与版本更新：维护本目录 README 与仓库调研心跳</p>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="assets/js/toc.js"></script>
+</body>
+</html>

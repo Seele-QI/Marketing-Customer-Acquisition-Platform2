@@ -176,7 +176,8 @@
 | 文件 | 职责 |
 |---|---|
 | [lib/deepseek-chat.ts](lib/deepseek-chat.ts) | DeepSeek AI 对话 API 封装 |
-| [lib/ark-chat-completion.ts](lib/ark-chat-completion.ts) | 火山方舟 ARK 聊天补全 SDK |
+| [lib/ark-chat-completion.ts](lib/ark-chat-completion.ts) | 火山方舟 ARK 聊天补全（薄封装 → `lib/llm/ark-client`） |
+| [lib/llm/ark-client.ts](lib/llm/ark-client.ts) | **豆包 / 方舟 Chat Completions 统一客户端**（凭证、模型 ID、流式/非流式） |
 | [lib/ark-images-api.ts](lib/ark-images-api.ts) | ARK 图像生成 API 调用 |
 | [lib/ark-images-client.ts](lib/ark-images-client.ts) | ARK 图像客户端 |
 | [lib/tianapi-trends.ts](lib/tianapi-trends.ts) | 天行 API 全网热搜客户端 |
@@ -442,9 +443,9 @@
 | `NEWAPI_CLAUDE_MODEL` | `lib/geo/llm/router.ts` | 可选 | 默认 Claude 模型，默认 `claude-opus-4-8`（按次） |
 | `SONETTO_*` | 同上 | 已废弃 | 兼容别名，优先读 `NEWAPI_*` |
 | `CREDIT_METERED_KEY` | `main.py:consume-metered` / `lib/api/with-auth.ts` | Sonetto 启用时必填 | 计量扣费服务端密钥（浏览器不可见） |
-| `ARK_API_KEY` | `app/api/ai/ark-images/route.ts` / GEO 豆包 | 可选 | 火山方舟 API Key |
-| `ARK_CHAT_MODEL` | `lib/geo/llm/router.ts` / chat-stream | 可选 | 豆包预置模型，默认 `doubao-seed-2-1-pro-260628` |
-| `ARK_ENDPOINT_ID` | 同上 | 可选 | 多模态接入点 ID |
+| `ARK_API_KEY` | `lib/llm/ark-client.ts` / 生图 route | 可选 | 火山方舟 API Key（对话/识图；勿与生图专用 Key 混用） |
+| `ARK_CHAT_MODEL` | `lib/llm/ark-client.ts` / chat-stream / GEO | 可选 | 豆包预置模型，默认 `doubao-seed-2-1-pro-260628` |
+| `ARK_ENDPOINT_ID` | 同上 | 可选 | 多模态接入点 ID（优先于默认模型 ID） |
 | `ARK_BASE_URL` | 同上 | 可选 | 火山方舟 API 地域端点 |
 | `ARK_IMAGE_ENDPOINT_ID` | `app/api/ai/ark-images/route.ts` | 可选 | 生图接入点 ID |
 | `ARK_IMAGE_API_KEY` | 同上 | 可选 | 生图专用 API Key |
@@ -663,9 +664,9 @@ TEMPLATE_CONFIG = {
 ### 形态
 
 - **客户端**：Electron 33 + Node 20 + 内嵌 Next.js standalone + embeddable Python 3.13
-- **平台**：仅 Windows（NSIS 安装包）
+- **平台**：Windows（NSIS）+ macOS（unsigned universal DMG，GitHub Actions）
 - **激活**：MVP 阶段就做激活码机制
-- **更新**：electron-updater 走 GitHub Releases
+- **更新**：electron-updater → OSS generic（`latest.yml` / `latest-mac.yml`）
 
 ### ffmpeg 路径修正
 
@@ -708,14 +709,17 @@ pnpm electron:dev                       # dev 期：Electron 窗口 + dev 期的
 pnpm resources:build                    # 出包前：构建 resources/ 下所有产物
 pnpm preflight                          # 出包前：校验资源齐全
 pnpm dist:win                           # 出 NSIS 安装包到 release/
+pnpm dist:mac                           # macOS 上出 universal DMG（见 docs/deploy/ELECTRON-BUILD-MAC.md）
 ```
+
+> Mac 全套包请在 GitHub Actions `desktop-mac` workflow 构建，勿在 Windows 交叉编译。
 
 ### Dev 期 vs Prod 期
 
 | 维度 | dev | prod |
 |---|---|---|
 | Next.js 命令 | `pnpm exec next dev` | `node server.js` |
-| Python 命令 | `python -m uvicorn main:app` | `<resources>/python/python.exe -m uvicorn main:app` |
+| Python 命令 | `python -m uvicorn main:app` | Win: `<resources>/python/python.exe`；Mac: `<resources>/runtime/darwin-*/python/python` |
 | Python cwd | 项目根 | `<resources>/` |
 | Next cwd | 项目根 | `<resources>/next-standalone/` |
 | 端口 | 3010 / 8010 | 3010 / 8010 |
@@ -735,7 +739,8 @@ pnpm dist:win                           # 出 NSIS 安装包到 release/
 ## 关键文档与计划
 
 - [docs/deploy/PAAS.md](docs/deploy/PAAS.md) — PaaS / Docker 部署
-- [docs/deploy/ELECTRON-BUILD.md](docs/deploy/ELECTRON-BUILD.md) — Electron 桌面打包
+- [docs/deploy/ELECTRON-BUILD.md](docs/deploy/ELECTRON-BUILD.md) — Electron Windows 桌面打包
+- [docs/deploy/ELECTRON-BUILD-MAC.md](docs/deploy/ELECTRON-BUILD-MAC.md) — Electron macOS universal DMG（GHA / 无签名）
 - [docs/deploy/CENTRAL-ACTIVATION.md](docs/deploy/CENTRAL-ACTIVATION.md) — 中央激活服务
 
 ## 开发常用命令

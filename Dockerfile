@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1.7
 # ────────────────────────────────────────────────────────────────
-#  Zeabur 默认 Dockerfile 入口（占位）
-#  实际部署走 Dockerfile.web / Dockerfile.api（在 zeabur.json 里显式指定）。
-#  本文件存在仅为满足 Zeabur "仓库根目录存在 Dockerfile" 的探测检查。
-#  如被用作构建入口，会因 FROM 指向不存在的镜像而快速失败——这是预期行为。
+#  Zeabur 根目录探测占位（勿用作实际构建入口）
+#  Zeabur 从仓库根目录构建时，请在服务配置或 zeabur.json 中指定：
+#    - web → Dockerfile.web
+#    - api → Dockerfile.api
+#  若误用本文件构建，会快速失败（FROM scratch）——这是预期行为。
 # ────────────────────────────────────────────────────────────────
 
 FROM scratch

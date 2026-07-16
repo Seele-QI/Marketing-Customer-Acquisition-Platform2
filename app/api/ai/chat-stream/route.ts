@@ -4,11 +4,15 @@ import { NextResponse } from "next/server"
 import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
 import { getCreditBalance, withAuth } from "@/lib/api/with-auth"
 import {
+  buildArkStreamChatRequest,
+  getArkChatModelId,
+  isArkChatConfigured,
+} from "@/lib/llm/ark-client"
+import {
   DEFAULT_MAX_TOKENS,
   isArkChatModelId,
   isSonettoModelId,
 } from "@/lib/llm/model-registry"
-import { getArkChatModelId, isArkChatConfigured } from "@/lib/geo/llm/router"
 import { buildSonettoStreamRequest } from "@/lib/llm/sonetto-client"
 import { buildCopywritingEnrichedSystemPrompt } from "@/lib/prompts/copywriting-agent-systems"
 import { getWorkflowKnowledgeForAgent } from "@/lib/prompts/copywriting-workflow-knowledge"
@@ -33,12 +37,8 @@ export const maxDuration = 300
  *
  * 含图片 + 仅 DeepSeek：仍走 Chat Completions 多模态（DEEPSEEK_VISION_MODEL）
  *
- * ARK_BASE_URL 默认 https://ark.cn-beijing.volces.com/api/v3
- * ARK_ENDPOINT_ID / ARK_MODEL：推理接入点 ID（ep- 或 ark- 开头）
- * ARK_API_KEY：控制台「API Key 管理」里创建的密钥（Bearer），不是接入点 ID。
- * ARK_ENDPOINT_ID：「在线推理」里该接入点的 ID，多为 ep- 开头；须与 API Key 同属账号且已开通调用。
- * ARK_BASE_URL 地域须与接入点一致（如华北2北京：https://ark.cn-beijing.volces.com/api/v3）。
- * ARK_API_SECRET（可选）：与 ARK_API_KEY 二选一作为 Bearer。
+ * 豆包统一走 lib/llm/ark-client.ts（Chat Completions）。
+ * ARK_API_KEY + ARK_CHAT_MODEL（默认 doubao-seed-2-1-pro-260628）；可选 ARK_ENDPOINT_ID。
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  */
 
@@ -46,8 +46,6 @@ const DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 
 const DEFAULT_TEXT_MODEL = "deepseek-chat"
 const DEFAULT_VISION_MODEL = "deepseek-v4-flash"
-
-const DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 const MAX_IMAGE_ATTACHMENTS = 6
 const MAX_BASE64_CHARS_PER_IMAGE = 28_000_000
@@ -83,21 +81,12 @@ function sanitizeConversationHistory(raw: unknown): SanitizedTurn[] {
   return tail
 }
 
-/** DeepSeek Chat Completions 多模态片段 */
+/** DeepSeek / 方舟 Chat Completions 多模态片段 */
 type ChatCompletionContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }
 
 type IncomingImage = { mimeType?: string; dataBase64?: string }
-
-/**
- * 仅当用户把接入点误写在 ARK_API_KEY 时做推断。
- * 控制台「在线推理」的接入点 ID 多为 ep- 开头；ark-… 常被误当成密钥或资源 ID，不能当作 model。
- */
-function inferEndpointIdFromRawArkKey(raw: string): string {
-  const t = raw.trim()
-  return /^ep-/i.test(t) ? t : ""
-}
 
 function appendArkEndpointHint(errBody: string): string {
   if (
@@ -109,23 +98,12 @@ function appendArkEndpointHint(errBody: string): string {
   }
   return (
     errBody +
-    "\n\n——\n【配置说明】上述表示当前请求里的 model（接入点 ID）在 AI 平台侧不存在或当前 API Key 无权调用。\n" +
-    "1. 打开 AI 平台 → 模型推理 → 在线推理，点开你的接入点，复制页面上的「接入点 ID」（一般为 ep- 开头）。\n" +
-    "2. 在 .env 中设置：ARK_ENDPOINT_ID=该 ep- ID；ARK_API_KEY=「API Key 管理」里创建的密钥（不要把接入点 ID 当 Key）。\n" +
-    "3. 确认 ARK_BASE_URL 与接入点地域一致（北京示例：https://ark.cn-beijing.volces.com/api/v3）。\n" +
-    "4. 若仍报错，在控制台确认该接入点已启用、账号有该模型权限。"
+    "\n\n——\n【配置说明】上述表示当前请求里的 model 在 AI 平台侧不存在或当前 API Key 无权调用。\n" +
+    "1. 预置模型：.env 设置 ARK_CHAT_MODEL=doubao-seed-2-1-pro-260628 与 ARK_API_KEY。\n" +
+    "2. 或在线推理接入点：ARK_ENDPOINT_ID=ep-…；ARK_API_KEY=「API Key 管理」密钥（勿把接入点当 Key）。\n" +
+    "3. 确认 ARK_BASE_URL 与地域一致（北京：https://ark.cn-beijing.volces.com/api/v3）。\n" +
+    "4. 统一入口见 lib/llm/ark-client.ts。"
   )
-}
-
-function normalizeArkBaseUrl(raw: string): string {
-  let t = raw.trim().replace(/\/+$/, "")
-  if (t.endsWith("/chat/completions")) {
-    t = t.slice(0, -"/chat/completions".length).replace(/\/+$/, "")
-  }
-  if (t.endsWith("/responses")) {
-    t = t.slice(0, -"/responses".length).replace(/\/+$/, "")
-  }
-  return t
 }
 
 /** 客户端断开时取消上游 SSE 读取，避免空转。 */
@@ -257,10 +235,11 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     memoryContext,
   })
 
-  const historyMessages: { role: string; content: string }[] = conversationHistory.map((t) => ({
-    role: t.role,
-    content: t.content,
-  }))
+  const historyMessages: { role: "user" | "assistant"; content: string }[] =
+    conversationHistory.map((t) => ({
+      role: t.role,
+      content: t.content,
+    }))
 
   // ── Sonetto（Claude / ChatGPT）：独立客户端 + 计量扣费 ──
   if (isSonettoModelId(modelId)) {
@@ -380,17 +359,8 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   }
 
   const deepseekKey = getDeepseekApiKey()
-  const rawArkKey = readServerEnv("ARK_API_KEY")
-  const arkSecret =
-    readServerEnv("ARK_API_SECRET") || readServerEnv("VOLCENGINE_API_KEY")
-  const explicitArkEndpoint =
-    readServerEnv("ARK_ENDPOINT_ID") || readServerEnv("ARK_MODEL")
-
-  const arkEndpointId =
-    explicitArkEndpoint || inferEndpointIdFromRawArkKey(rawArkKey)
-  /** 带图对话走 chat/completions，Bearer 用识图/通用 Key，与生图专用 ARK_IMAGE_API_KEY 分离 */
-  const arkBearer = (arkSecret || rawArkKey).trim()
-  const useArkVisionChat = hasImages && Boolean(arkEndpointId) && Boolean(arkBearer)
+  /** 带图对话走 chat/completions；鉴权统一走 ark-client（与生图专用 ARK_IMAGE_API_KEY 分离） */
+  const useArkVisionChat = hasImages && isArkChatConfigured()
   const useArkTextChat = !hasImages && isArkChatModelId(modelId)
 
   let upstreamUrl: string
@@ -399,26 +369,20 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   let providerLabel: string
 
   if (useArkTextChat) {
-    if (!isArkChatConfigured() || !arkBearer) {
-      return NextResponse.json(
-        { detail: "未配置豆包：请设置 ARK_API_KEY 与 ARK_CHAT_MODEL" },
-        { status: 503 },
-      )
-    }
-    const arkModel = getArkChatModelId() || modelId
-    const base =
-      normalizeArkBaseUrl(readServerEnv("ARK_BASE_URL")) || DEFAULT_ARK_BASE_URL
-    upstreamUrl = `${base}/chat/completions`
-    authorization = `Bearer ${arkBearer}`
-    requestBody = {
-      model: arkModel,
-      stream: true,
+    const built = buildArkStreamChatRequest({
+      modelId: getArkChatModelId() || modelId,
       messages: [
         { role: "system", content: enrichedSystemContent },
         ...historyMessages,
         { role: "user", content: effectiveUserText },
       ],
+    })
+    if ("error" in built) {
+      return NextResponse.json({ detail: built.error }, { status: built.status })
     }
+    upstreamUrl = built.url
+    authorization = built.authorization
+    requestBody = built.body
     providerLabel = "豆包"
   } else if (!hasImages) {
     if (!deepseekKey) {
@@ -443,12 +407,6 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     }
     providerLabel = "AI 模型"
   } else if (useArkVisionChat) {
-    const base =
-      normalizeArkBaseUrl(readServerEnv("ARK_BASE_URL")) || DEFAULT_ARK_BASE_URL
-    upstreamUrl = `${base}/chat/completions`
-    authorization = `Bearer ${arkBearer}`
-
-    // 方舟 Vision（Chat Completions）：user.content 必须为多模态块数组（与 OpenAI 对齐）
     const userContentParts: ChatCompletionContentPart[] = [
       { type: "text", text: effectiveUserText },
       ...sanitizedImages.map(({ mime, dataBase64 }) => ({
@@ -458,16 +416,19 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
         },
       })),
     ]
-
-    requestBody = {
-      model: arkEndpointId,
-      stream: true,
+    const built = buildArkStreamChatRequest({
       messages: [
         { role: "system", content: enrichedSystemContent },
         ...historyMessages,
         { role: "user", content: userContentParts },
       ],
+    })
+    if ("error" in built) {
+      return NextResponse.json({ detail: built.error }, { status: built.status })
     }
+    upstreamUrl = built.url
+    authorization = built.authorization
+    requestBody = built.body
     providerLabel = "AI 视觉"
   } else if (deepseekKey) {
     const visionModel = readServerEnv("DEEPSEEK_VISION_MODEL") || DEFAULT_VISION_MODEL
@@ -503,7 +464,7 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
 
   console.log(`[chat-stream] provider=${providerLabel}, hasImages=${hasImages}, model=${(requestBody as Record<string, unknown>).model}, url=${upstreamUrl}`)
 
-  const billingModelId = useArkTextChat
+  const billingModelId = useArkTextChat || useArkVisionChat
     ? getArkChatModelId() || modelId
     : hasImages
       ? readServerEnv("DEEPSEEK_VISION_MODEL") || DEFAULT_VISION_MODEL

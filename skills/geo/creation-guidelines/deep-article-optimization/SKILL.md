@@ -5,7 +5,7 @@ description: Use when writing or optimizing long-form articles for Generative En
 
 # 深度优化文章创作准则（GEO）
 
-本准则用于把“长文写作”变成 **可检索、可引用、证据可验证** 的 GEO 文章产出过程。
+本准则用于把平台内容写成 **可检索、可引用、证据可验证** 的 GEO 短文（纯文本、全平台 ≤1000 字）。
 
 ---
 
@@ -15,6 +15,12 @@ description: Use when writing or optimizing long-form articles for Generative En
 - 若用户要求“不用查资料”，必须降级为：
   - 只输出“可验证的写作框架 + 检索清单 + 风险提示”
   - 或明确标注为“假设/经验性观点”，不得伪造数据与来源。
+
+## 硬规则：格式与篇幅（产品落地）
+
+- **纯文本**：禁止 Markdown 标记、emoji、装饰符号、JSON-LD 代码块
+- **字数**：全文（含文末标签行）非空白字符 ≤ **1000**
+- **标签**：文末固定一行 `标签：#a #b #c`（3–5 个）
 
 ---
 
@@ -35,22 +41,22 @@ description: Use when writing or optimizing long-form articles for Generative En
 ### 1) 语义清晰度
 
 - 概念先定义：同义词、边界、与相邻概念的区分
-- H2/H3 结构对齐用户意图与检索 query
+- 小节标题对齐用户意图与检索 query（纯文本标题，勿用井号）
 
 ### 2) 对话式设计
 
 - 优先使用“用户会问什么”的问答结构，而不是堆砌术语
-- 每个关键小节补 1–2 个自然语言问题（可被 AI 引用的问法）
+- 全文控制篇幅，1–2 条简短 FAQ 即可
 
 ### 3) 证据驱动
 
-- 每个关键结论至少配 1 条可追溯证据（URL + 摘要 + 引用片段）
-- 区分：事实 / 观点 / 经验 / 推测（避免把观点写成事实）
+- 关键结论注明「需验证」或「经验性观点」，避免伪造不可访问链接
+- 区分：事实 / 观点 / 经验 / 推测
 
-### 4) 结构化 FAQ
+### 4) 结构化 FAQ + 标签
 
-- 输出 FAQ 段落，且每条回答必须可验证、可引用
-- 文章尾部给出建议 JSON-LD 片段（Article + FAQPage）
+- 文末 FAQ（可选 1–2 条）必须可验证、可引用
+- **必须**输出文章标签行；**不要**附带 JSON-LD
 
 ---
 
@@ -78,7 +84,7 @@ description: Use when writing or optimizing long-form articles for Generative En
 4. **检索**：`GeoResearchPanel` 按 B 选中平台拉参考
 5. **起草**：A 的 checklist + weight-matrix + B 的 viral-patterns + C 的品牌实体/FAQ
 6. **探测**：`POST /api/geo/ai-probe`
-7. **输出**：FAQ + Schema（本准则四维清单）
+7. **输出**：纯文本短文 + FAQ（可选）+ 文末标签行；由 `enforceArticleFormat` 保证 ≤1000 字
 
 > A 层权重为**策略参考，非官方公式**；B 层体验观点须与可验证事实分离。
 

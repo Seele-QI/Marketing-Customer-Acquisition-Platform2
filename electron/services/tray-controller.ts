@@ -43,7 +43,7 @@ export class TrayController {
   init() {
     const icon = this.createTrayIcon();
     this.tray = new Tray(icon);
-    this.tray.setToolTip('AI营销获客中台');
+    this.tray.setToolTip('招财猫');
     this.updateMenu();
     this.tray.on('double-click', () => this.opts.onShow());
   }
@@ -112,9 +112,9 @@ export class TrayController {
           const { dialog } = require('electron');
           dialog.showMessageBox({
             type: 'info',
-            title: '关于 AI营销获客中台',
-            message: 'AI营销获客中台 v' + app.getVersion(),
-            detail: 'AI 视频创作中台 · 桌面版',
+            title: '关于 招财猫',
+            message: '招财猫 v' + app.getVersion(),
+            detail: 'AI 创作平台 · 桌面版',
           });
         },
       },

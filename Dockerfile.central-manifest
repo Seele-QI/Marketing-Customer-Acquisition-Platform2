@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1.7
+# 轻量 Manifest 旁路服务（解决精简云端 api 缺少 /api/central/manifest）
+FROM python:3.13-slim
+WORKDIR /app
+RUN pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.30"
+COPY services/central_manifest/app.py ./app.py
+ENV PORT=8080 HOST=0.0.0.0
+ENV CENTRAL_LATEST_VERSION=0.1.0
+ENV CENTRAL_FORCE_UPDATE_BELOW=0.0.1
+ENV CENTRAL_UPDATE_URL=""
+ENV CENTRAL_RELEASE_NOTES=""
+EXPOSE 8080
+CMD ["sh", "-c", "python -m uvicorn app:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080}"]

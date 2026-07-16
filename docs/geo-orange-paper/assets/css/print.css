@@ -1,0 +1,96 @@
+/* GEO Orange Paper — print / PDF */
+@page {
+  size: A4;
+  margin: 16mm 14mm 18mm;
+}
+
+@media print {
+  html {
+    scroll-behavior: auto;
+  }
+
+  body {
+    background: #fff !important;
+    color: #1c1917 !important;
+    font-size: 10.5pt;
+    line-height: 1.55;
+  }
+
+  .progress,
+  .toolbar,
+  .sidebar {
+    display: none !important;
+  }
+
+  .layout {
+    display: block;
+  }
+
+  .main {
+    padding: 0 !important;
+  }
+
+  .content {
+    max-width: none;
+  }
+
+  .cover {
+    min-height: auto;
+    page-break-after: always;
+    padding: 24mm 0 16mm;
+  }
+
+  .cover::before {
+    display: none;
+  }
+
+  .cover-kicker,
+  .cover h1,
+  .cover .en-title,
+  .cover .lead,
+  .meta-grid,
+  .disclaimer {
+    opacity: 1 !important;
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .part-banner {
+    page-break-before: always;
+    margin-top: 0;
+  }
+
+  .part-banner:first-of-type {
+    page-break-before: auto;
+  }
+
+  .chapter {
+    break-inside: avoid-page;
+  }
+
+  .callout,
+  .table-wrap,
+  table,
+  .checklist li {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .footer-colophon {
+    page-break-before: avoid;
+  }
+
+  /* Ensure background colors print */
+  .callout.advice,
+  th,
+  .badge,
+  tr:nth-child(even) td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

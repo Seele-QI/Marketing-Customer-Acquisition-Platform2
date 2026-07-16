@@ -17,6 +17,7 @@ import {
 
 import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
 import { PositioningQuestionCard } from "@/components/ip-positioning/positioning-question-card"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
 import {
@@ -26,6 +27,7 @@ import {
 } from "@/lib/ip-positioning-upload"
 import {
   EMPTY_INTAKE,
+  getMissingIntakeFieldLabels,
   validateIntake,
   type IpPositioningIntake,
   type UploadedDocumentPayload,
@@ -86,6 +88,8 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
   const [files, setFiles] = React.useState<UploadedFile[]>([])
   const [fileRefs, setFileRefs] = React.useState<IpPositioningFileRef[]>([])
   const [hydrated, setHydrated] = React.useState(false)
+  const [submitting, setSubmitting] = React.useState(false)
+  const [submitError, setSubmitError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   React.useEffect(() => {
@@ -146,19 +150,29 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
   const updateField = React.useCallback(
     (key: keyof IpPositioningIntake, value: string | StageId | null) => {
       setIntake((prev) => ({ ...prev, [key]: value }))
+      setSubmitError(null)
     },
     [],
+  )
+
+  const isLastStep = step === totalSteps - 1
+  const missingFieldLabels = React.useMemo(
+    () => getMissingIntakeFieldLabels(intake),
+    [intake],
   )
 
   const canProceed = React.useMemo(() => {
     if (isStageStep) return true
     if (!currentGroup) return false
-    return currentGroup.questions.every((q) => {
+    const stepOk = currentGroup.questions.every((q) => {
       if (!q.required) return true
       const value = intake[q.id as keyof IpPositioningIntake]
       return typeof value === "string" && value.trim().length > 0
     })
-  }, [currentGroup, intake, isStageStep])
+    if (!stepOk) return false
+    if (isLastStep) return missingFieldLabels.length === 0
+    return true
+  }, [currentGroup, intake, isLastStep, isStageStep, missingFieldLabels.length])
 
   const handleFileUpload = React.useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(e.target.files ?? [])
@@ -228,16 +242,34 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
   const handleSubmit = React.useCallback(async () => {
     const err = validateIntake(intake)
     if (err) {
-      toast({ title: "信息不完整", description: "请返回前面步骤补全必填项", variant: "destructive" })
+      setSubmitError(err)
+      toast({
+        title: "信息不完整",
+        description: "请返回前面步骤补全必填项",
+        variant: "destructive",
+      })
       return
     }
-    let submitFiles = files
-    const missingBase64 = files.some((f) => !f.base64)
-    if (missingBase64) {
-      submitFiles = await hydrateIpDocuments(fileRefs)
+
+    setSubmitError(null)
+    setSubmitting(true)
+    try {
+      let submitFiles = files
+      const missingBase64 = files.some((f) => !f.base64)
+      if (missingBase64) {
+        submitFiles = await hydrateIpDocuments(fileRefs)
+      }
+      await onSubmit({ intake, files: submitFiles, modelId })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "提交失败"
+      setSubmitError(message)
+      toast({ title: "提交失败", description: message, variant: "destructive" })
+    } finally {
+      if (!analyzing) setSubmitting(false)
     }
-    await onSubmit({ intake, files: submitFiles, modelId })
-  }, [fileRefs, files, intake, modelId, onSubmit])
+  }, [analyzing, fileRefs, files, intake, modelId, onSubmit])
+
+  const isBusy = analyzing || submitting
 
   return (
     <div className="space-y-6">
@@ -380,6 +412,22 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
         </section>
       ) : null}
 
+      {isLastStep && missingFieldLabels.length > 0 ? (
+        <Alert variant="destructive">
+          <AlertTitle>还有 {missingFieldLabels.length} 项未填写</AlertTitle>
+          <AlertDescription>
+            请返回前面步骤补全：{missingFieldLabels.join("、")}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {submitError ? (
+        <Alert variant="destructive">
+          <AlertTitle>无法生成报告</AlertTitle>
+          <AlertDescription>{submitError}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5 dark:border-white/5">
         <div className="flex items-center gap-2">
           <button
@@ -396,18 +444,18 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
               type="button"
               variant="outline"
               onClick={() => setStep((s) => s - 1)}
-              disabled={analyzing}
-              className="rounded-xl"
-            >
-              <ChevronLeft className="mr-1 h-4 w-4" />
-              上一步
-            </Button>
-          ) : null}
-          {step < totalSteps - 1 ? (
-            <Button
-              type="button"
-              onClick={() => setStep((s) => s + 1)}
-              disabled={!canProceed || analyzing}
+          disabled={analyzing}
+          className="rounded-xl"
+        >
+          <ChevronLeft className="mr-1 h-4 w-4" />
+          上一步
+        </Button>
+      ) : null}
+      {step < totalSteps - 1 ? (
+        <Button
+          type="button"
+          onClick={() => setStep((s) => s + 1)}
+          disabled={!canProceed || isBusy}
               className="rounded-xl bg-amber-500 hover:bg-amber-600"
             >
               下一步
@@ -417,10 +465,10 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
             <Button
               type="button"
               onClick={() => void handleSubmit()}
-              disabled={!canProceed || analyzing}
+              disabled={!canProceed || isBusy}
               className="rounded-xl bg-amber-500 hover:bg-amber-600"
             >
-              {analyzing ? (
+              {isBusy ? (
                 <>
                   <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                   诊断中…

@@ -1,6 +1,17 @@
 # Zeabur 部署操作手册（mcap-prod-test1）
 
-> 配合 [zeabur-env.example](./zeabur-env.example) 与 [桌面版发布＋云端部署+安装包制作.md](./桌面版发布＋云端部署+安装包制作.md) 使用。
+> 配合 [zeabur-env.example](./zeabur-env.example) 与 [桌面版发布＋云端部署+安装包制作.md](./桌面版发布＋云端部署+安装包制作.md) 使用。  
+> **迁到阿里云北京 4C8G**：见 [ZEABUR-BEIJING-MIGRATE.md](./ZEABUR-BEIJING-MIGRATE.md)。  
+> **桌面自动更新（OSS）**：见 [DESKTOP-UPDATE-OSS.md](./DESKTOP-UPDATE-OSS.md)。
+
+## 生产域名（阿里云北京 Zeabur preview；香港旧机保留）
+
+| 服务 | 域名 |
+|------|------|
+| api | `https://mcap-cloud-api.preview.aliyun-zeabur.cn` |
+| web | `https://mcap-cloud-web.preview.aliyun-zeabur.cn` |
+
+验收：`node scripts/verify-beijing-cutover.mjs --phase prod`
 
 ## 1. 生成本地密钥
 
@@ -106,11 +117,12 @@ curl https://zhongtai.zeabur.app/api/health
 
 ## 6. 桌面端连通（M3）
 
-构建 Electron 时在 `.env.electron-build.local` 设置：
+构建机 `.env.electron-build.local` 设置：
 
 ```env
-CLOUD_API_URL=https://zhongtaiapi.zeabur.app
-CENTRAL_SERVICE_URL=https://zhongtaiapi.zeabur.app
+CLOUD_API_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
+CENTRAL_SERVICE_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
+UPDATE_FEED_URL=https://mcap-desktop-releases.oss-cn-beijing.aliyuncs.com/releases/
 CENTRAL_SIGNING_PUBLIC_KEY=<公钥 PEM>
 ```
 

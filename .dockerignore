@@ -34,3 +34,10 @@ netlify.toml
 tsconfig.tsbuildinfo
 .vercel
 coverage
+release
+release-run
+release-new
+release-run._buildbak
+release-new._buildbak
+resources
+electron/dist-electron

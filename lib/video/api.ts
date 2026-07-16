@@ -2,13 +2,6 @@
  * 视频模块 API 客户端 — 浏览器侧统一走同源 Next 代理（转发 session cookie）。
  */
 import type {
-  VideoGenerateRequest,
-  VideoGenerateResponse,
-  VideoStatusResponse,
-  VideoEditRequest,
-  VideoEditResponse,
-  VoiceCloneRequest,
-  VoiceCloneResponse,
   ImageToVideoRequest,
   ImageToVideoResponse,
   ImageToVideoStatusResponse,
@@ -38,64 +31,6 @@ export type ExtractCopyStatusResponse = {
   duration?: number
   source?: string
   error?: string
-}
-
-export async function submitVideoGeneration(
-  req: VideoGenerateRequest,
-): Promise<VideoGenerateResponse> {
-  const res = await fetch("/api/video/generate", {
-    ...FETCH_INIT,
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(req),
-  })
-  const data = await res.json()
-  if (!res.ok) await readError(res, "提交任务失败")
-  return data as VideoGenerateResponse
-}
-
-export async function queryVideoStatus(taskId: string): Promise<VideoStatusResponse> {
-  const res = await fetch(
-    `/api/video/status?taskId=${encodeURIComponent(taskId)}`,
-    FETCH_INIT,
-  )
-  if (!res.ok) await readError(res, "查询状态失败")
-  return (await res.json()) as VideoStatusResponse
-}
-
-export async function cancelVideoTask(taskId: string): Promise<void> {
-  const res = await fetch("/api/video/cancel", {
-    ...FETCH_INIT,
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ task_id: taskId }),
-  })
-  if (!res.ok) await readError(res, "取消任务失败")
-}
-
-/** Remotion 预设剪辑 */
-export async function applyEdit(req: VideoEditRequest): Promise<VideoEditResponse> {
-  const res = await fetch("/api/video/remotion-edit", {
-    ...FETCH_INIT,
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(req),
-  })
-  const data = await res.json()
-  if (!res.ok) await readError(res, "剪辑失败")
-  return data as VideoEditResponse
-}
-
-export async function cloneVoice(req: VoiceCloneRequest): Promise<VoiceCloneResponse> {
-  const res = await fetch("/api/video/clone-voice", {
-    ...FETCH_INIT,
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(req),
-  })
-  const data = await res.json()
-  if (!res.ok) await readError(res, "音色克隆失败")
-  return data as VoiceCloneResponse
 }
 
 export async function submitImageToVideo(

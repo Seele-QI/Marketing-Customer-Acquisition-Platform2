@@ -1,17 +1,21 @@
 import type { MatrixProject } from "@/lib/geo/matrix-types"
 import { getMatrixPlatformLabel } from "@/lib/geo/matrix-platforms"
 import {
-  ARTICLE_BATCH_MAX_JOBS,
+  ARTICLE_BATCH_COPIES_PER_SLOT_MAX,
   type ArticleJob,
   type BatchJobPreview,
 } from "@/lib/geo/article-types"
 
-export { ARTICLE_BATCH_MAX_JOBS }
+export { ARTICLE_BATCH_COPIES_PER_SLOT_MAX }
+
+const VARIANT_BRIEF_HINT =
+  "请从不同角度/切入点撰写，避免与同日同平台其他篇雷同。"
 
 export type ExpandDirectionInput = {
   mode: "direction"
   direction: string
   platformIds: string[]
+  copiesPerSlot?: number
 }
 
 export type ExpandMatrixInput = {
@@ -19,6 +23,7 @@ export type ExpandMatrixInput = {
   project: MatrixProject
   dates: string[]
   platformIds: string[]
+  copiesPerSlot?: number
 }
 
 export type ExpandJobsInput = ExpandDirectionInput | ExpandMatrixInput
@@ -30,6 +35,29 @@ function newJobId(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
+/** Clamp copiesPerSlot to 1–ARTICLE_BATCH_COPIES_PER_SLOT_MAX */
+export function clampCopiesPerSlot(value?: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 1
+  if (n < 1) return 1
+  if (n > ARTICLE_BATCH_COPIES_PER_SLOT_MAX) return ARTICLE_BATCH_COPIES_PER_SLOT_MAX
+  return n
+}
+
+function withVariant(
+  baseTitle: string,
+  baseBrief: string,
+  index: number,
+  total: number,
+): { title: string; brief: string } {
+  if (total <= 1) {
+    return { title: baseTitle, brief: baseBrief }
+  }
+  return {
+    title: `${baseTitle}（第 ${index}/${total} 篇）`,
+    brief: `${baseBrief}\n\n${VARIANT_BRIEF_HINT}（本篇为第 ${index}/${total} 篇）`,
+  }
+}
+
 export function expandDirectionJobs(input: ExpandDirectionInput): BatchJobPreview {
   const direction = input.direction.trim()
   if (!direction) {
@@ -39,19 +67,22 @@ export function expandDirectionJobs(input: ExpandDirectionInput): BatchJobPrevie
     throw new Error("请至少选择一个平台")
   }
 
-  const jobs: ArticleJob[] = input.platformIds.map((platformId) => {
-    const label = getMatrixPlatformLabel(platformId)
-    return {
-      jobId: newJobId(),
-      mode: "direction",
-      platformId,
-      title: `${direction} · ${label}`,
-      brief: direction,
-    }
-  })
+  const copies = clampCopiesPerSlot(input.copiesPerSlot)
+  const jobs: ArticleJob[] = []
 
-  if (jobs.length > ARTICLE_BATCH_MAX_JOBS) {
-    throw new Error(`单次最多生成 ${ARTICLE_BATCH_MAX_JOBS} 篇，当前 ${jobs.length} 篇，请减少平台选择`)
+  for (const platformId of input.platformIds) {
+    const label = getMatrixPlatformLabel(platformId)
+    const baseTitle = `${direction} · ${label}`
+    for (let i = 1; i <= copies; i++) {
+      const { title, brief } = withVariant(baseTitle, direction, i, copies)
+      jobs.push({
+        jobId: newJobId(),
+        mode: "direction",
+        platformId,
+        title,
+        brief,
+      })
+    }
   }
 
   return { jobs, skipped: [] }
@@ -71,6 +102,7 @@ export function expandMatrixJobs(input: ExpandMatrixInput): BatchJobPreview {
     throw new Error("该项目尚未生成内容矩阵，请先在「内容矩阵规划」中生成矩阵")
   }
 
+  const copies = clampCopiesPerSlot(input.copiesPerSlot)
   const jobs: ArticleJob[] = []
   const skipped: BatchJobPreview["skipped"] = []
   const seen = new Set<string>()
@@ -92,30 +124,28 @@ export function expandMatrixJobs(input: ExpandMatrixInput): BatchJobPreview {
         continue
       }
 
-      jobs.push({
-        jobId: newJobId(),
-        mode: "matrix",
-        platformId,
-        date,
-        title: cell.title,
-        brief: cell.contentDirection,
-        matrixMeta: {
-          themeArc: cell.themeArc,
-          format: cell.format,
-          geoIntent: cell.geoIntent,
-          platformNative: cell.platformNative,
-        },
-      })
+      for (let i = 1; i <= copies; i++) {
+        const { title, brief } = withVariant(cell.title, cell.contentDirection, i, copies)
+        jobs.push({
+          jobId: newJobId(),
+          mode: "matrix",
+          platformId,
+          date,
+          title,
+          brief,
+          matrixMeta: {
+            themeArc: cell.themeArc,
+            format: cell.format,
+            geoIntent: cell.geoIntent,
+            platformNative: cell.platformNative,
+          },
+        })
+      }
     }
   }
 
   if (jobs.length < 1) {
     throw new Error("所选日期与平台在矩阵中无有效格子，请调整选择或先生成矩阵")
-  }
-  if (jobs.length > ARTICLE_BATCH_MAX_JOBS) {
-    throw new Error(
-      `单次最多生成 ${ARTICLE_BATCH_MAX_JOBS} 篇，当前 ${jobs.length} 篇，请减少日期或平台`,
-    )
   }
 
   return { jobs, skipped }

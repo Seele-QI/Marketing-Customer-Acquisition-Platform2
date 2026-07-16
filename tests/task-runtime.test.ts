@@ -2,6 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DH_VIDEO_TASK_TIMEOUT_MS,
+  getTaskHardTimeoutMs,
+} from "../lib/task-runtime/constants.ts"
+import {
   RUNTIME_STORAGE_KEY,
   createRuntimeTask,
   loadRuntimeStore,
@@ -104,4 +108,10 @@ test("14-day cutoff filters old history records", () => {
   const kept = records.filter((r) => r.createdAt > cutoff)
   assert.equal(kept.length, 1)
   assert.equal(kept[0]!.id, "new")
+})
+
+test("dh-video-v2 hard timeout is 50 minutes", () => {
+  assert.equal(DH_VIDEO_TASK_TIMEOUT_MS, 50 * 60 * 1000)
+  assert.equal(getTaskHardTimeoutMs("dh-video-v2"), DH_VIDEO_TASK_TIMEOUT_MS)
+  assert.equal(getTaskHardTimeoutMs("image-video"), null)
 })

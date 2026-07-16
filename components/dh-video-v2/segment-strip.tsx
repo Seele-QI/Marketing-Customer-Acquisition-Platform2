@@ -37,6 +37,16 @@ function statusColor(status: SegmentStripItem["status"]): string {
   return "text-muted-foreground"
 }
 
+function networkHint(error: string | undefined): string | null {
+  if (!error) return null
+  if (
+    /ConnectError|timeout|Timeout|403|401|network|Network|VPN|proxy|连接|超时/i.test(error)
+  ) {
+    return "可能与 VPN/网络有关，可关闭 VPN 后点「重试本段」"
+  }
+  return null
+}
+
 export function SegmentStrip({
   segments,
   tokens,
@@ -56,6 +66,8 @@ export function SegmentStrip({
             (seg.status === "failed" || seg.status === "timeout")
           const isRetrying = retryingIndex === seg.index
           const label = STATUS_LABEL[seg.status] || seg.status
+
+          const networkTip = networkHint(seg.error)
 
           return (
             <div
@@ -102,7 +114,17 @@ export function SegmentStrip({
               ) : null}
 
               {seg.error && (seg.status === "failed" || seg.status === "timeout") ? (
-                <p className="mb-1.5 line-clamp-2 text-[9px] text-red-300/90">{seg.error}</p>
+                <div className="mb-1.5 space-y-0.5">
+                  <p
+                    className="line-clamp-3 text-[9px] text-red-300/90"
+                    title={seg.error}
+                  >
+                    {seg.error}
+                  </p>
+                  {networkTip ? (
+                    <p className="text-[8px] leading-snug text-amber-500/90">{networkTip}</p>
+                  ) : null}
+                </div>
               ) : null}
 
               {canRetry ? (

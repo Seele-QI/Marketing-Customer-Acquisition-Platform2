@@ -1,7 +1,16 @@
 "use client"
 
 import * as React from "react"
-import { Images, Trash2, ExternalLink, Download, X, HardDrive } from "lucide-react"
+import {
+  Images,
+  Trash2,
+  ExternalLink,
+  Download,
+  X,
+  HardDrive,
+  RefreshCw,
+  Package,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   SECONDARY_ARCHIVE_STORAGE_KEY,
@@ -12,6 +21,19 @@ import {
 } from "@/lib/generated-image-archive"
 import { downloadImageFromUrl } from "@/lib/download-image"
 import { cn } from "@/lib/utils"
+import { toFriendlyUpdateError } from "@/lib/update-error"
+
+type UpdateStatusState = {
+  status: string
+  currentVersion: string
+  availableVersion?: string
+  releaseNotes?: string
+  percent?: number
+  transferred?: number
+  total?: number
+  error?: string
+  forceRequired?: boolean
+}
 
 function formatSavedAt(iso: string): string {
   try {
@@ -27,6 +49,264 @@ function formatSavedAt(iso: string): string {
   } catch {
     return iso
   }
+}
+
+function statusLabel(status: string | undefined): string {
+  switch (status) {
+    case "checking":
+      return "正在检查…"
+    case "available":
+      return "发现新版本"
+    case "not-available":
+      return "已是最新版本"
+    case "downloading":
+      return "正在下载…"
+    case "ready":
+      return "更新已就绪，可安装并重启"
+    case "error":
+      return "更新出错"
+    default:
+      return "未检查"
+  }
+}
+
+function AppUpdateSection() {
+  const api = typeof window !== "undefined" ? window.electronAPI : undefined
+  const [version, setVersion] = React.useState<string>("—")
+  const [isPackaged, setIsPackaged] = React.useState(false)
+  const [feedConfigured, setFeedConfigured] = React.useState(false)
+  const [status, setStatus] = React.useState<UpdateStatusState | null>(null)
+  const [busy, setBusy] = React.useState<"check" | "download" | "install" | null>(null)
+  const [message, setMessage] = React.useState<string>("")
+
+  React.useEffect(() => {
+    if (!api) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        if (api.getAppInfo) {
+          const info = await api.getAppInfo()
+          if (cancelled) return
+          setVersion(info.version)
+          setIsPackaged(info.isPackaged)
+          setFeedConfigured(info.feedConfigured)
+        } else {
+          const v = await api.getAppVersion()
+          if (!cancelled) setVersion(v)
+        }
+        if (api.getUpdateStatus) {
+          const st = await api.getUpdateStatus()
+          if (!cancelled) setStatus(st)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [api])
+
+  React.useEffect(() => {
+    if (!api?.onUpdateStatus) return
+    return api.onUpdateStatus((payload) => {
+      setStatus(payload)
+      if (payload.error) setMessage(toFriendlyUpdateError(payload.error))
+    })
+  }, [api])
+
+  React.useEffect(() => {
+    if (!api?.onUpdateProgress) return
+    return api.onUpdateProgress((payload) => {
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "downloading",
+              percent: payload.percent,
+              transferred: payload.transferred,
+              total: payload.total,
+            }
+          : {
+              status: "downloading",
+              currentVersion: version,
+              percent: payload.percent,
+              transferred: payload.transferred,
+              total: payload.total,
+            },
+      )
+    })
+  }, [api, version])
+
+  const percent = Math.max(0, Math.min(100, Math.round(status?.percent ?? 0)))
+  const canCheck = Boolean(api) && isPackaged && feedConfigured && busy == null
+  const canDownload =
+    Boolean(api) &&
+    isPackaged &&
+    busy == null &&
+    (status?.status === "available" || status?.status === "error")
+  const canInstall = Boolean(api) && busy == null && status?.status === "ready"
+
+  const onCheck = async () => {
+    if (!api) return
+    setBusy("check")
+    setMessage("")
+    try {
+      const result = await api.checkForUpdate()
+      if (!result.ok) {
+        setMessage(toFriendlyUpdateError(result.error || "检查更新失败"))
+        return
+      }
+      if (result.info?.version) {
+        setMessage(`发现新版本 v${result.info.version}`)
+      } else if (result.status === "not-available") {
+        setMessage(`已是最新版本 v${version}`)
+      }
+      if (api.getUpdateStatus) setStatus(await api.getUpdateStatus())
+    } catch (e) {
+      setMessage(toFriendlyUpdateError(e instanceof Error ? e.message : "检查更新失败"))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const onDownload = async () => {
+    if (!api) return
+    setBusy("download")
+    setMessage("")
+    try {
+      const result = await api.downloadUpdate()
+      if (!result.ok) {
+        setMessage(toFriendlyUpdateError(result.error || "下载失败"))
+        return
+      }
+      setMessage("下载完成，可安装并重启")
+      if (api.getUpdateStatus) setStatus(await api.getUpdateStatus())
+    } catch (e) {
+      setMessage(toFriendlyUpdateError(e instanceof Error ? e.message : "下载失败"))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const onInstall = async () => {
+    if (!api) return
+    setBusy("install")
+    setMessage("正在安装并重启…")
+    try {
+      await api.installUpdate()
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "安装失败")
+      setBusy(null)
+    }
+  }
+
+  if (!api) {
+    return (
+      <section className="mb-8 rounded-2xl border border-border/70 bg-card/55 p-5 shadow-sm ring-1 ring-border/40 backdrop-blur-sm dark:bg-card/40 sm:p-6">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300">
+            <Package className="h-5 w-5" aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-foreground">应用更新</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              版本检查与安装包更新仅在桌面客户端（Electron）中可用。请使用安装版应用进入本页拉取更新。
+            </p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="mb-8 rounded-2xl border border-border/70 bg-card/55 p-5 shadow-sm ring-1 ring-border/40 backdrop-blur-sm dark:bg-card/40 sm:p-6">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300">
+            <Package className="h-5 w-5" aria-hidden />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-medium text-foreground">应用更新</p>
+            <p className="text-sm text-muted-foreground">
+              当前版本{" "}
+              <span className="font-mono font-semibold tabular-nums text-foreground">v{version}</span>
+              {status?.availableVersion ? (
+                <>
+                  {" "}
+                  · 最新{" "}
+                  <span className="font-mono font-semibold tabular-nums text-foreground">
+                    v{status.availableVersion}
+                  </span>
+                </>
+              ) : null}
+            </p>
+            <p className="text-xs text-muted-foreground">{statusLabel(status?.status)}</p>
+            {!isPackaged ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                当前为开发运行，自动更新仅在打包安装包中可用。
+              </p>
+            ) : null}
+            {isPackaged && !feedConfigured ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                未配置 UPDATE_FEED_URL / CENTRAL_UPDATE_URL，无法检查更新源。
+              </p>
+            ) : null}
+            {status?.releaseNotes ? (
+              <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg border border-border/60 bg-background/60 p-2 text-xs text-muted-foreground">
+                {status.releaseNotes}
+              </pre>
+            ) : null}
+            {message ? <p className="text-xs text-foreground/80">{message}</p> : null}
+            {status?.status === "downloading" || (busy === "download" && percent > 0) ? (
+              <div className="mt-3 w-full max-w-md space-y-1.5">
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-sky-500 transition-[width] duration-200"
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                <p className="font-mono text-[11px] tabular-nums text-muted-foreground">{percent}%</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={!canCheck}
+            onClick={() => void onCheck()}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", busy === "check" && "animate-spin")} aria-hidden />
+            检查更新
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={!canDownload}
+            onClick={() => void onDownload()}
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden />
+            下载更新
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="gap-1.5"
+            disabled={!canInstall}
+            onClick={() => void onInstall()}
+          >
+            安装并重启
+          </Button>
+        </div>
+      </div>
+    </section>
+  )
 }
 
 export function SettingsView() {
@@ -62,7 +342,6 @@ export function SettingsView() {
 
   return (
     <div className="relative isolate flex h-full min-h-0 flex-col overflow-auto">
-      {/* 页面氛围背景 */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 -z-10 bg-gradient-to-br from-teal-50/55 via-sky-50/30 to-background dark:from-teal-950/25 dark:via-slate-950 dark:to-background"
@@ -77,7 +356,6 @@ export function SettingsView() {
       />
 
       <div className="relative mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
-        {/* 页头 */}
         <header className="relative mb-8 overflow-hidden rounded-2xl border border-border/60 bg-card/75 shadow-sm ring-1 ring-teal-500/10 backdrop-blur-md dark:bg-card/50 dark:ring-teal-400/10">
           <div
             aria-hidden
@@ -90,10 +368,10 @@ export function SettingsView() {
             <div className="min-w-0 flex-1 space-y-3">
               <div>
                 <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
-                  自动保存图片
+                  设置
                 </h1>
                 <p className="mt-2 max-w-3xl text-pretty text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
-                  AI 生成的图片与成稿都会保存到此列表。链接保存在本机浏览器，外部 URL 可能过期，请及时下载备份。
+                  管理应用更新与自动保存的图片归档。外链可能过期，请及时下载备份。
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -106,11 +384,12 @@ export function SettingsView() {
           </div>
         </header>
 
-        {/* 列表面板 */}
+        <AppUpdateSection />
+
         <section className="rounded-2xl border border-border/70 bg-card/55 p-5 shadow-sm ring-1 ring-border/40 backdrop-blur-sm dark:bg-card/40 sm:p-6">
           <div className="mb-6 flex flex-col gap-4 border-b border-border/60 pb-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-foreground">归档列表</p>
+              <p className="text-sm font-medium text-foreground">自动保存图片</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 共 <span className="font-mono font-semibold tabular-nums text-foreground">{items.length}</span>{" "}
                 条记录（最多保留 50 条）
@@ -140,7 +419,7 @@ export function SettingsView() {
                 <Images className="h-7 w-7 opacity-60" aria-hidden />
               </div>
               <p className="max-w-md text-pretty text-sm leading-relaxed text-muted-foreground">
-                暂无记录。AI 生成生成的图片与成稿会自动出现在此。
+                暂无记录。AI 生成的图片与成稿会自动出现在此。
               </p>
             </div>
           ) : (

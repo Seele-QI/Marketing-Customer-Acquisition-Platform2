@@ -6,7 +6,7 @@ import {
   displayRatesPer1M,
   perCallCredits,
 } from "@/lib/llm/model-registry"
-import { isArkChatConfigured } from "@/lib/geo/llm/router"
+import { isArkChatConfigured } from "@/lib/llm/ark-client"
 import { isSonettoProviderConfigured } from "@/lib/llm/sonetto-client"
 import { getDeepseekApiKey } from "@/lib/server-env"
 

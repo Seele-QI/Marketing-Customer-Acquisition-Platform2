@@ -96,7 +96,7 @@ export function AccountLoginDialog({
         credentials: "include",
       })
       const data = (await r.json().catch(() => ({}))) as {
-        detail?: { message?: string } | string
+        detail?: { message?: string; cause?: string } | string
         user?: AuthMe["user"]
         balance?: number
       }
@@ -108,7 +108,11 @@ export function AccountLoginDialog({
             : detail && typeof detail === "object" && detail.message
               ? detail.message
               : "登录失败"
-        throw new Error(msg)
+        const cause =
+          detail && typeof detail === "object" && typeof detail.cause === "string"
+            ? detail.cause.trim()
+            : ""
+        throw new Error(cause ? `${msg}（${cause}）` : msg)
       }
       const me: AuthMe = {
         user: data.user!,

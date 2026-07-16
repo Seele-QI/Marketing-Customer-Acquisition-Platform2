@@ -1,5 +1,5 @@
 import type { ClipTaskStatusResponse } from "@/lib/video/types"
-import { POLL_ERROR_LIMIT, TASK_TIMEOUT_MS } from "@/lib/video-task-runtime"
+import { POLL_ERROR_LIMIT, TASK_TIMEOUT_MS } from "@/lib/video/clip-task-constants"
 
 export const CLIP_POLL_INTERVAL_MS = 5_000
 export { POLL_ERROR_LIMIT, TASK_TIMEOUT_MS }

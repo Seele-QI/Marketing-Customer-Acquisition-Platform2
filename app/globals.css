@@ -1,5 +1,11 @@
-@import 'tailwindcss';
+/* source(none) 关闭全仓自动扫描，避免 resources/release 导致构建 OOM */
+@import 'tailwindcss' source(none);
 @import 'tw-animate-css';
+
+@source "./";
+@source "../components";
+@source "../lib";
+@source "../remotion";
 
 @custom-variant dark (&:is(.dark *));
 

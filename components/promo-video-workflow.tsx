@@ -15,7 +15,6 @@ import {
   XCircle,
   ImageIcon,
   ArrowLeft,
-  Download,
   Sparkles,
   Wand2,
   Package,
@@ -26,6 +25,15 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
 import { resolveMediaUrl, fileToBase64 } from "@/lib/video/utils"
+import { VideoCoverSettings } from "@/components/video-cover-settings"
+import {
+  DEFAULT_COVER_ASPECT_RATIO,
+  DEFAULT_COVER_RESOLUTION,
+  type CoverAspectRatio,
+  type CoverResolution,
+} from "@/lib/video/cover-constants"
+import { startCoverGeneration } from "@/lib/video/cover-runtime"
+import { PreviewVideoCoverPanel } from "@/components/video/preview-video-cover-panel"
 import { useRuntimeTask, useTaskRuntimeApi } from "@/lib/task-runtime"
 import type { AssetRef } from "@/lib/workflow-draft-store"
 import {
@@ -71,6 +79,7 @@ import {
 } from "@/lib/promo-video/constants"
 import {
   submitPromoStoryboard,
+  queryPromoStoryboardStatus,
   requestPromoAutoPrompt,
   submitPromoVideo,
   retryPromoCrop,
@@ -174,6 +183,9 @@ export default function PromoVideoWorkflow() {
   const [vidStatus, setVidStatus] = useState<"idle" | "queue" | "proc" | "done" | "fail">("idle")
   const [vidProgress, setVidProgress] = useState(0)
   const [vidUrl, setVidUrl] = useState("")
+  const [coverUrl, setCoverUrl] = useState("")
+  const [coverStatus, setCoverStatus] = useState<"idle" | "running" | "success" | "failed">("idle")
+  const [coverError, setCoverError] = useState("")
   const [vidErr, setVidErr] = useState("")
   const [vidPrompt, setVidPrompt] = useState("")
   const [autoPrompting, setAutoPrompting] = useState(false)
@@ -187,6 +199,8 @@ export default function PromoVideoWorkflow() {
   const [draftHydrating, setDraftHydrating] = useState(true)
   const [imageRef, setImageRef] = useState<AssetRef | null>(null)
   const [audioRef, setAudioRef] = useState<AssetRef | null>(null)
+  const [coverAspectRatio, setCoverAspectRatio] = useState<CoverAspectRatio>(DEFAULT_COVER_ASPECT_RATIO)
+  const [coverResolution, setCoverResolution] = useState<CoverResolution>(DEFAULT_COVER_RESOLUTION)
 
   useEffect(() => {
     let cancelled = false
@@ -217,6 +231,8 @@ export default function PromoVideoWorkflow() {
       setVidUrl(draft.videoUrl)
       setImageRef(draft.imageRef)
       setAudioRef(draft.audioRef)
+      setCoverAspectRatio(draft.coverAspectRatio ?? DEFAULT_COVER_ASPECT_RATIO)
+      setCoverResolution(draft.coverResolution ?? DEFAULT_COVER_RESOLUTION)
       if (draft.imageRef) {
         const stored = await getWorkflowAsset(draft.imageRef.id)
         if (stored) {
@@ -238,6 +254,32 @@ export default function PromoVideoWorkflow() {
     })()
     return () => { cancelled = true }
   }, [])
+
+  // 草稿恢复为「分镜就绪」但内存无帧 URL 时，从后端（含磁盘恢复）重新拉取
+  useEffect(() => {
+    if (draftHydrating || sbStatus !== "ready" || !storyTaskId || frames.length > 0) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const sd = await queryPromoStoryboardStatus(storyTaskId)
+        if (cancelled) return
+        if (sd.status === "storyboard_ready" && (sd.frame_urls?.length ?? 0) > 0) {
+          setFrames(sd.frame_urls!)
+          setSbFrameCount(sd.frame_count || sd.frame_urls!.length)
+          return
+        }
+        setSbStatus("fail")
+        setSbErr(formatPromoError(sd.error || "分镜图未找到，请重新生成分镜"))
+      } catch (e: unknown) {
+        if (cancelled) return
+        setSbStatus("fail")
+        setSbErr(formatPromoError(e instanceof Error ? e.message : "分镜任务已失效，请重新生成"))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [draftHydrating, sbStatus, storyTaskId, frames.length])
 
   useEffect(() => {
     if (draftHydrating) return
@@ -265,11 +307,15 @@ export default function PromoVideoWorkflow() {
       videoUrl: vidUrl,
       imageRef,
       audioRef,
+      coverAspectRatio,
+      coverResolution,
     })
   }, [
     draftHydrating,
     step,
     formData,
+    coverAspectRatio,
+    coverResolution,
     storyTaskId,
     sbStatus,
     sbProgress,
@@ -335,6 +381,21 @@ export default function PromoVideoWorkflow() {
     }
     if (typeof runtimeTask.result?.segmentsCompleted === "number") {
       setVidSegmentsCompleted(runtimeTask.result.segmentsCompleted as number)
+    }
+
+    const nextCoverUrl = String(runtimeTask.result?.coverUrl ?? "")
+    const metaCoverStatus = String(runtimeTask.meta?.coverStatus ?? "")
+    if (nextCoverUrl) {
+      setCoverUrl(nextCoverUrl)
+      setCoverStatus("success")
+      setCoverError("")
+    } else if (metaCoverStatus === "running" || metaCoverStatus === "failed") {
+      setCoverStatus(metaCoverStatus)
+      if (metaCoverStatus === "failed") {
+        setCoverError(String(runtimeTask.meta?.coverError ?? "封面生成失败"))
+      }
+    } else if (metaCoverStatus === "success" && !nextCoverUrl) {
+      setCoverStatus("success")
     }
 
     if (runtimeTask.status === "running") {
@@ -556,6 +617,9 @@ export default function PromoVideoWorkflow() {
     setVidStatus("queue")
     setVidProgress(0)
     setVidErr("")
+    setCoverUrl("")
+    setCoverError("")
+    setCoverStatus("idle")
 
     try {
       const { task_id: tid } = await submitPromoVideo({
@@ -573,6 +637,14 @@ export default function PromoVideoWorkflow() {
       setVidSegmentsCompleted(0)
       setVidRhTaskIds([])
       setVidStatus("proc")
+      const coverRef = formData.productImage
+        ? { base64: formData.productImage }
+        : imagePreview
+          ? { dataUrl: imagePreview }
+          : frames[0]
+            ? { url: resolveMediaUrl(frames[0]) }
+            : null
+      setCoverStatus(coverRef ? "running" : "idle")
       runtimeApi.register({
         kind: "promo-video",
         taskId: tid,
@@ -581,8 +653,15 @@ export default function PromoVideoWorkflow() {
         meta: {
           phase: "video",
           script: formData.promoScript.slice(0, 80),
-          coverUrl: frames[0] ? resolveMediaUrl(frames[0]) : "",
         },
+      })
+      startCoverGeneration({
+        kind: "promo-video",
+        script: formData.promoScript.trim(),
+        referenceImage: coverRef,
+        aspectRatio: coverAspectRatio,
+        resolution: coverResolution,
+        linkedTaskId: tid,
       })
     } catch (e: unknown) {
       setVidStatus("fail")
@@ -597,6 +676,9 @@ export default function PromoVideoWorkflow() {
     setSelected(new Set())
     setVidStatus("idle")
     setVidUrl("")
+    setCoverUrl("")
+    setCoverStatus("idle")
+    setCoverError("")
     setVidProgress(0)
     setVidErr("")
     setVidPrompt("")
@@ -660,7 +742,7 @@ export default function PromoVideoWorkflow() {
                   <span className="ml-1.5 font-normal text-slate-400">{formData.productPrompt.length} 字</span>
                 </label>
                 <textarea
-                  placeholder="用于 AI 绘制分镜九宫格，描述画面风格与产品场景…"
+                  placeholder="用于 AI 绘制分镜九宫格，描述画面风格与产品场景…（系统自动追加：不要生成分镜编号文字）"
                   value={formData.productPrompt}
                   onChange={(e) =>
                     setFormData((p) => ({ ...p, productPrompt: e.target.value }))
@@ -791,6 +873,14 @@ export default function PromoVideoWorkflow() {
                   />
                 )}
               </div>
+
+              <VideoCoverSettings
+                accent="sky"
+                aspectRatio={coverAspectRatio}
+                resolution={coverResolution}
+                onAspectRatioChange={setCoverAspectRatio}
+                onResolutionChange={setCoverResolution}
+              />
 
               {/* 成片计费 */}
               <div className="space-y-2 rounded-xl border border-amber-100/80 bg-amber-50/40 p-3 dark:border-amber-500/10 dark:bg-amber-500/5">
@@ -1222,7 +1312,7 @@ export default function PromoVideoWorkflow() {
 
       {/* Step 4 — 视频 */}
       {step === "video" && (
-        <div className="mx-auto max-w-2xl space-y-6">
+        <div className={cn("mx-auto space-y-6", vidStatus === "done" ? "max-w-4xl" : "max-w-2xl")}>
           {(vidStatus === "queue" || vidStatus === "proc") && (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200/60 bg-white py-16 dark:border-white/10 dark:bg-white/5">
               <Loader2 className="mb-4 h-12 w-12 animate-spin text-sky-400" />
@@ -1252,35 +1342,26 @@ export default function PromoVideoWorkflow() {
               {vidProgress > 0 && (
                 <p className="mt-3 text-[12px] text-slate-400">{vidProgress}%</p>
               )}
+              {coverStatus === "running" && (
+                <p className="mt-3 text-[12px] text-slate-400">封面同步生成中…</p>
+              )}
             </div>
           )}
 
           {vidStatus === "done" && vidUrl && (
-            <div className="flex flex-col items-center rounded-2xl border border-slate-200/60 bg-white py-10 dark:border-white/10 dark:bg-white/5">
+            <div className="flex flex-col items-center rounded-2xl border border-slate-200/60 bg-white px-4 py-10 dark:border-white/10 dark:bg-white/5 sm:px-6">
               <CheckCircle2 className="mb-4 h-12 w-12 text-emerald-400" />
-              <h3 className="mb-4 text-lg font-semibold text-slate-800 dark:text-slate-200">
+              <h3 className="mb-6 text-lg font-semibold text-slate-800 dark:text-slate-200">
                 视频生成完成
               </h3>
-              <div className="mb-6 w-full max-w-md overflow-hidden rounded-2xl bg-black shadow-lg">
-                <video controls disablePictureInPicture className="w-full">
-                  <source src={resolveMediaUrl(vidUrl)} />
-                </video>
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" onClick={reset} className="rounded-full">
-                  创建新视频
-                </Button>
-                <a
-                  href={resolveMediaUrl(vidUrl)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  download
-                >
-                  <Button className="rounded-full bg-sky-500 hover:bg-sky-600">
-                    <Download className="mr-2 h-4 w-4" />
-                    下载视频
-                  </Button>
-                </a>
+              <div className="w-full">
+                <PreviewVideoCoverPanel
+                  videoUrl={vidUrl}
+                  coverUrl={coverUrl}
+                  coverStatus={coverStatus}
+                  coverError={coverError}
+                  onCreateNew={reset}
+                />
               </div>
               <p className="mt-6 flex items-center gap-1.5 text-[12px] text-slate-400">
                 <AlertCircle className="h-3.5 w-3.5" />

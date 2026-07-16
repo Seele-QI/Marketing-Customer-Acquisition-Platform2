@@ -8,6 +8,7 @@ import type { MatrixProject } from "@/lib/geo/matrix-types"
 import {
   createMatrixProject,
   deleteMatrixProject,
+  getMatrixProject,
   listMatrixProjects,
   updateMatrixProject,
 } from "@/lib/geo/matrix-api"
@@ -31,26 +32,48 @@ export function GeoMatrixProjectBar({
   const [loadError, setLoadError] = React.useState<string | null>(null)
   const [renamingId, setRenamingId] = React.useState<string | null>(null)
   const [renameValue, setRenameValue] = React.useState("")
+  const activeIdRef = React.useRef(activeId)
+  const autoSelectedRef = React.useRef(false)
 
-  const refresh = React.useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const list = await listMatrixProjects()
-      setProjects(list)
-      onProjectsChange?.(list)
-      if (list.length > 0 && !activeId) {
-        onSelect(list[0])
+  activeIdRef.current = activeId
+
+  const selectProject = React.useCallback(
+    async (summary: MatrixProject) => {
+      try {
+        const full = await getMatrixProject(summary.id)
+        onSelect(full ?? summary)
+      } catch {
+        onSelect(summary)
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "加载项目失败"
-      setLoadError(message)
-      setProjects([])
-      onProjectsChange?.([])
-    } finally {
-      setLoading(false)
-    }
-  }, [activeId, onProjectsChange, onSelect])
+    },
+    [onSelect],
+  )
+
+  const refresh = React.useCallback(
+    async (options?: { force?: boolean; silent?: boolean }) => {
+      if (!options?.silent) {
+        setLoading(true)
+      }
+      setLoadError(null)
+      try {
+        const list = await listMatrixProjects({ force: options?.force })
+        setProjects(list)
+        onProjectsChange?.(list)
+        if (list.length > 0 && !activeIdRef.current && !autoSelectedRef.current) {
+          autoSelectedRef.current = true
+          await selectProject(list[0])
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "加载项目失败"
+        setLoadError(message)
+        setProjects([])
+        onProjectsChange?.([])
+      } finally {
+        setLoading(false)
+      }
+    },
+    [onProjectsChange, selectProject],
+  )
 
   React.useEffect(() => {
     void refresh()
@@ -60,17 +83,30 @@ export function GeoMatrixProjectBar({
     setBusy(true)
     try {
       const p = await createMatrixProject(`矩阵项目 ${projects.length + 1}`)
-      await refresh()
+      autoSelectedRef.current = true
+      // 乐观更新：先结束按钮 busy，再后台同步列表（不再串行等待二次请求）
+      const nextList = projects.some((item) => item.id === p.id)
+        ? projects
+        : [...projects, p]
+      setProjects(nextList)
+      onProjectsChange?.(nextList)
+      setBusy(false)
       onSelect(p)
       toast({ title: `已创建「${p.name}」` })
+      void refresh({ force: true, silent: true }).catch(() => {
+        toast({
+          title: "项目列表刷新失败",
+          description: "项目已创建，稍后可手动刷新页面同步列表",
+          variant: "destructive",
+        })
+      })
     } catch (err) {
+      setBusy(false)
       toast({
         title: "新建项目失败",
         description: err instanceof Error ? err.message : "未知错误",
         variant: "destructive",
       })
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -79,11 +115,16 @@ export function GeoMatrixProjectBar({
     setBusy(true)
     try {
       await deleteMatrixProject(id)
-      const list = await listMatrixProjects()
+      const list = await listMatrixProjects({ force: true })
       setProjects(list)
       onProjectsChange?.(list)
       if (activeId === id) {
-        onSelect(list[0] ?? null)
+        autoSelectedRef.current = false
+        if (list[0]) {
+          await selectProject(list[0])
+        } else {
+          onSelect(null)
+        }
       }
       toast({ title: "项目已删除" })
     } catch (err) {
@@ -126,15 +167,6 @@ export function GeoMatrixProjectBar({
     }
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-[12px] text-slate-500">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        加载项目…
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-2">
       {loadError && (
@@ -144,7 +176,13 @@ export function GeoMatrixProjectBar({
       )}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-1 flex-wrap items-center gap-1.5 overflow-x-auto">
-          {projects.length === 0 && !loadError && (
+          {loading && projects.length === 0 && (
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              加载项目…
+            </span>
+          )}
+          {!loading && projects.length === 0 && !loadError && (
             <span className="text-[12px] text-slate-500">暂无项目，点击新建开始规划</span>
           )}
           {projects.map((p) => {
@@ -167,7 +205,7 @@ export function GeoMatrixProjectBar({
                   <button
                     type="button"
                     disabled={disabled || busy}
-                    onClick={() => onSelect(p)}
+                    onClick={() => void selectProject(p)}
                     className={cn(
                       "rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors",
                       active
@@ -210,9 +248,12 @@ export function GeoMatrixProjectBar({
           onClick={() => void handleCreate()}
           className="inline-flex items-center gap-1 rounded-lg border border-dashed border-cyan-300 px-3 py-1.5 text-[12px] font-medium text-cyan-600 hover:bg-cyan-50 dark:border-cyan-500/30 dark:text-cyan-400 dark:hover:bg-cyan-500/10"
         >
-          <Plus className="h-3.5 w-3.5" />
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
           新建项目
         </button>
+        {loading && projects.length > 0 && (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-label="刷新中" />
+        )}
       </div>
     </div>
   )

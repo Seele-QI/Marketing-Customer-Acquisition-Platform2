@@ -85,21 +85,85 @@ export function extractVideoUrlFromShareText(raw: string): string | null {
   return null
 }
 
+/** 由 FastAPI 挂载的本地静态资源路径前缀 */
+const LOCAL_STATIC_PREFIXES = ["/static/video-postprocess/", "/static/video-generated/"] as const
+
+/** 与 electron/utils/paths.ts UVICORN_PORT 保持一致 */
+const DESKTOP_UVICORN_PORT = "8010"
+
+function isLocalStaticMediaPath(url: string): boolean {
+  try {
+    const path = url.startsWith("http") ? new URL(url).pathname : url
+    return LOCAL_STATIC_PREFIXES.some((prefix) => path.startsWith(prefix) || path.includes(prefix))
+  } catch {
+    return LOCAL_STATIC_PREFIXES.some((prefix) => url.includes(prefix))
+  }
+}
+
+function localStaticPathFromUrl(url: string): string {
+  if (url.startsWith("http")) {
+    const parsed = new URL(url)
+    return `${parsed.pathname}${parsed.search}`
+  }
+  return url.startsWith("/") ? url : `/${url}`
+}
+
+/** 桌面 Electron：页面在 3010，静态文件由 uvicorn 8010 直接提供（比 Next rewrite 更可靠） */
+function getDesktopFastapiOrigin(bakedApi: string): string | null {
+  if (typeof window === "undefined") return null
+
+  const fromPreload = window.electronAPI?.localFastapiBase?.trim()
+  if (fromPreload) {
+    return fromPreload.replace(/\/$/, "")
+  }
+
+  const { hostname, port } = window.location
+  const onDesktop =
+    (hostname === "127.0.0.1" || hostname === "localhost") &&
+    (port === "3010" || port === "")
+  if (!onDesktop) return null
+
+  if (bakedApi) {
+    try {
+      const parsed = new URL(bakedApi)
+      if (
+        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
+        parsed.port
+      ) {
+        return parsed.origin
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return `http://127.0.0.1:${DESKTOP_UVICORN_PORT}`
+}
+
 /** 静态视频/封面 URL 仍由 FastAPI 挂载 /static/* */
 export function resolveMediaUrl(url: string): string {
   if (!url || url.startsWith("blob:") || url.startsWith("data:")) return url
 
-  const fastapiBase =
-    getFastapiBase() || (typeof window !== "undefined" ? window.location.origin : "")
+  const origin = typeof window !== "undefined" ? window.location.origin : ""
+  const bakedApi = getFastapiBase()
   const staticPostprocess = "/static/video-postprocess/"
+
+  const desktopApi = getDesktopFastapiOrigin(bakedApi)
+  if (desktopApi && isLocalStaticMediaPath(url)) {
+    return `${desktopApi}${localStaticPathFromUrl(url)}`
+  }
+
+  const fastapiBase = bakedApi || origin
 
   if (url.startsWith("http")) {
     try {
       const parsed = new URL(url)
-      if (parsed.pathname.includes(staticPostprocess)) {
+      if (parsed.pathname.includes(staticPostprocess) || parsed.pathname.includes("/static/video-generated/")) {
         const path = parsed.pathname + parsed.search
         const base = fastapiBase.replace(/\/$/, "")
         if (base && !url.startsWith(base)) {
+          if (desktopApi) {
+            return `${desktopApi}${path}`
+          }
           return `${base}${path}`
         }
       }

@@ -15,7 +15,7 @@
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -43,19 +43,8 @@ if (!existsSync(resources)) {
 /* ============ Python ============ */
 
 console.log('\n[preflight] === python ===');
-const pythonRoot = path.join(resources, 'python');
+const isDarwin = process.platform === 'darwin';
 const exeExt = process.platform === 'win32' ? '.exe' : '';
-const pythonExe = path.join(pythonRoot, `python${exeExt}`);
-check('python.exe exists', existsSync(pythonExe));
-
-if (existsSync(pythonExe)) {
-  const v = spawnSync(pythonExe, ['--version'], { encoding: 'utf-8' });
-  check('python --version', v.status === 0, v.stdout.trim());
-}
-
-const sitePackages = path.join(pythonRoot, 'site-packages');
-check('site-packages/ exists', existsSync(sitePackages));
-
 const requiredPkgs = [
   'fastapi',
   'uvicorn',
@@ -67,29 +56,73 @@ const requiredPkgs = [
   'resend',
   'yt_dlp',
 ];
-if (existsSync(sitePackages)) {
-  for (const pkg of requiredPkgs) {
-    const pkgDir = path.join(sitePackages, pkg);
-    check(`  ${pkg}`, existsSync(pkgDir));
-  }
-}
 
-const libDst = path.join(pythonRoot, 'lib');
-check('lib/ copied', existsSync(libDst));
+/** @type {{ root: string, appLib: string, label: string }[]} */
+const pythonRoots = isDarwin
+  ? [
+      {
+        root: path.join(resources, 'runtime', 'darwin-arm64', 'python'),
+        appLib: 'applib',
+        label: 'darwin-arm64',
+      },
+      {
+        root: path.join(resources, 'runtime', 'darwin-x64', 'python'),
+        appLib: 'applib',
+        label: 'darwin-x64',
+      },
+    ]
+  : [{ root: path.join(resources, 'python'), appLib: 'lib', label: 'win' }];
+
+let pythonExe = '';
+let sitePackages = '';
+let libDst = '';
+
+for (const entry of pythonRoots) {
+  console.log(`\n[preflight] === python (${entry.label}) ===`);
+  const exe = path.join(entry.root, `python${exeExt}`);
+  check(`${entry.label} python exists`, existsSync(exe), exe);
+  if (existsSync(exe)) {
+    const v = spawnSync(exe, ['--version'], { encoding: 'utf-8' });
+    check(`${entry.label} python --version`, v.status === 0, (v.stdout || '').trim());
+    if (!pythonExe) pythonExe = exe;
+  }
+
+  const sp = path.join(entry.root, 'site-packages');
+  check(`${entry.label} site-packages/`, existsSync(sp));
+  if (existsSync(sp)) {
+    for (const pkg of requiredPkgs) {
+      check(`  ${entry.label} ${pkg}`, existsSync(path.join(sp, pkg)));
+    }
+    if (!sitePackages) sitePackages = sp;
+  }
+
+  const appLib = path.join(entry.root, entry.appLib);
+  check(`${entry.label} ${entry.appLib}/`, existsSync(appLib));
+  if (!libDst && existsSync(appLib)) libDst = appLib;
+}
 
 /* ============ ffmpeg ============ */
 
 console.log('\n[preflight] === ffmpeg ===');
-const ffmpegBin = path.join(resources, 'ffmpeg', 'bin');
-const ffmpegExe = path.join(ffmpegBin, `ffmpeg${exeExt}`);
-const ffprobeExe = path.join(ffmpegBin, `ffprobe${exeExt}`);
-check('ffmpeg.exe exists', existsSync(ffmpegExe), ffmpegExe);
-check('ffprobe.exe exists', existsSync(ffprobeExe), ffprobeExe);
+const ffmpegBins = isDarwin
+  ? [
+      path.join(resources, 'runtime', 'darwin-arm64', 'ffmpeg', 'bin'),
+      path.join(resources, 'runtime', 'darwin-x64', 'ffmpeg', 'bin'),
+    ]
+  : [path.join(resources, 'ffmpeg', 'bin')];
 
-if (existsSync(ffmpegExe)) {
-  const v = spawnSync(ffmpegExe, ['-version'], { encoding: 'utf-8' });
-  const firstLine = v.stdout.split('\n')[0];
-  check('ffmpeg -version', v.status === 0, firstLine);
+let ffmpegExe = '';
+for (const ffmpegBin of ffmpegBins) {
+  const ff = path.join(ffmpegBin, `ffmpeg${exeExt}`);
+  const fp = path.join(ffmpegBin, `ffprobe${exeExt}`);
+  check(`ffmpeg exists (${path.relative(resources, ffmpegBin)})`, existsSync(ff), ff);
+  check(`ffprobe exists (${path.relative(resources, ffmpegBin)})`, existsSync(fp), fp);
+  if (existsSync(ff)) {
+    const v = spawnSync(ff, ['-version'], { encoding: 'utf-8' });
+    const firstLine = (v.stdout || '').split('\n')[0];
+    check(`ffmpeg -version (${path.basename(path.dirname(ffmpegBin))})`, v.status === 0, firstLine);
+    if (!ffmpegExe) ffmpegExe = ff;
+  }
 }
 
 /* ============ Next.js standalone ============ */
@@ -104,6 +137,130 @@ check('.next/static exists', existsSync(staticDir));
 
 const publicDir = path.join(nextRoot, 'public');
 check('public/ exists', existsSync(publicDir));
+
+const standaloneNodeModules = path.join(nextRoot, 'node_modules');
+check('node_modules/pdf-parse exists', existsSync(path.join(standaloneNodeModules, 'pdf-parse')));
+check('node_modules/pdfjs-dist exists', existsSync(path.join(standaloneNodeModules, 'pdfjs-dist')));
+check('node_modules/mammoth exists', existsSync(path.join(standaloneNodeModules, 'mammoth')));
+check(
+  'node_modules/@swc/helpers exists',
+  existsSync(path.join(standaloneNodeModules, '@swc', 'helpers', 'package.json')),
+);
+check(
+  'node_modules/styled-jsx exists',
+  existsSync(path.join(standaloneNodeModules, 'styled-jsx', 'package.json')),
+);
+check(
+  'node_modules/@next/env exists',
+  existsSync(path.join(standaloneNodeModules, '@next', 'env', 'package.json')),
+);
+check(
+  'node_modules/react exists',
+  existsSync(path.join(standaloneNodeModules, 'react', 'package.json')),
+);
+check(
+  'node_modules/react-dom exists',
+  existsSync(path.join(standaloneNodeModules, 'react-dom', 'package.json')),
+);
+
+if (existsSync(serverJs)) {
+  console.log('\n[preflight] === next-standalone smoke ===');
+  const nodeExe = resolveNodeExe();
+  check('node runtime for smoke', Boolean(nodeExe), nodeExe || 'missing');
+
+  if (nodeExe) {
+    const requireSwc = spawnSync(
+      nodeExe,
+      ['-e', "require('@swc/helpers/_/_interop_require_default'); console.log('swc ok')"],
+      {
+        cwd: nextRoot,
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          NODE_PATH: [
+            standaloneNodeModules,
+            path.join(standaloneNodeModules, '.pnpm', 'node_modules'),
+          ].join(path.delimiter),
+        },
+      },
+    );
+    check(
+      '@swc/helpers require smoke',
+      requireSwc.status === 0,
+      requireSwc.status === 0 ? requireSwc.stdout.trim() : requireSwc.stderr.trim().slice(0, 200),
+    );
+
+    const smokePort = 31999;
+    const smoke = await smokeNextStandalone(nodeExe, nextRoot, smokePort);
+    check(
+      'server.js HTTP smoke',
+      smoke.ok,
+      smoke.ok ? `ready on :${smokePort}` : smoke.detail.slice(0, 200),
+    );
+  }
+}
+
+function resolveNodeExe() {
+  const candidates = [
+    path.join(projectRoot, '.build-tools', 'node-v22', process.platform === 'win32' ? 'node.exe' : 'node'),
+    process.execPath,
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  const which = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['node'], {
+    encoding: 'utf-8',
+    shell: process.platform === 'win32',
+  });
+  if (which.status === 0) {
+    const first = which.stdout.split(/\r?\n/).find((line) => line.trim());
+    if (first && existsSync(first.trim())) return first.trim();
+  }
+  return null;
+}
+
+async function smokeNextStandalone(nodeExe, nextRoot, port) {
+  const serverJs = path.join(nextRoot, 'server.js');
+  const child = spawn(nodeExe, [serverJs], {
+    cwd: nextRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      HOSTNAME: '127.0.0.1',
+      PORT: String(port),
+      NODE_PATH: [
+        path.join(nextRoot, 'node_modules'),
+        path.join(nextRoot, 'node_modules', '.pnpm', 'node_modules'),
+      ].join(path.delimiter),
+    },
+  });
+
+  let stderr = '';
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      return { ok: false, detail: stderr || `exit ${child.exitCode}` };
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      if (res.status > 0) {
+        child.kill();
+        return { ok: true, detail: '' };
+      }
+    } catch {
+      // not ready
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  child.kill();
+  return { ok: false, detail: stderr || 'timeout waiting for HTTP' };
+}
 
 /* ============ main.py ============ */
 
@@ -125,11 +282,18 @@ check('promo_video_routes.py exists', existsSync(promoRoutes));
 
 /* ============ packaged .env ============ */
 
-console.log('\n[preflight] === packaged .env ===');
+console.log('\n[preflight] === packaged .env (local desktop) ===');
 const packagedEnv = path.join(resources, '.env');
 check('.env exists', existsSync(packagedEnv), packagedEnv);
 
-const REQUIRED_ENV_KEYS = ['CLOUD_API_URL', 'CENTRAL_SERVICE_URL', 'CENTRAL_SIGNING_PUBLIC_KEY'];
+const REQUIRED_ENV_KEYS = [
+  'DEEPSEEK_API_KEY',
+  'RUNNINGHUB_API_KEY',
+  'EMAIL_HASH_SALT',
+  'CREDIT_ADMIN_ACCESS_KEY',
+  'ADMIN_PASSWORD_HASH',
+  'ADMIN_PASSWORD_SALT',
+];
 
 function parseDotEnvSimple(content) {
   const config = {};
@@ -153,9 +317,43 @@ function parseDotEnvSimple(content) {
 
 if (existsSync(packagedEnv)) {
   const envConfig = parseDotEnvSimple(readFileSync(packagedEnv, 'utf-8'));
+  const cloudUrl = (envConfig.CLOUD_API_URL || '').trim().replace(/\/+$/, '');
+  const cloudMode = cloudUrl.startsWith('https://');
+  // 云端 hybrid：API Key / 管理密钥由登录后 /api/config/sync 下发，不必打进安装包
+  const optionalWhenCloud = new Set(['DEEPSEEK_API_KEY', 'CREDIT_ADMIN_ACCESS_KEY']);
   for (const key of REQUIRED_ENV_KEYS) {
     const value = (envConfig[key] || '').trim();
-    check(`  ${key} set`, value.length > 0);
+    const soft = cloudMode && optionalWhenCloud.has(key);
+    if (soft && !value) {
+      check(`  ${key} set`, true, '(云端 sync 下发，安装包可缺)');
+    } else {
+      check(`  ${key} set`, value.length > 0);
+    }
+  }
+
+  check('  CLOUD_API_URL set (https)', cloudMode, cloudUrl || '(missing)');
+
+  if (cloudMode) {
+    try {
+      const healthRes = await fetch(`${cloudUrl}/health`);
+      const healthOk = healthRes.status === 200;
+      let healthDetail = `HTTP ${healthRes.status}`;
+      if (healthOk) {
+        try {
+          const body = await healthRes.json();
+          healthDetail = body?.status === 'ok' ? 'ok' : JSON.stringify(body).slice(0, 80);
+        } catch {
+          healthDetail = 'ok (non-json body)';
+        }
+      }
+      check(`  CLOUD_API_URL /health`, healthOk, healthDetail);
+    } catch (err) {
+      check(
+        '  CLOUD_API_URL /health',
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 }
 

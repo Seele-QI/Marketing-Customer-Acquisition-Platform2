@@ -4,7 +4,6 @@
  */
 
 export type TaskKind =
-  | "digital-human"
   | "dh-video-v2"
   | "image-video"
   | "mashup"
@@ -77,8 +76,7 @@ export type RuntimeEvent =
   | { type: "history-updated" }
 
 export const TASK_KIND_LABELS: Record<TaskKind, string> = {
-  "digital-human": "数字人口播",
-  "dh-video-v2": "数字人视频创作（新）",
+  "dh-video-v2": "数字人口播视频（新）",
   "image-video": "图文视频",
   mashup: "视频混剪",
   "promo-video": "宣传视频",
@@ -87,8 +85,6 @@ export const TASK_KIND_LABELS: Record<TaskKind, string> = {
 
 /** 侧栏 view key → TaskKind（与 VIDEO_VIEWS / 文案提取 label 对齐） */
 export const VIEW_TO_TASK_KIND: Record<string, TaskKind> = {
-  视频创作: "digital-human", // VIDEO_VIEWS.DIGITAL_HUMAN
-  数字人口播: "digital-human", // 展示名兜底
   "数字人视频创作（新）": "dh-video-v2",
   图文视频: "image-video",
   视频混剪: "mashup",
@@ -97,7 +93,6 @@ export const VIEW_TO_TASK_KIND: Record<string, TaskKind> = {
 }
 
 export const ALL_TASK_KINDS: TaskKind[] = [
-  "digital-human",
   "dh-video-v2",
   "image-video",
   "mashup",

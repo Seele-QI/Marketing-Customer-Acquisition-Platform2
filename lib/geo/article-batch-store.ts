@@ -8,6 +8,8 @@ export type ArticleBatchConfig = {
   projectId?: string
   dates?: string[]
   platformIds: string[]
+  /** 每个日期×平台（或方向模式下每个平台）生成篇数 */
+  copiesPerSlot?: number
 }
 
 export type ArticleBatchStore = {
