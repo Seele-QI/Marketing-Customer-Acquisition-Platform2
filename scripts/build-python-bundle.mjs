@@ -20,6 +20,7 @@ import {
   chmodSync,
   symlinkSync,
   unlinkSync,
+  lstatSync,
 } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +109,24 @@ function ensurePythonLink(pythonRootDir) {
     throw new Error('missing bin/python3 or bin/python3.13 at ' + binDir);
   }
   chmodSync(binPy, 0o755);
+
+  // standalone 自带 idle3 等断链；electron-universal 合并时会 ENOENT
+  if (existsSync(binDir)) {
+    for (const name of readdirSync(binDir)) {
+      const full = path.join(binDir, name);
+      try {
+        const st = lstatSync(full);
+        if (!st.isSymbolicLink()) continue;
+        if (!existsSync(full)) {
+          unlinkSync(full);
+          console.log('[build-python] removed dangling symlink:', name);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   if (existsSync(rootPy)) {
     try {
       unlinkSync(rootPy);
