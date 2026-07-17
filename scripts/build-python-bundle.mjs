@@ -18,15 +18,14 @@ import {
   statSync,
   readdirSync,
   chmodSync,
-  symlinkSync,
   unlinkSync,
   lstatSync,
+  createWriteStream,
 } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
-import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -99,6 +98,56 @@ function copyProjectLib(destDir) {
   }
 }
 
+function walkEntries(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name);
+    out.push(full);
+    try {
+      const st = lstatSync(full);
+      if (st.isDirectory() && !st.isSymbolicLink()) walkEntries(full, out);
+    } catch {
+      // ignore
+    }
+  }
+  return out;
+}
+
+/** electron-universal 合并时会对 Resources 做 stat；断链 / 相对 pkgconfig 链会 ENOENT */
+function scrubPythonTreeForPackaging(pythonRootDir) {
+  const dropDirs = [
+    path.join(pythonRootDir, 'lib', 'pkgconfig'),
+    path.join(pythonRootDir, 'share', 'man'),
+    path.join(pythonRootDir, 'share', 'doc'),
+  ];
+  for (const dir of dropDirs) {
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+      console.log('[build-python] removed pack-unneeded:', path.relative(pythonRootDir, dir));
+    }
+  }
+
+  let removed = 0;
+  // 先收集再删，避免边遍历边删
+  const entries = walkEntries(pythonRootDir);
+  for (const full of entries) {
+    try {
+      const st = lstatSync(full);
+      if (!st.isSymbolicLink()) continue;
+      // existsSync 会 follow；断链 → false
+      if (!existsSync(full)) {
+        unlinkSync(full);
+        removed++;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (removed > 0) {
+    console.log(`[build-python] removed ${removed} dangling symlink(s)`);
+  }
+}
+
 function ensurePythonLink(pythonRootDir) {
   const binDir = path.join(pythonRootDir, 'bin');
   const binPy = ['python3', `python${PY_STANDALONE_VERSION.split('.').slice(0, 2).join('.')}`]
@@ -110,22 +159,7 @@ function ensurePythonLink(pythonRootDir) {
   }
   chmodSync(binPy, 0o755);
 
-  // standalone 自带 idle3 等断链；electron-universal 合并时会 ENOENT
-  if (existsSync(binDir)) {
-    for (const name of readdirSync(binDir)) {
-      const full = path.join(binDir, name);
-      try {
-        const st = lstatSync(full);
-        if (!st.isSymbolicLink()) continue;
-        if (!existsSync(full)) {
-          unlinkSync(full);
-          console.log('[build-python] removed dangling symlink:', name);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
+  scrubPythonTreeForPackaging(pythonRootDir);
 
   if (existsSync(rootPy)) {
     try {
@@ -134,12 +168,9 @@ function ensurePythonLink(pythonRootDir) {
       // ignore
     }
   }
-  try {
-    symlinkSync(path.join('bin', path.basename(binPy)), rootPy);
-  } catch {
-    cpSync(binPy, rootPy);
-    chmodSync(rootPy, 0o755);
-  }
+  // 根目录 python 用真实文件拷贝，避免 universal 合并再踩相对 symlink
+  cpSync(binPy, rootPy);
+  chmodSync(rootPy, 0o755);
 }
 
 function runPipInstall(pythonExe, pythonRootDir, appLibName) {
@@ -385,6 +416,8 @@ async function buildDarwinArch(arch) {
     );
     runCrossPlatformPipInstall(target, 'applib', arch.pipPlatforms);
   }
+  // pip / site-packages 后再扫一遍，保证 universal 合并前无断链
+  scrubPythonTreeForPackaging(target);
   console.log('[build-python] OK:', arch.folder);
 }
 
