@@ -97,10 +97,13 @@ function copyProjectLib(destDir) {
 }
 
 function ensurePythonLink(pythonRootDir) {
-  const binPy = path.join(pythonRootDir, 'bin', 'python3');
+  const binDir = path.join(pythonRootDir, 'bin');
+  const binPy = ['python3', `python${PY_STANDALONE_VERSION.split('.').slice(0, 2).join('.')}`]
+    .map((name) => path.join(binDir, name))
+    .find((candidate) => existsSync(candidate));
   const rootPy = path.join(pythonRootDir, 'python');
-  if (!existsSync(binPy)) {
-    throw new Error('missing bin/python3 at ' + binPy);
+  if (!binPy) {
+    throw new Error('missing bin/python3 or bin/python3.13 at ' + binDir);
   }
   chmodSync(binPy, 0o755);
   if (existsSync(rootPy)) {
