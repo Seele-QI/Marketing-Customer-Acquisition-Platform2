@@ -249,9 +249,11 @@ async function extractStandaloneTar(tarGzPath, target) {
   try {
     const r = spawnSync('tar', ['-xzf', tarGzPath, '-C', tmpParent], { stdio: 'inherit' });
     if (r.status !== 0) throw new Error('tar -xzf exit ' + r.status);
-    const extracted = path.join(tmpParent, 'python');
+    const archiveRoot = path.join(tmpParent, 'python');
+    const installRoot = path.join(archiveRoot, 'install');
+    const extracted = existsSync(installRoot) ? installRoot : archiveRoot;
     if (!existsSync(extracted)) {
-      throw new Error('expected python/ root inside standalone archive');
+      throw new Error('expected python/install/ root inside standalone archive');
     }
     if (existsSync(target)) rmSync(target, { recursive: true, force: true });
     mkdirSync(path.dirname(target), { recursive: true });
