@@ -48,21 +48,23 @@ win:
   # 跳过 rcedit/winCodeSign 下载（内网/无法访问 GitHub 时 dist:win 会超时失败）
   signAndEditExecutable: false
 
-# Mac 通用包（arm64+x64）；不签名、不公证 — 见 docs/deploy/ELECTRON-BUILD-MAC.md
+# Mac：分别产出 arm64 / x64 DMG（不做 universal lipo；next-standalone 含单架构原生依赖）
+# 运行时仍可按 process.arch 选择 resources/runtime/darwin-*
 mac:
   target:
     - target: dmg
       arch:
-        - universal
+        - arm64
+        - x64
   icon: build/icon.icns
   category: public.app-category.business
-  artifactName: ${productName}-${version}-mac.${ext}
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
   identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
 
 dmg:
-  artifactName: ${productName}-${version}-mac.${ext}
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
 
 nsis:
   oneClick: false

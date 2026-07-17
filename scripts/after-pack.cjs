@@ -1,17 +1,12 @@
 /**
  * electron-builder afterPack（Darwin）：
- *
- * universal 合并会 follow symlink 并统计 Mach-O。pnpm/Next standalone 里常有
- * 指回构建机 `.next/standalone` 的外链，两侧解析结果不一致就会报 Mach-O mismatch。
- *
- * 策略：
- * - 单架构临时包：去掉 runtime/；把 Resources 内“逃出 .app”的 symlink 物化或删除
- * - universal 最终包：再拷回 resources/runtime 并 chmod
+ * - 清理 Resources 内逃出 .app 的 symlink
+ * - 为 runtime 二进制补可执行位
+ * - 去掉与当前 Electron arch 无关的 runtime，减小体积
  */
 
 const {
   chmodSync,
-  cpSync,
   existsSync,
   lstatSync,
   readlinkSync,
@@ -19,11 +14,13 @@ const {
   realpathSync,
   rmSync,
   unlinkSync,
+  cpSync,
 } = require('node:fs');
 const path = require('node:path');
 
-/** builder-util Arch: ia32=0 x64=1 armv7l=2 arm64=3 universal=4 */
-const ARCH_UNIVERSAL = 4;
+/** builder-util Arch: x64=1 arm64=3 */
+const ARCH_X64 = 1;
+const ARCH_ARM64 = 3;
 
 function walkEntries(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -78,19 +75,13 @@ function chmodRuntimeBinaries(runtimeRoot) {
   console.log(`[after-pack] chmod +x on ${n} darwin runtime binaries`);
 }
 
-function scrubPythonPkgconfig(runtimeRoot) {
-  for (const arch of ['darwin-arm64', 'darwin-x64']) {
-    const pkgconfig = path.join(runtimeRoot, arch, 'python', 'lib', 'pkgconfig');
-    if (existsSync(pkgconfig)) {
-      rmSync(pkgconfig, { recursive: true, force: true });
-    }
+function scrubPythonPkgconfig(pythonRoot) {
+  const pkgconfig = path.join(pythonRoot, 'lib', 'pkgconfig');
+  if (existsSync(pkgconfig)) {
+    rmSync(pkgconfig, { recursive: true, force: true });
   }
 }
 
-/**
- * 物化/删除逃出 appRoot 的 symlink（含仍能解析到构建机 .next 的“假活链”）。
- * 长路径优先，避免先删父链。
- */
 function neutralizeEscapingSymlinks(appRoot, scanRoot, label) {
   if (!existsSync(scanRoot)) return;
   const appRootReal = realpathSync(appRoot);
@@ -128,7 +119,6 @@ function neutralizeEscapingSymlinks(appRoot, scanRoot, label) {
       resolvedExists = false;
     }
 
-    // 断链，或解析到 .app 外：都不能留给 electron-universal
     if (!resolvedExists || escapes) {
       try {
         unlinkSync(full);
@@ -154,52 +144,46 @@ function neutralizeEscapingSymlinks(appRoot, scanRoot, label) {
   );
 }
 
-function resourcesDirOf(context) {
-  return path.join(
-    context.appOutDir,
-    `${context.packager.appInfo.productFilename}.app`,
-    'Contents',
-    'Resources',
-  );
-}
-
-function appBundleOf(context) {
-  return path.join(
-    context.appOutDir,
-    `${context.packager.appInfo.productFilename}.app`,
-  );
+function keepRuntimeForArch(runtimeRoot, arch) {
+  if (!existsSync(runtimeRoot)) return;
+  const keep =
+    arch === ARCH_ARM64 ? 'darwin-arm64' : arch === ARCH_X64 ? 'darwin-x64' : null;
+  if (!keep) return;
+  for (const name of readdirSync(runtimeRoot)) {
+    if (name === keep) continue;
+    rmSync(path.join(runtimeRoot, name), { recursive: true, force: true });
+    console.log(`[after-pack] dropped unused runtime/${name}`);
+  }
 }
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return;
 
-  const appBundle = appBundleOf(context);
-  const resourcesDir = resourcesDirOf(context);
-  const runtimeInApp = path.join(resourcesDir, 'runtime');
+  const appBundle = path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+  );
+  const resourcesDir = path.join(appBundle, 'Contents', 'Resources');
+  const runtimeRoot = path.join(resourcesDir, 'runtime');
   const nextStandalone = path.join(resourcesDir, 'next-standalone');
-  const projectRuntime = path.join(context.packager.projectDir, 'resources', 'runtime');
-
-  if (context.arch === ARCH_UNIVERSAL) {
-    if (!existsSync(projectRuntime)) {
-      throw new Error(`[after-pack] missing project runtime at ${projectRuntime}`);
-    }
-    if (existsSync(runtimeInApp)) {
-      rmSync(runtimeInApp, { recursive: true, force: true });
-    }
-    console.log('[after-pack] restoring runtime/ into universal app');
-    cpSync(projectRuntime, runtimeInApp, { recursive: true });
-    scrubPythonPkgconfig(runtimeInApp);
-    neutralizeEscapingSymlinks(appBundle, runtimeInApp, 'runtime');
-    chmodRuntimeBinaries(runtimeInApp);
-    return;
-  }
-
-  // 单架构临时包：先去 runtime，再处理 next-standalone 外链
-  if (existsSync(runtimeInApp)) {
-    rmSync(runtimeInApp, { recursive: true, force: true });
-    console.log(`[after-pack] stripped runtime/ from arch=${context.arch} temp app`);
-  }
 
   neutralizeEscapingSymlinks(appBundle, nextStandalone, `next-standalone arch=${context.arch}`);
   neutralizeEscapingSymlinks(appBundle, resourcesDir, `resources arch=${context.arch}`);
+
+  keepRuntimeForArch(runtimeRoot, context.arch);
+
+  const keepFolder =
+    context.arch === ARCH_ARM64
+      ? 'darwin-arm64'
+      : context.arch === ARCH_X64
+        ? 'darwin-x64'
+        : null;
+  if (keepFolder) {
+    const py = path.join(runtimeRoot, keepFolder, 'python');
+    scrubPythonPkgconfig(py);
+  }
+
+  if (existsSync(runtimeRoot)) {
+    chmodRuntimeBinaries(runtimeRoot);
+  }
 };

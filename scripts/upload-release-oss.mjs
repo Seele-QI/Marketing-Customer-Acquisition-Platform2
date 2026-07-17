@@ -91,8 +91,8 @@ async function ossPut({ region, bucket, accessKeyId, accessKeySecret, objectKey,
 function pickArtifacts(dir) {
   const names = readdirSync(dir)
   const setup = names.filter((n) => /Setup-.*\.exe$/i.test(n) && !/\.blockmap$/i.test(n))
-  const macDmgs = names.filter((n) => /-mac\.dmg$/i.test(n) && !/\.blockmap$/i.test(n))
-  const yml = names.filter((n) => /^latest\.yml$/i.test(n) || /^latest-mac\.yml$/i.test(n))
+  const macDmgs = names.filter((n) => /-mac(-(arm64|x64))?\.dmg$/i.test(n) && !/\.blockmap$/i.test(n))
+  const yml = names.filter((n) => /^latest\.yml$/i.test(n) || /^latest-mac(-arm64|-x64)?\.yml$/i.test(n))
   const blockmaps = names.filter(
     (n) => /\.exe\.blockmap$/i.test(n) || /\.dmg\.blockmap$/i.test(n) || /\.blockmap$/i.test(n),
   )

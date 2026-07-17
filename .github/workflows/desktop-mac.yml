@@ -71,10 +71,11 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mac-universal-dmg
+          name: mac-dmg
           path: |
-            release/*-mac.dmg
-            release/latest-mac.yml
+            release/*-mac-arm64.dmg
+            release/*-mac-x64.dmg
+            release/latest-mac*.yml
             release/*.blockmap
           if-no-files-found: error
 

@@ -1,5 +1,5 @@
 /**
- * macOS 通用安装包出包：unsigned universal DMG
+ * macOS 安装包出包：unsigned arm64 + x64 DMG（非 universal lipo）
  *
  * 前置：在 darwin 上完成 pnpm resources:build && pnpm preflight
  */
@@ -35,10 +35,10 @@ if (!existsSync(icns)) {
 }
 
 run('pnpm', ['electron:build']);
-run('npx', ['electron-builder', '--mac', 'dmg', '--universal', '--publish', 'never'], {
+run('npx', ['electron-builder', '--mac', 'dmg', '--arm64', '--x64', '--publish', 'never'], {
   CSC_IDENTITY_AUTO_DISCOVERY: 'false',
 });
 
 console.log('\n[dist:mac] done');
-console.log('[dist:mac] 产物在 release/*-mac.dmg ；Gatekeeper 见 docs/deploy/ELECTRON-BUILD-MAC.md');
-console.log('[dist:mac] 若需上传 OSS: pnpm release:upload-oss（会包含 latest-mac.yml）');
+console.log('[dist:mac] 产物：release/*-mac-arm64.dmg 与 release/*-mac-x64.dmg');
+console.log('[dist:mac] Gatekeeper 见 docs/deploy/ELECTRON-BUILD-MAC.md');
