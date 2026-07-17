@@ -1,12 +1,12 @@
 /**
  * electron-builder afterPack（Darwin）：
  *
- * universal 合并会扫描整个 .app 内 Mach-O。我们的 runtime/ 含双架构
- * Python/ffmpeg，两边数量不一致时会直接失败。
+ * universal 合并会 follow symlink 并统计 Mach-O。pnpm/Next standalone 里常有
+ * 指回构建机 `.next/standalone` 的外链，两侧解析结果不一致就会报 Mach-O mismatch。
  *
  * 策略：
- * - 单架构临时包：先移除 Resources/runtime，并清理 next-standalone 断链
- * - universal 最终包：再从仓库 resources/runtime 拷回并 chmod
+ * - 单架构临时包：去掉 runtime/；把 Resources 内“逃出 .app”的 symlink 物化或删除
+ * - universal 最终包：再拷回 resources/runtime 并 chmod
  */
 
 const {
@@ -14,7 +14,9 @@ const {
   cpSync,
   existsSync,
   lstatSync,
+  readlinkSync,
   readdirSync,
+  realpathSync,
   rmSync,
   unlinkSync,
 } = require('node:fs');
@@ -36,36 +38,6 @@ function walkEntries(dir, out = []) {
     }
   }
   return out;
-}
-
-function scrubDanglingSymlinks(root, label) {
-  if (!existsSync(root)) return 0;
-  let removed = 0;
-  for (const full of walkEntries(root)) {
-    try {
-      const st = lstatSync(full);
-      if (!st.isSymbolicLink()) continue;
-      if (!existsSync(full)) {
-        unlinkSync(full);
-        removed++;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  if (removed > 0) {
-    console.log(`[after-pack] removed ${removed} dangling symlink(s) under ${label}`);
-  }
-  return removed;
-}
-
-function scrubPythonPkgconfig(runtimeRoot) {
-  for (const arch of ['darwin-arm64', 'darwin-x64']) {
-    const pkgconfig = path.join(runtimeRoot, arch, 'python', 'lib', 'pkgconfig');
-    if (existsSync(pkgconfig)) {
-      rmSync(pkgconfig, { recursive: true, force: true });
-    }
-  }
 }
 
 function walkFiles(dir, out = []) {
@@ -106,6 +78,82 @@ function chmodRuntimeBinaries(runtimeRoot) {
   console.log(`[after-pack] chmod +x on ${n} darwin runtime binaries`);
 }
 
+function scrubPythonPkgconfig(runtimeRoot) {
+  for (const arch of ['darwin-arm64', 'darwin-x64']) {
+    const pkgconfig = path.join(runtimeRoot, arch, 'python', 'lib', 'pkgconfig');
+    if (existsSync(pkgconfig)) {
+      rmSync(pkgconfig, { recursive: true, force: true });
+    }
+  }
+}
+
+/**
+ * 物化/删除逃出 appRoot 的 symlink（含仍能解析到构建机 .next 的“假活链”）。
+ * 长路径优先，避免先删父链。
+ */
+function neutralizeEscapingSymlinks(appRoot, scanRoot, label) {
+  if (!existsSync(scanRoot)) return;
+  const appRootReal = realpathSync(appRoot);
+  const entries = walkEntries(scanRoot).sort((a, b) => b.length - a.length);
+  let materialized = 0;
+  let removed = 0;
+
+  for (const full of entries) {
+    let st;
+    try {
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (!st.isSymbolicLink()) continue;
+
+    let target;
+    try {
+      target = readlinkSync(full);
+    } catch {
+      continue;
+    }
+
+    const resolved = path.resolve(path.dirname(full), target);
+    let escapes = true;
+    let resolvedExists = false;
+    try {
+      if (existsSync(resolved)) {
+        resolvedExists = true;
+        const real = realpathSync(resolved);
+        escapes = !real.startsWith(appRootReal + path.sep) && real !== appRootReal;
+      }
+    } catch {
+      escapes = true;
+      resolvedExists = false;
+    }
+
+    // 断链，或解析到 .app 外：都不能留给 electron-universal
+    if (!resolvedExists || escapes) {
+      try {
+        unlinkSync(full);
+      } catch {
+        continue;
+      }
+      if (resolvedExists && escapes) {
+        try {
+          cpSync(resolved, full, { recursive: true });
+          materialized++;
+          continue;
+        } catch {
+          removed++;
+          continue;
+        }
+      }
+      removed++;
+    }
+  }
+
+  console.log(
+    `[after-pack] ${label}: materialized=${materialized}, removedEscapingOrDangling=${removed}`,
+  );
+}
+
 function resourcesDirOf(context) {
   return path.join(
     context.appOutDir,
@@ -115,16 +163,21 @@ function resourcesDirOf(context) {
   );
 }
 
+function appBundleOf(context) {
+  return path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+  );
+}
+
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return;
 
+  const appBundle = appBundleOf(context);
   const resourcesDir = resourcesDirOf(context);
   const runtimeInApp = path.join(resourcesDir, 'runtime');
   const nextStandalone = path.join(resourcesDir, 'next-standalone');
   const projectRuntime = path.join(context.packager.projectDir, 'resources', 'runtime');
-
-  // next-standalone 里 pnpm 断链会导致 universal 两侧“可见文件”不一致
-  scrubDanglingSymlinks(nextStandalone, 'next-standalone');
 
   if (context.arch === ARCH_UNIVERSAL) {
     if (!existsSync(projectRuntime)) {
@@ -136,14 +189,17 @@ exports.default = async function afterPack(context) {
     console.log('[after-pack] restoring runtime/ into universal app');
     cpSync(projectRuntime, runtimeInApp, { recursive: true });
     scrubPythonPkgconfig(runtimeInApp);
-    scrubDanglingSymlinks(runtimeInApp, 'runtime');
+    neutralizeEscapingSymlinks(appBundle, runtimeInApp, 'runtime');
     chmodRuntimeBinaries(runtimeInApp);
     return;
   }
 
-  // 单架构临时包：去掉 runtime，避免 universal 合并扫到双架构 Mach-O
+  // 单架构临时包：先去 runtime，再处理 next-standalone 外链
   if (existsSync(runtimeInApp)) {
     rmSync(runtimeInApp, { recursive: true, force: true });
     console.log(`[after-pack] stripped runtime/ from arch=${context.arch} temp app`);
   }
+
+  neutralizeEscapingSymlinks(appBundle, nextStandalone, `next-standalone arch=${context.arch}`);
+  neutralizeEscapingSymlinks(appBundle, resourcesDir, `resources arch=${context.arch}`);
 };
