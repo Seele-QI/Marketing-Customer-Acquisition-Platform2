@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 从 build/icon-source.png 生成 Windows / Web / 托盘图标。
+ * 从 build/icon-source.png 生成 Windows / Web / 托盘 / macOS 图标。
  * 触发：node scripts/build-icons.mjs
  */
 
@@ -13,29 +13,34 @@ import pngToIco from 'png-to-ico';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
-const sourceCandidates = [
-  path.join(projectRoot, 'build', 'icon-source.png'),
-  path.join(projectRoot, 'build', 'icon.png'),
-];
-
-const source = sourceCandidates.find((p) => existsSync(p));
-if (!source) {
-  console.error('[build-icons] FATAL: place icon at build/icon-source.png');
-  process.exit(1);
-}
-
 const buildDir = path.join(projectRoot, 'build');
 const publicDir = path.join(projectRoot, 'public');
 mkdirSync(buildDir, { recursive: true });
 mkdirSync(publicDir, { recursive: true });
 
 const icon512 = path.join(buildDir, 'icon.png');
+const sourceCandidates = [
+  path.join(buildDir, 'icon-source.png'),
+  // 仅当与输出路径不同才回退到 icon.png，避免 sharp 同文件读写报错
+  ...(icon512 !== path.join(buildDir, 'icon-source.png') ? [icon512] : []),
+];
+
+const source = sourceCandidates.find((p) => existsSync(p));
+if (!source) {
+  console.error('[build-icons] FATAL: place icon at build/icon-source.png or build/icon.png');
+  process.exit(1);
+}
+
 const trayIcon = path.join(buildDir, 'tray-icon.png');
 const publicIcon = path.join(publicDir, 'icon.png');
 const brandLogo = path.join(publicDir, 'brand-logo.png');
 const iconIco = path.join(buildDir, 'icon.ico');
 
 async function writeSquarePng(outPath, size) {
+  if (path.resolve(outPath) === path.resolve(source)) {
+    console.log('[build-icons] skip output same as source:', outPath);
+    return;
+  }
   await sharp(source)
     .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
@@ -72,15 +77,15 @@ if (process.platform === 'darwin') {
 
   const icnsSizes = [
     [16, 'icon_16x16.png'],
-    [32, 'diana.s@example.org'],
+    [32, 'icon_16x16@2x.png'],
     [32, 'icon_32x32.png'],
-    [64, 'ivan.p@example.net'],
+    [64, 'icon_32x32@2x.png'],
     [128, 'icon_128x128.png'],
-    [256, 'wendy.h@example.net'],
+    [256, 'icon_128x128@2x.png'],
     [256, 'icon_256x256.png'],
-    [512, 'wendy.h@example.net'],
+    [512, 'icon_256x256@2x.png'],
     [512, 'icon_512x512.png'],
-    [1024, 'walt.e@example.net'],
+    [1024, 'icon_512x512@2x.png'],
   ];
   for (const [size, name] of icnsSizes) {
     const buf = await sharp(source)
