@@ -48,10 +48,12 @@ const DARWIN_ARCHS = [
   {
     folder: 'darwin-arm64',
     triple: 'aarch64-apple-darwin',
+    pipPlatforms: ['macosx_11_0_arm64', 'macosx_11_0_universal2'],
   },
   {
     folder: 'darwin-x64',
     triple: 'x86_64-apple-darwin',
+    pipPlatforms: ['macosx_10_9_x86_64', 'macosx_10_9_universal2'],
   },
 ];
 
@@ -114,7 +116,7 @@ function ensurePythonLink(pythonRootDir) {
     }
   }
   try {
-    symlinkSync(path.join('bin', 'python3'), rootPy);
+    symlinkSync(path.join('bin', path.basename(binPy)), rootPy);
   } catch {
     cpSync(binPy, rootPy);
     chmodSync(rootPy, 0o755);
@@ -158,6 +160,49 @@ function runPipInstall(pythonExe, pythonRootDir, appLibName) {
   );
   if (result.status !== 0) {
     throw new Error('pip install requirements.txt failed: exit ' + result.status);
+  }
+
+  copyProjectLib(path.join(pythonRootDir, appLibName));
+}
+
+function runCrossPlatformPipInstall(pythonRootDir, appLibName, pipPlatforms) {
+  const sitePackages = path.join(pythonRootDir, 'site-packages');
+  mkdirSync(sitePackages, { recursive: true });
+
+  const platformArgs = pipPlatforms.flatMap((platformName) => ['--platform', platformName]);
+  console.log(
+    '[build-python] cross-installing requirements for',
+    pipPlatforms.join(', '),
+    'into',
+    sitePackages,
+  );
+  const result = spawnSync(
+    'python3',
+    [
+      '-m',
+      'pip',
+      'install',
+      '-r',
+      path.join(projectRoot, 'requirements.txt'),
+      '--target',
+      sitePackages,
+      '--upgrade',
+      '--only-binary=:all:',
+      '--implementation',
+      'cp',
+      '--python-version',
+      '3.13',
+      '--abi',
+      'cp313',
+      ...platformArgs,
+    ],
+    {
+      cwd: pythonRootDir,
+      stdio: 'inherit',
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error('cross-platform pip install failed: exit ' + result.status);
   }
 
   copyProjectLib(path.join(pythonRootDir, appLibName));
@@ -298,16 +343,17 @@ async function buildDarwinArch(arch) {
 
   const pythonExe = path.join(target, 'python');
   const ver = spawnSync(pythonExe, ['--version'], { encoding: 'utf-8' });
-  if (ver.status !== 0) {
-    throw new Error(
-      `python --version failed for ${arch.folder} (Rosetta needed for x86_64 on Apple Silicon?): ${ver.stderr}`,
+  if (ver.status === 0) {
+    console.log('[build-python]', arch.folder, ver.stdout.trim());
+    await ensurePipOnStandalone(pythonExe, target);
+    runPipInstall(pythonExe, target, 'applib');
+    smokeTest(pythonExe, target, 'applib');
+  } else {
+    console.log(
+      `[build-python] ${arch.folder} cannot execute on ${process.arch} runner; using cross-platform pip`,
     );
+    runCrossPlatformPipInstall(target, 'applib', arch.pipPlatforms);
   }
-  console.log('[build-python]', arch.folder, ver.stdout.trim());
-
-  await ensurePipOnStandalone(pythonExe, target);
-  runPipInstall(pythonExe, target, 'applib');
-  smokeTest(pythonExe, target, 'applib');
   console.log('[build-python] OK:', arch.folder);
 }
 
