@@ -46,9 +46,18 @@ export type AdminUserItem = {
   id: number
   login_name: string
   email_masked: string
+  password?: string
   status: string
   created_at: number
   balance: number
+}
+
+export type AdminCreateUserResult = {
+  id: number
+  login_name: string
+  password: string
+  balance: number
+  status: string
 }
 
 export type AdminUserListResponse = {

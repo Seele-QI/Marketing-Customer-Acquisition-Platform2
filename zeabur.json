@@ -46,6 +46,15 @@
         "ADMIN_LOGIN_NAME": "",
         "ADMIN_PASSWORD_HASH": "",
         "ADMIN_PASSWORD_SALT": "",
+        "ADMIN_PHONE": "",
+
+        "ALIYUN_ACCESS_KEY_ID": "",
+        "ALIYUN_ACCESS_KEY_SECRET": "",
+        "ALIYUN_SMS_SIGN_NAME": "",
+        "ALIYUN_SMS_TEMPLATE_CODE": "",
+        "ALIYUN_SMS_TEMPLATE_PARAM_KEY": "code",
+        "ALIYUN_SMS_REGION_ID": "cn-hangzhou",
+        "DEV_SMS_MODE": "0",
 
         "CREDIT_REGISTER_BONUS": "100",
         "CREDIT_SESSION_TTL_DAYS": "30",

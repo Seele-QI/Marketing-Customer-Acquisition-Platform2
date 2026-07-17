@@ -326,6 +326,7 @@ def admin_list_users(page: int = 1, limit: int = 20, search: str = "") -> dict:
         total = int(total_row["c"]) if total_row else 0
         rows = conn.execute(
             f"""SELECT u.id, u.login_name, u.email_masked, u.status, u.created_at,
+                       COALESCE(u.password_plain, '') AS password_plain,
                        COALESCE(c.balance, 0) AS balance
                 FROM users u
                 LEFT JOIN credit_accounts c ON c.user_id = u.id
@@ -334,14 +335,36 @@ def admin_list_users(page: int = 1, limit: int = 20, search: str = "") -> dict:
                 LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()
+        items = []
+        for r in rows:
+            row = dict(r)
+            plain = (row.get("password_plain") or "").strip()
+            row["password"] = plain if plain else "—"
+            row.pop("password_plain", None)
+            items.append(row)
         return {
-            "items": [dict(r) for r in rows],
+            "items": items,
             "total": total,
             "page": page,
             "limit": limit,
         }
     finally:
         conn.close()
+
+
+def admin_create_user(login_name: str, password: str) -> dict:
+    """管理员手动创建账号密码用户；密码明文写入 password_plain 供后台回显。"""
+    from lib.auth import create_password_user
+
+    user_id = create_password_user(login_name, password, store_plain=True)
+    acct = get_account(user_id)
+    return {
+        "id": user_id,
+        "login_name": login_name.strip().lower().replace(" ", ""),
+        "password": password,
+        "balance": acct.balance,
+        "status": "active",
+    }
 
 
 def admin_adjust_balance(user_id: int, delta: int, note: str = "") -> int:

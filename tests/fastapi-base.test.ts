@@ -59,4 +59,16 @@ describe("fastapi-base proxy timeout", () => {
     assert.equal(body.detail.code, "FASTAPI_PROXY_TIMEOUT")
     assert.match(body.detail.message, /超时/)
   })
+
+  it("fastapiPathWithQuery preserves batch_id for redeem-codes/items", async () => {
+    const mod = await import("../lib/fastapi-base.ts?" + Date.now())
+    const req = new Request(
+      "http://localhost/api/credit/redeem-codes/items?batch_id=batch_1784_abc",
+      { method: "GET" },
+    )
+    assert.equal(
+      mod.fastapiPathWithQuery(req, "/api/credit/redeem-codes/items"),
+      "/api/credit/redeem-codes/items?batch_id=batch_1784_abc",
+    )
+  })
 })

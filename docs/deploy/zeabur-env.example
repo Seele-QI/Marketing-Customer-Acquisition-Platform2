@@ -38,6 +38,14 @@ NODE_ENV=production
 FASTAPI_URL=http://zhongtai-cloud-api.zeabur.internal:8080
 NEXT_PUBLIC_FASTAPI_URL=https://mcap-cloud-api.preview.aliyun-zeabur.cn
 
+# 管理员后台手机号登录（阿里云短信，与 ASR 共用 AccessKey）
+# ADMIN_PHONE=18000634365
+ALIYUN_SMS_SIGN_NAME=
+ALIYUN_SMS_TEMPLATE_CODE=
+# ALIYUN_SMS_TEMPLATE_PARAM_KEY=code
+# ALIYUN_SMS_REGION_ID=cn-hangzhou
+# DEV_SMS_MODE=0
+
 # 管理员 UI 登录（与 api 无关，仅 web 校验）
 ADMIN_LOGIN_NAME=admin
 ADMIN_PASSWORD_HASH=

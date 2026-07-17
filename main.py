@@ -40,6 +40,7 @@ from lib.credit import (
     list_redeem_codes_by_batch,
     redeem_code,
     admin_list_users,
+    admin_create_user,
     admin_adjust_balance,
 )
 from lib.rate_limit import (
@@ -2562,6 +2563,11 @@ class AdminAdjustRequest(BaseModel):
     note: str = ""
 
 
+class AdminCreateUserRequest(BaseModel):
+    login_name: str
+    password: str
+
+
 @app.get("/api/credit/admin/users")
 async def credit_admin_list_users(
     request: Request,
@@ -2571,6 +2577,23 @@ async def credit_admin_list_users(
 ):
     _require_admin_key(request)
     return admin_list_users(page=page, limit=limit, search=search)
+
+
+@app.post("/api/credit/admin/users")
+async def credit_admin_create_user(req: AdminCreateUserRequest, request: Request):
+    _require_admin_key(request)
+    login_name = (req.login_name or "").strip()
+    password = req.password or ""
+    if not login_name or not password:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": "账号和密码不能为空"},
+        )
+    try:
+        user = admin_create_user(login_name, password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_INPUT", "message": str(e)})
+    return user
 
 
 @app.post("/api/credit/admin/adjust")

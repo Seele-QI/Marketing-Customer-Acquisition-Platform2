@@ -29,6 +29,7 @@ def migrate(conn: sqlite3.Connection) -> None:
                 login_name TEXT UNIQUE NOT NULL DEFAULT '',
                 password_hash TEXT NOT NULL DEFAULT '',
                 password_salt TEXT NOT NULL DEFAULT '',
+                password_plain TEXT NOT NULL DEFAULT '',
                 nickname TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at INTEGER NOT NULL,
@@ -44,6 +45,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
     if not _column_exists(conn, "users", "password_salt"):
         conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT NOT NULL DEFAULT ''")
+    if not _column_exists(conn, "users", "password_plain"):
+        # 仅供管理员后台回显；登录仍用 password_hash。用户自助注册不写此字段。
+        conn.execute("ALTER TABLE users ADD COLUMN password_plain TEXT NOT NULL DEFAULT ''")
 
     # sessions / credit_accounts / credit_ledger: 不变（幂等）
     conn.executescript("""

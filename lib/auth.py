@@ -218,7 +218,7 @@ class CurrentUser:
     nickname: Optional[str]
 
 
-def create_password_user(login_name: str, password: str) -> int:
+def create_password_user(login_name: str, password: str, *, store_plain: bool = False) -> int:
     login_name_norm = normalize_login_name(login_name)
     if not login_name_norm:
         raise ValueError("账号不能为空")
@@ -229,6 +229,7 @@ def create_password_user(login_name: str, password: str) -> int:
     if password_error:
         raise ValueError(password_error)
     password_hash, password_salt = hash_password(password)
+    plain = password if store_plain else ""
     email_hash = hash_email(f"{login_name_norm}@local")
     now_ms = int(time.time() * 1000)
     with transaction() as conn:
@@ -236,8 +237,20 @@ def create_password_user(login_name: str, password: str) -> int:
         if row:
             raise ValueError("账号已存在")
         cur = conn.execute(
-            "INSERT INTO users (email_hash, email_masked, login_name, password_hash, password_salt, status, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
-            (email_hash, login_name_norm, login_name_norm, password_hash, password_salt, now_ms, now_ms),
+            """INSERT INTO users (
+                   email_hash, email_masked, login_name, password_hash, password_salt, password_plain,
+                   status, created_at, last_seen_at
+               ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (
+                email_hash,
+                login_name_norm,
+                login_name_norm,
+                password_hash,
+                password_salt,
+                plain,
+                now_ms,
+                now_ms,
+            ),
         )
         user_id = int(cur.lastrowid)
         conn.execute(
@@ -253,6 +266,26 @@ def create_password_user(login_name: str, password: str) -> int:
             (REGISTER_BONUS, REGISTER_BONUS, now_ms, user_id),
         )
         return user_id
+
+
+def set_user_password(user_id: int, password: str, *, store_plain: bool = True) -> None:
+    """管理员重置用户密码；默认写入 password_plain 供后台回显。"""
+    password_error = validate_password(password or "")
+    if password_error:
+        raise ValueError(password_error)
+    password_hash, password_salt = hash_password(password)
+    plain = password if store_plain else ""
+    now_ms = int(time.time() * 1000)
+    with transaction() as conn:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise ValueError("用户不存在")
+        conn.execute(
+            """UPDATE users
+               SET password_hash = ?, password_salt = ?, password_plain = ?, last_seen_at = ?
+               WHERE id = ?""",
+            (password_hash, password_salt, plain, now_ms, user_id),
+        )
 
 
 def record_login_attempt(login_name: str, ip: str, success: bool) -> None:

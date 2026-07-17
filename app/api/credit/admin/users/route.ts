@@ -11,3 +11,10 @@ export async function GET(req: Request) {
   const upstreamReq = await buildAdminProxyRequest(req, gate)
   return proxyToCloudApi(upstreamReq, fastapiPathWithQuery(req, "/api/credit/admin/users"))
 }
+
+export async function POST(req: Request) {
+  const gate = requireAdmin(req)
+  if (gate instanceof NextResponse) return gate
+  const upstreamReq = await buildAdminProxyRequest(req, gate)
+  return proxyToCloudApi(upstreamReq, "/api/credit/admin/users")
+}

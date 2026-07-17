@@ -1,4 +1,5 @@
 import os
+import secrets
 import threading
 
 from tests.conftest import setup_test_db
@@ -101,6 +102,7 @@ def test_admin_list_users_and_adjust():
     assert result["total"] >= 1
     item = next(i for i in result["items"] if i["id"] == uid)
     assert item["balance"] == 100
+    assert item["password"] == "—"
 
     new_balance = credit.admin_adjust_balance(uid, 50, note="test bonus")
     assert new_balance == 150
@@ -117,3 +119,22 @@ def test_admin_list_users_and_adjust():
         assert e.status_code == 402
         raised = True
     assert raised
+
+
+def test_admin_create_user_lists_password():
+    login_name = f"admin_create_{secrets.token_hex(4)}"
+    password = "Password123"
+    created = credit.admin_create_user(login_name, password)
+    assert created["login_name"] == login_name
+    assert created["password"] == password
+    assert created["balance"] == 100
+
+    listed = credit.admin_list_users(page=1, limit=100, search=login_name)
+    item = next(i for i in listed["items"] if i["id"] == created["id"])
+    assert item["password"] == password
+
+    try:
+        credit.admin_create_user(login_name, password)
+        assert False, "should raise"
+    except ValueError as e:
+        assert "账号已存在" in str(e)
