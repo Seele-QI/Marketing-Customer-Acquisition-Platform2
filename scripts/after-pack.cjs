@@ -2,14 +2,15 @@
  * electron-builder afterPack：为 Darwin 内嵌二进制补可执行位。
  */
 
-const { chmodSync, existsSync, readdirSync, statSync } = require('node:fs');
+const { chmodSync, existsSync, lstatSync, readdirSync } = require('node:fs');
 const path = require('node:path');
 
 function walkFiles(dir, out = []) {
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name);
-    const st = statSync(full);
+    const st = lstatSync(full);
+    if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) walkFiles(full, out);
     else out.push(full);
   }
