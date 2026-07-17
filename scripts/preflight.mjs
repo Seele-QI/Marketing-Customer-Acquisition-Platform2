@@ -62,20 +62,23 @@ const pythonRoots = isDarwin
   ? [
       {
         root: path.join(resources, 'runtime', 'darwin-arm64', 'python'),
-        appLib: 'applib',
+        appLib: path.join('applib', 'lib'),
+        libParent: 'applib',
         label: 'darwin-arm64',
       },
       {
         root: path.join(resources, 'runtime', 'darwin-x64', 'python'),
-        appLib: 'applib',
+        appLib: path.join('applib', 'lib'),
+        libParent: 'applib',
         label: 'darwin-x64',
       },
     ]
-  : [{ root: path.join(resources, 'python'), appLib: 'lib', label: 'win' }];
+  : [{ root: path.join(resources, 'python'), appLib: 'lib', libParent: '.', label: 'win' }];
 
 let pythonExe = '';
 let sitePackages = '';
 let libDst = '';
+let libParentDir = '';
 
 for (const entry of pythonRoots) {
   console.log(`\n[preflight] === python (${entry.label}) ===`);
@@ -98,7 +101,11 @@ for (const entry of pythonRoots) {
 
   const appLib = path.join(entry.root, entry.appLib);
   check(`${entry.label} ${entry.appLib}/`, existsSync(appLib));
-  if (!libDst && existsSync(appLib)) libDst = appLib;
+  check(`${entry.label} ${entry.appLib}/email.py`, existsSync(path.join(appLib, 'email.py')));
+  if (!libDst && existsSync(appLib)) {
+    libDst = appLib;
+    libParentDir = path.join(entry.root, entry.libParent);
+  }
 }
 
 /* ============ ffmpeg ============ */
@@ -361,7 +368,9 @@ if (existsSync(packagedEnv)) {
 
 if (existsSync(pythonExe) && existsSync(mainPy) && existsSync(libDst)) {
   console.log('\n[preflight] === python smoke import ===');
-  const pythonPath = [resources, sitePackages, libDst].join(path.delimiter);
+  const pythonPath = [resources, sitePackages, libParentDir || path.dirname(libDst)].join(
+    path.delimiter,
+  );
   const testDb = path.join(resources, '_preflight_smoke.db');
   const smoke = spawnSync(
     pythonExe,

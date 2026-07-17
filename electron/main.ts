@@ -34,7 +34,7 @@ import {
   videoPostprocessDir,
   ffmpegBinDir,
   pythonRoot,
-  pythonAppLibDir,
+  pythonAppLibParent,
   nextStandaloneRoot,
   resourcesRoot,
   accountsDbPath,
@@ -324,7 +324,7 @@ async function startChildren(nextPort: number, uvicornPort: number) {
     const pythonPath = [
       resourcesRoot(),
       path.join(pyRoot, 'site-packages'),
-      path.join(pyRoot, pythonAppLibDir()),
+      pythonAppLibParent(),
     ].join(path.delimiter);
     const cloudUrl = cloudApiUrl();
     const baseEnv: Record<string, string> = {

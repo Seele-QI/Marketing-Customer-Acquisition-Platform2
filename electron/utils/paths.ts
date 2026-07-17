@@ -120,10 +120,15 @@ export function darwinRuntimeFolder(): 'darwin-arm64' | 'darwin-x64' {
 }
 
 /**
- * 项目 Python 业务模块目录名（Windows embed 用 lib/，Darwin standalone 用 applib/ 避免与 stdlib 冲突）
+ * 项目 Python 包 `lib` 的父目录（加入 PYTHONPATH，供 `from lib.xxx` 导入）。
+ * - Windows embed: pythonRoot（包在 pythonRoot/lib）
+ * - Darwin standalone: pythonRoot/applib（包在 applib/lib，避免覆盖 lib/python3.13）
  */
-export function pythonAppLibDir(): string {
-  return process.platform === 'darwin' ? 'applib' : 'lib';
+export function pythonAppLibParent(): string {
+  if (process.platform === 'darwin') {
+    return path.join(pythonRoot(), 'applib');
+  }
+  return pythonRoot();
 }
 
 /**

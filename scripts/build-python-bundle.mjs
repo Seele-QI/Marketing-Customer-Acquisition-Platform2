@@ -162,7 +162,13 @@ function runPipInstall(pythonExe, pythonRootDir, appLibName) {
     throw new Error('pip install requirements.txt failed: exit ' + result.status);
   }
 
-  copyProjectLib(path.join(pythonRootDir, appLibName));
+  // Windows: pythonRoot/lib 即项目包（from lib.xxx）
+  // Darwin:  pythonRoot/applib/lib，避免覆盖 standalone 的 lib/python3.13，且不遮蔽 stdlib email
+  const libDest =
+    appLibName === 'applib'
+      ? path.join(pythonRootDir, 'applib', 'lib')
+      : path.join(pythonRootDir, 'lib');
+  copyProjectLib(libDest);
 }
 
 function runCrossPlatformPipInstall(pythonRootDir, appLibName, pipPlatforms) {
@@ -205,22 +211,28 @@ function runCrossPlatformPipInstall(pythonRootDir, appLibName, pipPlatforms) {
     throw new Error('cross-platform pip install failed: exit ' + result.status);
   }
 
-  copyProjectLib(path.join(pythonRootDir, appLibName));
+  const libDest =
+    appLibName === 'applib'
+      ? path.join(pythonRootDir, 'applib', 'lib')
+      : path.join(pythonRootDir, 'lib');
+  copyProjectLib(libDest);
 }
 
 function smokeTest(pythonExe, pythonRootDir, appLibName) {
   const sitePackages = path.join(pythonRootDir, 'site-packages');
-  const appLib = path.join(pythonRootDir, appLibName);
+  // PYTHONPATH 放「lib 包的父目录」，切勿把 lib/ 本身放进去（会遮蔽 stdlib email）
+  const libParent =
+    appLibName === 'applib' ? path.join(pythonRootDir, 'applib') : pythonRootDir;
   const env = {
     ...process.env,
-    PYTHONPATH: [sitePackages, appLib].join(path.delimiter),
+    PYTHONPATH: [sitePackages, libParent].join(path.delimiter),
   };
   console.log('[build-python] smoke test:', pythonExe);
   const result = spawnSync(
     pythonExe,
     [
       '-c',
-      'import fastapi, uvicorn, pydantic, httpx, cryptography, qrcode, PIL, resend, yt_dlp; print("all imports OK, pydantic", pydantic.VERSION)',
+      'import email.message, fastapi, uvicorn, pydantic, httpx, cryptography, qrcode, PIL, resend, yt_dlp; import lib.email; print("all imports OK, pydantic", pydantic.VERSION)',
     ],
     { cwd: pythonRootDir, env, encoding: 'utf-8' },
   );
