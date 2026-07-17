@@ -20,8 +20,8 @@ const {
 } = require('node:fs');
 const path = require('node:path');
 
-/** app-builder-lib Arch.universal */
-const ARCH_UNIVERSAL = 3;
+/** builder-util Arch: ia32=0 x64=1 armv7l=2 arm64=3 universal=4 */
+const ARCH_UNIVERSAL = 4;
 
 function walkEntries(dir, out = []) {
   if (!existsSync(dir)) return out;
