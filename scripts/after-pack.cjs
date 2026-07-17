@@ -1,11 +1,17 @@
 /**
- * electron-builder afterPack：
- * - 清理 Darwin runtime 断链 / pkgconfig（避免 electron-universal ENOENT）
- * - 为内嵌二进制补可执行位
+ * electron-builder afterPack（Darwin）：
+ *
+ * universal 合并会扫描整个 .app 内 Mach-O。我们的 runtime/ 含双架构
+ * Python/ffmpeg，两边数量不一致时会直接失败。
+ *
+ * 策略：
+ * - 单架构临时包：先移除 Resources/runtime，并清理 next-standalone 断链
+ * - universal 最终包：再从仓库 resources/runtime 拷回并 chmod
  */
 
 const {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   readdirSync,
@@ -13,6 +19,9 @@ const {
   unlinkSync,
 } = require('node:fs');
 const path = require('node:path');
+
+/** app-builder-lib Arch.universal */
+const ARCH_UNIVERSAL = 3;
 
 function walkEntries(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -29,41 +38,46 @@ function walkEntries(dir, out = []) {
   return out;
 }
 
-function scrubRuntime(runtimeRoot) {
-  let removedLinks = 0;
-  let removedDirs = 0;
-
-  for (const arch of ['darwin-arm64', 'darwin-x64']) {
-    const pkgconfig = path.join(runtimeRoot, arch, 'python', 'lib', 'pkgconfig');
-    if (existsSync(pkgconfig)) {
-      rmSync(pkgconfig, { recursive: true, force: true });
-      removedDirs++;
-    }
-  }
-
-  for (const full of walkEntries(runtimeRoot)) {
+function scrubDanglingSymlinks(root, label) {
+  if (!existsSync(root)) return 0;
+  let removed = 0;
+  for (const full of walkEntries(root)) {
     try {
       const st = lstatSync(full);
       if (!st.isSymbolicLink()) continue;
       if (!existsSync(full)) {
         unlinkSync(full);
-        removedLinks++;
+        removed++;
       }
     } catch {
       // ignore
     }
   }
+  if (removed > 0) {
+    console.log(`[after-pack] removed ${removed} dangling symlink(s) under ${label}`);
+  }
+  return removed;
+}
 
-  console.log(
-    `[after-pack] scrubbed runtime: dirs=${removedDirs}, danglingLinks=${removedLinks}`,
-  );
+function scrubPythonPkgconfig(runtimeRoot) {
+  for (const arch of ['darwin-arm64', 'darwin-x64']) {
+    const pkgconfig = path.join(runtimeRoot, arch, 'python', 'lib', 'pkgconfig');
+    if (existsSync(pkgconfig)) {
+      rmSync(pkgconfig, { recursive: true, force: true });
+    }
+  }
 }
 
 function walkFiles(dir, out = []) {
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name);
-    const st = lstatSync(full);
+    let st;
+    try {
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
     if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) walkFiles(full, out);
     else out.push(full);
@@ -79,24 +93,7 @@ function ensureExec(filePath) {
   }
 }
 
-exports.default = async function afterPack(context) {
-  if (context.electronPlatformName !== 'darwin') return;
-
-  const resourcesDir = path.join(
-    context.appOutDir,
-    `${context.packager.appInfo.productFilename}.app`,
-    'Contents',
-    'Resources',
-  );
-
-  const runtimeRoot = path.join(resourcesDir, 'runtime');
-  if (!existsSync(runtimeRoot)) {
-    console.log('[after-pack] no runtime/ under Resources, skip');
-    return;
-  }
-
-  scrubRuntime(runtimeRoot);
-
+function chmodRuntimeBinaries(runtimeRoot) {
   const names = new Set(['python', 'python3', 'ffmpeg', 'ffprobe']);
   let n = 0;
   for (const file of walkFiles(runtimeRoot)) {
@@ -107,4 +104,46 @@ exports.default = async function afterPack(context) {
     }
   }
   console.log(`[after-pack] chmod +x on ${n} darwin runtime binaries`);
+}
+
+function resourcesDirOf(context) {
+  return path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+    'Contents',
+    'Resources',
+  );
+}
+
+exports.default = async function afterPack(context) {
+  if (context.electronPlatformName !== 'darwin') return;
+
+  const resourcesDir = resourcesDirOf(context);
+  const runtimeInApp = path.join(resourcesDir, 'runtime');
+  const nextStandalone = path.join(resourcesDir, 'next-standalone');
+  const projectRuntime = path.join(context.packager.projectDir, 'resources', 'runtime');
+
+  // next-standalone 里 pnpm 断链会导致 universal 两侧“可见文件”不一致
+  scrubDanglingSymlinks(nextStandalone, 'next-standalone');
+
+  if (context.arch === ARCH_UNIVERSAL) {
+    if (!existsSync(projectRuntime)) {
+      throw new Error(`[after-pack] missing project runtime at ${projectRuntime}`);
+    }
+    if (existsSync(runtimeInApp)) {
+      rmSync(runtimeInApp, { recursive: true, force: true });
+    }
+    console.log('[after-pack] restoring runtime/ into universal app');
+    cpSync(projectRuntime, runtimeInApp, { recursive: true });
+    scrubPythonPkgconfig(runtimeInApp);
+    scrubDanglingSymlinks(runtimeInApp, 'runtime');
+    chmodRuntimeBinaries(runtimeInApp);
+    return;
+  }
+
+  // 单架构临时包：去掉 runtime，避免 universal 合并扫到双架构 Mach-O
+  if (existsSync(runtimeInApp)) {
+    rmSync(runtimeInApp, { recursive: true, force: true });
+    console.log(`[after-pack] stripped runtime/ from arch=${context.arch} temp app`);
+  }
 };
