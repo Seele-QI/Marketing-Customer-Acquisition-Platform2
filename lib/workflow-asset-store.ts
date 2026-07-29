@@ -4,7 +4,7 @@
 import type { DraftKind } from "@/lib/workflow-draft-store"
 
 /** IndexedDB 工作流命名空间（含非 draft-store 模块） */
-export type AssetWorkflowNamespace = DraftKind | "ip-positioning" | "digital-human"
+export type AssetWorkflowNamespace = DraftKind | "ip-positioning" | "digital-human" | "geo-enterprise"
 
 const DB_NAME = "agenthub-workflow-assets"
 const DB_VERSION = 1

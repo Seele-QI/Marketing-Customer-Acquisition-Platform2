@@ -1,11 +1,4 @@
-import {
-  DEFAULT_IP_POSITIONING_MODEL,
-  FALLBACK_IP_POSITIONING_MODEL,
-  IP_POSITIONING_ALLOWED_MODELS,
-  type StageId,
-} from "@/lib/ip-positioning-skill"
-import { isSonettoProviderConfigured } from "@/lib/llm/sonetto-client"
-import { getSonettoModel } from "@/lib/llm/model-registry"
+import { type StageId } from "@/lib/ip-positioning-skill"
 
 export type IpPositioningIntake = {
   stage: StageId | null
@@ -42,7 +35,6 @@ export type ExtractedDocument = {
 }
 
 export type IpPositioningRequestBody = {
-  modelId?: string
   intake?: Partial<IpPositioningIntake>
   /** @deprecated legacy flat fields */
   stage?: string | null
@@ -228,34 +220,6 @@ export function validateIntake(intake: IpPositioningIntake): string | null {
   const missing = getMissingIntakeFieldLabels(intake)
   if (missing.length === 0) return null
   return `缺少必填：${missing.join("、")}`
-}
-
-export function resolveIpPositioningModel(requested?: string): {
-  modelId: string
-  error?: string
-} {
-  const preferred =
-    requested && IP_POSITIONING_ALLOWED_MODELS.includes(requested as (typeof IP_POSITIONING_ALLOWED_MODELS)[number])
-      ? requested
-      : DEFAULT_IP_POSITIONING_MODEL
-
-  const tryOrder =
-    preferred === DEFAULT_IP_POSITIONING_MODEL
-      ? [DEFAULT_IP_POSITIONING_MODEL, FALLBACK_IP_POSITIONING_MODEL]
-      : [FALLBACK_IP_POSITIONING_MODEL, DEFAULT_IP_POSITIONING_MODEL]
-
-  for (const modelId of tryOrder) {
-    const def = getSonettoModel(modelId)
-    if (!def) continue
-    if (isSonettoProviderConfigured(def.provider)) {
-      return { modelId }
-    }
-  }
-
-  return {
-    modelId: preferred,
-    error: "未配置 NEWAPI_KEY（或 SONETTO_GPT_API_KEY / SONETTO_CLAUDE_API_KEY），无法生成 IP 定位报告",
-  }
 }
 
 function isStringArray(value: unknown): value is string[] {

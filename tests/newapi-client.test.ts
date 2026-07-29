@@ -4,6 +4,7 @@ import { describe, it } from "node:test"
 import {
   getSonettoApiKey,
   getSonettoBaseUrl,
+  isNewApiRelayEnabled,
   isSonettoProviderConfigured,
 } from "@/lib/llm/sonetto-client"
 
@@ -53,10 +54,43 @@ describe("newapi client", () => {
     )
   })
 
-  it("uses unified NEWAPI_KEY for both providers", () => {
+  it("is enabled by default; NEWAPI_ENABLED=0 forces off", () => {
     withEnv(
       {
+        NEWAPI_ENABLED: undefined,
+        NEWAPI_BASE_URL: "https://www.aicost.xyz",
         NEWAPI_KEY: "sk-unified",
+        NEWAPI_GPT_MODEL: "gpt-5.5",
+        NEWAPI_CLAUDE_MODEL: "claude-opus-4-8",
+      },
+      () => {
+        assert.equal(isNewApiRelayEnabled(), true)
+        assert.equal(isSonettoProviderConfigured("sonetto_gpt"), true)
+      },
+    )
+    withEnv(
+      {
+        NEWAPI_ENABLED: "0",
+        NEWAPI_BASE_URL: "https://www.aicost.xyz",
+        NEWAPI_KEY: "sk-unified",
+        NEWAPI_GPT_MODEL: "gpt-5.5",
+        NEWAPI_CLAUDE_MODEL: "claude-opus-4-8",
+      },
+      () => {
+        assert.equal(isNewApiRelayEnabled(), false)
+        assert.equal(isSonettoProviderConfigured("sonetto_gpt"), false)
+      },
+    )
+  })
+
+  it("uses unified NEWAPI_KEY when triad present", () => {
+    withEnv(
+      {
+        NEWAPI_ENABLED: undefined,
+        NEWAPI_BASE_URL: "https://www.aicost.xyz",
+        NEWAPI_KEY: "sk-unified",
+        NEWAPI_GPT_MODEL: "gpt-5.5",
+        NEWAPI_CLAUDE_MODEL: "claude-opus-4-8",
         SONETTO_GPT_API_KEY: undefined,
         SONETTO_CLAUDE_API_KEY: undefined,
       },

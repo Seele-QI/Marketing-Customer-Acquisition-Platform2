@@ -55,13 +55,30 @@ test("ip positioning session saves wizard step and intake", () => {
     saveIpPositioningSession({
       wizardStep: 2,
       intake: { ...defaultIpPositioningSession().intake, industry: "教育" },
-      modelId: "gpt-5.5",
     })
     assert.ok(storage.getItem(IP_POSITIONING_SESSION_KEY))
     const loaded = loadIpPositioningSession()
     assert.equal(loaded?.wizardStep, 2)
     assert.equal(loaded?.intake.industry, "教育")
-    assert.equal(loaded?.modelId, "gpt-5.5")
+  })
+})
+
+test("ip positioning session does not persist a model selection", () => {
+  const storage = createMemoryStorage()
+  withMockBrowserEnv(storage, () => {
+    const defaults = defaultIpPositioningSession() as unknown as Record<string, unknown>
+    assert.equal("modelId" in defaults, false)
+
+    storage.setItem(
+      IP_POSITIONING_SESSION_KEY,
+      JSON.stringify({
+        wizardStep: 1,
+        modelId: "gpt-5.5",
+        intake: { industry: "教育" },
+      }),
+    )
+    const loaded = loadIpPositioningSession() as unknown as Record<string, unknown>
+    assert.equal("modelId" in loaded, false)
   })
 })
 

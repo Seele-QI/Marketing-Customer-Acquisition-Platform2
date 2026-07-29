@@ -4,7 +4,6 @@ import * as React from "react"
 import { Loader2, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
@@ -16,14 +15,14 @@ import {
   ARTICLE_BATCH_COPIES_PER_SLOT_MAX,
   clampCopiesPerSlot,
   alignJobSnapshots,
-  expandDirectionJobs,
   expandMatrixJobs,
   listMatrixDates,
+  normalizeSelectedMatrixDates,
 } from "@/lib/geo/article-batch-jobs"
-import { MATRIX_PLATFORMS } from "@/lib/geo/matrix-platforms"
+import { viralSkillIdsForPlatforms } from "@/lib/geo/matrix-platforms"
 import { listMatrixProjects, getMatrixProject } from "@/lib/geo/matrix-api"
 import type { MatrixProject } from "@/lib/geo/matrix-types"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
+import { getGeoSkillById } from "@/lib/geo/skills-registry"
 import { startBatchGenerate } from "@/lib/geo/article-batch-api"
 import {
   loadArticleBatch,
@@ -34,10 +33,6 @@ import type { ArticleJob, BatchGenerateEvent, GeneratedArticle } from "@/lib/geo
 import { toast } from "@/hooks/use-toast"
 
 type Props = {
-  provider: LlmProviderId
-  modelSkillId: string | null
-  viralSkillIds: string[]
-  enterpriseSnapshot: string | null
   generating: boolean
   onGeneratingChange: (v: boolean) => void
   onProgress: (completed: number, total: number) => void
@@ -45,13 +40,10 @@ type Props = {
   onArticle: (article: GeneratedArticle) => void
   onJobError: (jobId: string, error: string) => void
   onBatchComplete: (config: ArticleBatchConfig) => void
+  onProjectChange: (project: MatrixProject | null) => void
 }
 
 export function GeoArticleBatchPanel({
-  provider,
-  modelSkillId,
-  viralSkillIds,
-  enterpriseSnapshot,
   generating,
   onGeneratingChange,
   onProgress,
@@ -59,10 +51,8 @@ export function GeoArticleBatchPanel({
   onArticle,
   onJobError,
   onBatchComplete,
+  onProjectChange,
 }: Props) {
-  const [mode, setMode] = React.useState<"direction" | "matrix">("direction")
-  const [direction, setDirection] = React.useState("")
-  const [platformIds, setPlatformIds] = React.useState<string[]>(["xiaohongshu", "zhihu"])
   const [projects, setProjects] = React.useState<MatrixProject[]>([])
   const [projectDetail, setProjectDetail] = React.useState<MatrixProject | null>(null)
   const [projectsLoading, setProjectsLoading] = React.useState(false)
@@ -76,7 +66,10 @@ export function GeoArticleBatchPanel({
   const restoredConfigRef = React.useRef(false)
 
   const selectedProject = React.useMemo(
-    () => projectDetail ?? projects.find((p) => p.id === projectId) ?? null,
+    () =>
+      projectDetail?.id === projectId
+        ? projectDetail
+        : projects.find((project) => project.id === projectId) ?? null,
     [projectDetail, projects, projectId],
   )
 
@@ -84,17 +77,29 @@ export function GeoArticleBatchPanel({
     () => listMatrixDates(selectedProject),
     [selectedProject],
   )
+  const platformIds = React.useMemo(
+    () => [
+      ...new Set(
+        (selectedProject?.matrix?.platforms ?? [])
+          .map((platform) => platform.platformId)
+          .filter(Boolean),
+      ),
+    ],
+    [selectedProject],
+  )
+  const mappedViralSkillIds = React.useMemo(
+    () => viralSkillIdsForPlatforms(platformIds),
+    [platformIds],
+  )
+  const selectedModelLabel = selectedProject?.modelSkillId
+    ? getGeoSkillById(selectedProject.modelSkillId)?.label ?? "矩阵默认优化策略"
+    : "通用 GEO 策略"
 
   React.useEffect(() => {
     if (restoredConfigRef.current) return
     restoredConfigRef.current = true
     const stored = loadArticleBatch().lastConfig
     if (!stored) return
-    if (stored.mode === "direction" || stored.mode === "matrix") {
-      setMode(stored.mode)
-    }
-    if (stored.direction) setDirection(stored.direction)
-    if (stored.platformIds?.length) setPlatformIds(stored.platformIds)
     if (stored.projectId) setProjectId(stored.projectId)
     if (stored.dates?.length) setSelectedDates(stored.dates)
     if (stored.copiesPerSlot != null) {
@@ -129,6 +134,7 @@ export function GeoArticleBatchPanel({
       setProjectDetail(null)
       return
     }
+    setProjectDetail(null)
     let cancelled = false
     void getMatrixProject(projectId)
       .then((p) => {
@@ -143,35 +149,26 @@ export function GeoArticleBatchPanel({
   }, [projectId])
 
   React.useEffect(() => {
-    if (selectedProject?.platforms?.length) {
-      setPlatformIds(selectedProject.platforms)
-    }
-  }, [selectedProject?.id])
+    onProjectChange(selectedProject)
+  }, [onProjectChange, selectedProject])
 
   React.useEffect(() => {
-    if (availableDates.length > 0 && selectedDates.length === 0) {
-      setSelectedDates([availableDates[0]])
+    const normalized = normalizeSelectedMatrixDates(availableDates, selectedDates)
+    if (
+      normalized.length !== selectedDates.length ||
+      normalized.some((date, index) => date !== selectedDates[index])
+    ) {
+      setSelectedDates(normalized)
     }
-  }, [availableDates, selectedDates.length])
+  }, [availableDates, selectedDates])
 
   React.useEffect(() => {
     try {
-      if (mode === "direction") {
-        const { jobs } = expandDirectionJobs({
-          mode: "direction",
-          direction,
-          platformIds,
-          copiesPerSlot,
-        })
-        setPreviewCount(jobs.length)
-        setPreviewSkipped(0)
-        setPreviewError(null)
-      } else if (selectedProject) {
+      if (selectedProject) {
         const { jobs, skipped } = expandMatrixJobs({
           mode: "matrix",
           project: selectedProject,
           dates: selectedDates,
-          platformIds,
           copiesPerSlot,
         })
         setPreviewCount(jobs.length)
@@ -187,13 +184,7 @@ export function GeoArticleBatchPanel({
       setPreviewSkipped(0)
       setPreviewError(e instanceof Error ? e.message : "无法预览任务数")
     }
-  }, [mode, direction, platformIds, selectedProject, selectedDates, copiesPerSlot])
-
-  const togglePlatform = (id: string) => {
-    setPlatformIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
-  }
+  }, [selectedProject, selectedDates, copiesPerSlot])
 
   const toggleDate = (date: string) => {
     setSelectedDates((prev) =>
@@ -219,36 +210,20 @@ export function GeoArticleBatchPanel({
 
     const copies = clampCopiesPerSlot(copiesPerSlot)
     const config: ArticleBatchConfig = {
-      mode,
-      direction: mode === "direction" ? direction.trim() : undefined,
-      projectId: mode === "matrix" ? projectId : undefined,
-      dates: mode === "matrix" ? selectedDates : undefined,
-      platformIds,
+      mode: "matrix",
+      projectId,
+      dates: selectedDates,
       copiesPerSlot: copies,
     }
 
     let jobMetas: { jobId: string; title: string; platformId: string; date?: string }[] = []
     let expandedJobs: ArticleJob[] = []
     try {
-      if (mode === "direction") {
-        const expanded = expandDirectionJobs({
-          mode: "direction",
-          direction: direction.trim(),
-          platformIds,
-          copiesPerSlot: copies,
-        })
-        expandedJobs = expanded.jobs
-        jobMetas = expanded.jobs.map((j) => ({
-          jobId: j.jobId,
-          title: j.title,
-          platformId: j.platformId,
-        }))
-      } else if (selectedProject) {
+      if (selectedProject) {
         const expanded = expandMatrixJobs({
           mode: "matrix",
           project: selectedProject,
           dates: selectedDates,
-          platformIds,
           copiesPerSlot: copies,
         })
         expandedJobs = expanded.jobs
@@ -275,17 +250,11 @@ export function GeoArticleBatchPanel({
     let total = jobMetas.length
     let completed = 0
     try {
-      await startBatchGenerate(
+      const result = await startBatchGenerate(
         {
-          provider,
-          modelSkillId,
-          viralSkillIds,
-          enterpriseSnapshot,
-          mode,
-          direction: config.direction,
-          projectId: config.projectId,
-          dates: config.dates,
-          platformIds,
+          mode: "matrix",
+          projectId,
+          dates: selectedDates,
           copiesPerSlot: copies,
         },
         {
@@ -310,8 +279,17 @@ export function GeoArticleBatchPanel({
           onArticle,
         },
       )
-      onBatchComplete(config)
-      toast({ title: "批量创作完成" })
+      if (result.failCount > 0) {
+        toast({
+          title: result.successCount > 0
+            ? `已生成 ${result.successCount} 篇，${result.failCount} 篇失败，可在下方重试`
+            : "本次文章生成全部失败，请稍后重试",
+          variant: "destructive",
+        })
+      } else {
+        onBatchComplete(config)
+        toast({ title: `批量创作完成，共 ${result.successCount} 篇` })
+      }
     } catch (e) {
       toast({
         title: e instanceof Error ? e.message : "批量创作失败",
@@ -323,55 +301,20 @@ export function GeoArticleBatchPanel({
   }
 
   return (
-    <div className="rounded-xl border border-slate-200/80 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">
+    <div
+      className="rounded-xl border border-slate-200/80 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]"
+      data-tutorial-id="geo-article-config"
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-[14px] font-semibold text-slate-800 dark:text-slate-200">
           并发创作
         </h3>
-        <div className="flex rounded-lg border border-slate-200/80 p-0.5 dark:border-white/10">
-          <button
-            type="button"
-            onClick={() => setMode("direction")}
-            className={cn(
-              "rounded-md px-3 py-1 text-[11px] font-medium transition-colors",
-              mode === "direction"
-                ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300"
-                : "text-slate-500 hover:text-slate-700 dark:text-slate-400",
-            )}
-          >
-            自定义方向
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("matrix")}
-            className={cn(
-              "rounded-md px-3 py-1 text-[11px] font-medium transition-colors",
-              mode === "matrix"
-                ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300"
-                : "text-slate-500 hover:text-slate-700 dark:text-slate-400",
-            )}
-          >
-            内容矩阵
-          </button>
-        </div>
+        <span className="rounded-full bg-cyan-50 px-2.5 py-1 text-[10px] font-medium text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300">
+          仅从内容矩阵创作
+        </span>
       </div>
 
-      {mode === "direction" ? (
-        <div className="mb-3">
-          <label className="mb-1.5 block text-[11px] font-medium text-slate-500">
-            创作方向
-          </label>
-          <Textarea
-            value={direction}
-            onChange={(e) => setDirection(e.target.value)}
-            rows={3}
-            placeholder="例：AI 视频翻译完全指南，面向出海创作者…"
-            className="text-[13px]"
-            disabled={generating}
-          />
-        </div>
-      ) : (
-        <div className="mb-3 space-y-3">
+      <div className="mb-3 space-y-3">
           <div>
             <label className="mb-1.5 block text-[11px] font-medium text-slate-500">
               矩阵项目
@@ -427,33 +370,14 @@ export function GeoArticleBatchPanel({
               </div>
             </div>
           )}
+        {selectedProject && (
+          <div className="grid gap-2 rounded-lg border border-cyan-100 bg-cyan-50/50 p-3 text-[11px] text-slate-600 dark:border-cyan-500/20 dark:bg-cyan-500/[0.08] dark:text-slate-300 sm:grid-cols-3">
+            <span>目标优化：{selectedModelLabel}</span>
+            <span>平台 Skill：已自动加载 {mappedViralSkillIds.length} 项</span>
+            <span>企业知识库：{selectedProject.enterpriseSkillId ? "已继承" : "未配置"}</span>
+          </div>
+        )}
         </div>
-      )}
-
-      <div className="mb-3">
-        <p className="mb-1.5 text-[11px] font-medium text-slate-500">发布平台（多选）</p>
-        <div className="flex flex-wrap gap-1.5">
-          {MATRIX_PLATFORMS.map((p) => {
-            const checked = platformIds.includes(p.id)
-            return (
-              <button
-                key={p.id}
-                type="button"
-                disabled={generating}
-                onClick={() => togglePlatform(p.id)}
-                className={cn(
-                  "rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors",
-                  checked
-                    ? "border-cyan-400 bg-cyan-50 text-cyan-700 dark:border-cyan-500/40 dark:bg-cyan-500/15 dark:text-cyan-300"
-                    : "border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-white/10 dark:text-slate-400",
-                )}
-              >
-                {p.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
 
       <div className="mb-3">
         <label
@@ -508,15 +432,9 @@ export function GeoArticleBatchPanel({
                 {previewCount}
               </span>{" "}
               篇
-              {mode === "direction" ? (
-                <span className="text-slate-400">
-                  （{platformIds.length} 平台 × {copiesPerSlot} 篇）
-                </span>
-              ) : (
-                <span className="text-slate-400">
-                  （{platformIds.length} 平台 × {selectedDates.length} 天 × {copiesPerSlot} 篇）
-                </span>
-              )}
+              <span className="text-slate-400">
+                （矩阵内 {platformIds.length} 平台 × {selectedDates.length} 天 × {copiesPerSlot} 篇）
+              </span>
               {previewSkipped > 0 && (
                 <span className="ml-1 text-amber-600">
                   · {previewSkipped} 个组合无矩阵格已跳过
@@ -529,6 +447,7 @@ export function GeoArticleBatchPanel({
         </p>
         <Button
           type="button"
+          data-tutorial-id="geo-article-generate"
           size="sm"
           disabled={generating || !!previewError || !previewCount}
           onClick={() => void handleStart()}

@@ -38,6 +38,8 @@ GEO_AUTHORITY_LINK_COST = 5
 DH_V2_PLAN_SCRIPT_COST = 20
 DH_V2_VIDEO_SEGMENT_UNIT = 450    # 每 15s 段单价（Seedance / 宣传视频成片）
 DH_V2_VIDEO_RETRY_COST = 450
+VIDEO_ECONOMY_SEGMENT_COST = 250      # 经济版每 20s 视频段
+VIDEO_ECONOMY_RETRY_COST = VIDEO_ECONOMY_SEGMENT_COST
 # 可变 scene 占位（实际 cost 由 pricing registry 解析）
 COPYWRITING_LLM_COST_PLACEHOLDER = 2
 GEO_ARTICLE_COST_PLACEHOLDER = 10
@@ -48,6 +50,20 @@ REDEEM_CODE_AMOUNTS = (5000, 8000, 10000, 20000, 30000)
 REDEEM_CODE_LENGTH = 16
 DEFAULT_REDEEM_CODE_NOTE = "系统生成兑换码"
 ADMIN_REDEEM_CODES_VISIBLE = False
+
+BUSINESS_TYPE_LABELS = {
+    "video_digital_human": "数字人视频创作",
+    "geo_article_batch": "GEO 文章批量生成",
+    "geo_matrix": "GEO 内容矩阵生成",
+    "geo_enterprise_skill": "GEO 企业知识技能生成",
+}
+BILLING_STAGE_LABELS = {
+    "script": "口播文案",
+    "voice_clone": "音色克隆",
+    "video_generation": "视频生成",
+    "video_retry": "视频重试",
+    "llm_generation": "内容生成",
+}
 
 
 class CreditError(HTTPException):
@@ -73,6 +89,20 @@ def ensure_credit_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_redeem_codes_status_amount ON credit_redeem_codes(status, amount);
             CREATE INDEX IF NOT EXISTS idx_redeem_codes_batch ON credit_redeem_codes(batch_id);
         """)
+        ledger_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'credit_ledger'"
+        ).fetchone()
+        if ledger_exists:
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(credit_ledger)").fetchall()
+            }
+            for column in ("business_task_id", "business_type", "billing_stage"):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE credit_ledger ADD COLUMN {column} TEXT")
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_ledger_user_business_task
+                   ON credit_ledger(user_id, business_type, business_task_id, created_at)"""
+            )
         conn.commit()
     finally:
         conn.close()
@@ -121,7 +151,116 @@ def list_ledger(user_id: int, limit: int = 20) -> list[dict]:
         conn.close()
 
 
-def consume(user_id: int, cost: int, ref_id: str = "", note: str = "") -> int:
+def list_display_ledger(user_id: int, limit: int = 20) -> list[dict]:
+    """返回用户可见账单：完整业务任务聚合，零散模型调用不单列。"""
+    safe_limit = max(1, min(100, int(limit)))
+    raw_limit = max(1000, safe_limit * 100)
+    supported_types = tuple(BUSINESS_TYPE_LABELS)
+    type_placeholders = ",".join("?" for _ in supported_types)
+    conn = connect()
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT id, type, delta, balance_after, ref_id, note, created_at,
+                          business_task_id, business_type, billing_stage
+                   FROM credit_ledger
+                   WHERE user_id = ?
+                     AND (
+                       type != 'consume'
+                       OR (
+                         business_task_id IS NOT NULL
+                         AND business_task_id != ''
+                         AND business_type IN ({type_placeholders})
+                       )
+                     )
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?""".format(type_placeholders=type_placeholders),
+                (user_id, *supported_types, raw_limit),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    grouped: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        business_type = str(row.get("business_type") or "").strip()
+        task_id = str(row.get("business_task_id") or "").strip()
+        if business_type not in BUSINESS_TYPE_LABELS or not task_id:
+            continue
+        key = (business_type, task_id)
+        group = grouped.setdefault(
+            key,
+            {
+                "id": f"task:{business_type}:{task_id}",
+                "entry_kind": "business_task",
+                "type": "business_task",
+                "delta": 0,
+                "balance_after": int(row["balance_after"]),
+                "ref_id": "",
+                "note": "",
+                "created_at": int(row["created_at"]),
+                "business_task_id": task_id,
+                "business_type": business_type,
+                "breakdown": [],
+                "_stage_totals": {},
+            },
+        )
+        group["delta"] += int(row["delta"])
+        group["created_at"] = min(group["created_at"], int(row["created_at"]))
+        stage = str(row.get("billing_stage") or "").strip()
+        if stage in BILLING_STAGE_LABELS:
+            totals = group["_stage_totals"]
+            totals[stage] = int(totals.get(stage, 0)) - int(row["delta"])
+
+    stage_order = tuple(BILLING_STAGE_LABELS)
+    for group in grouped.values():
+        breakdown = [
+            {
+                "stage": stage,
+                "label": BILLING_STAGE_LABELS[stage],
+                "amount": int(group["_stage_totals"].get(stage, 0)),
+            }
+            for stage in stage_order
+            if int(group["_stage_totals"].get(stage, 0)) > 0
+        ]
+        spent = max(0, -int(group["delta"]))
+        parts = [f"{item['label']} {item['amount']}" for item in breakdown]
+        group["breakdown"] = breakdown
+        group["note"] = f"{' + '.join(parts)}，共 {spent} 积分" if parts else f"共 {spent} 积分"
+        group.pop("_stage_totals", None)
+
+    items: list[dict] = []
+    emitted: set[tuple[str, str]] = set()
+    for row in rows:
+        business_type = str(row.get("business_type") or "").strip()
+        task_id = str(row.get("business_task_id") or "").strip()
+        key = (business_type, task_id)
+        if key in grouped:
+            if key not in emitted:
+                items.append(grouped[key])
+                emitted.add(key)
+        elif row["type"] != TYPE_CONSUME:
+            row["entry_kind"] = "ledger"
+            row["business_task_id"] = ""
+            row["business_type"] = ""
+            row["breakdown"] = []
+            items.append(row)
+        if len(items) >= safe_limit:
+            break
+    return items
+
+
+def consume(
+    user_id: int,
+    cost: int,
+    ref_id: str = "",
+    note: str = "",
+    *,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> int:
     """扣费。余额不足抛 402。返回扣后余额。"""
     if cost <= 0:
         raise CreditError("INVALID_COST", "cost 必须正数", status=400)
@@ -146,14 +285,35 @@ def consume(user_id: int, cost: int, ref_id: str = "", note: str = "") -> int:
             (new_balance, cost, now_ms, user_id),
         )
         conn.execute(
-            """INSERT INTO credit_ledger (user_id, type, delta, balance_after, ref_id, note, created_at)
-               VALUES (?, 'consume', ?, ?, ?, ?, ?)""",
-            (user_id, -cost, new_balance, ref_id, note, now_ms),
+            """INSERT INTO credit_ledger
+               (user_id, type, delta, balance_after, ref_id, note, created_at,
+                business_task_id, business_type, billing_stage)
+               VALUES (?, 'consume', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                -cost,
+                new_balance,
+                ref_id,
+                note,
+                now_ms,
+                business_task_id or None,
+                business_type or None,
+                billing_stage or None,
+            ),
         )
         return new_balance
 
 
-def refund(user_id: int, amount: int, ref_id: str = "", note: str = "") -> int:
+def refund(
+    user_id: int,
+    amount: int,
+    ref_id: str = "",
+    note: str = "",
+    *,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> int:
     """退款。仅允许退 consume 类型。返回退后余额。"""
     if amount <= 0:
         raise CreditError("INVALID_AMOUNT", "amount 必须正数", status=400)
@@ -170,9 +330,21 @@ def refund(user_id: int, amount: int, ref_id: str = "", note: str = "") -> int:
             (new_balance, now_ms, user_id),
         )
         conn.execute(
-            """INSERT INTO credit_ledger (user_id, type, delta, balance_after, ref_id, note, created_at)
-               VALUES (?, 'refund', ?, ?, ?, ?, ?)""",
-            (user_id, amount, new_balance, ref_id, note or "调用失败退款", now_ms),
+            """INSERT INTO credit_ledger
+               (user_id, type, delta, balance_after, ref_id, note, created_at,
+                business_task_id, business_type, billing_stage)
+               VALUES (?, 'refund', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                amount,
+                new_balance,
+                ref_id,
+                note or "调用失败退款",
+                now_ms,
+                business_task_id or None,
+                business_type or None,
+                billing_stage or None,
+            ),
         )
         return new_balance
 

@@ -1,3 +1,5 @@
+import { CUSTOMER_ERROR_MESSAGES } from "@/lib/api/customer-network-error"
+
 function stripBom(s: string): string {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s
 }
@@ -60,6 +62,12 @@ function isCloudApiConfigured(): boolean {
   return sanitizeEnvValue(process.env.CLOUD_API_URL).length > 0
 }
 
+export type ClientServiceErrorCategory = "local_service" | "cloud_service" | "timeout"
+
+export function getCloudApiServiceErrorCategory(): "local_service" | "cloud_service" {
+  return isCloudApiConfigured() ? "cloud_service" : "local_service"
+}
+
 /** Node fetch(undici) 不支持转发的 hop-by-hop / 特殊请求头 */
 const PROXY_STRIP_HEADERS = [
   "host",
@@ -73,6 +81,32 @@ const PROXY_STRIP_HEADERS = [
   "expect",
   "content-length",
 ] as const
+
+function clientServiceErrorHeaders(
+  category: ClientServiceErrorCategory,
+): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "X-Client-Service-Error": category,
+  }
+}
+
+export function createServiceUnavailableResponse(
+  category: "local_service" | "cloud_service",
+): Response {
+  const cloud = category === "cloud_service"
+  return new Response(
+    JSON.stringify({
+      detail: {
+        code: cloud ? "CLOUD_SERVICE_UNAVAILABLE" : "LOCAL_SERVICE_UNAVAILABLE",
+        message: cloud
+          ? CUSTOMER_ERROR_MESSAGES.cloudUnavailable
+          : CUSTOMER_ERROR_MESSAGES.localUnavailable,
+      },
+    }),
+    { status: 503, headers: clientServiceErrorHeaders(category) },
+  )
+}
 
 /**
  * 上游代理超时：避免 Next→FastAPI 黑洞导致请求永不返回。
@@ -102,14 +136,18 @@ function buildProxyHeaders(req: Request): Headers {
 }
 
 export async function proxyToFastapi(req: Request, path: string): Promise<Response> {
-  return proxyToBase(req, path, getServerFastapiBase(), "FASTAPI_UNAVAILABLE", "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）")
+  return proxyToBase(req, path, getServerFastapiBase(), "FASTAPI_UNAVAILABLE", CUSTOMER_ERROR_MESSAGES.localUnavailable)
+}
+
+export async function proxyToFastapiWithTimeout(req: Request, path: string, timeoutMs: number): Promise<Response> {
+  return proxyToBase(req, path, getServerFastapiBase(), "FASTAPI_UNAVAILABLE", CUSTOMER_ERROR_MESSAGES.localUnavailable, timeoutMs)
 }
 
 export async function proxyToCloudApi(req: Request, path: string): Promise<Response> {
   const base = getCloudApiBase()
   const message = isCloudApiConfigured()
-    ? "无法连接云端服务，请检查 CLOUD_API_URL 或网络"
-    : `无法连接本地后端（${base || "127.0.0.1:8010"}），请确认 FastAPI 已启动`
+    ? CUSTOMER_ERROR_MESSAGES.cloudUnavailable
+    : CUSTOMER_ERROR_MESSAGES.localUnavailable
   return proxyToBase(req, path, base, "CLOUD_API_UNAVAILABLE", message)
 }
 
@@ -119,18 +157,29 @@ async function proxyToBase(
   base: string,
   unavailableCode: string,
   proxyFailedMessage: string,
+  timeoutOverrideMs?: number,
 ): Promise<Response> {
   if (!base) {
     return new Response(
       JSON.stringify({
-        detail: { code: unavailableCode, message: "后端服务未配置" },
+        detail: {
+          code: unavailableCode,
+          message: unavailableCode.startsWith("CLOUD_")
+            ? CUSTOMER_ERROR_MESSAGES.cloudUnavailable
+            : CUSTOMER_ERROR_MESSAGES.localUnavailable,
+        },
       }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
+      {
+        status: 503,
+        headers: clientServiceErrorHeaders(
+          unavailableCode.startsWith("CLOUD_") ? "cloud_service" : "local_service",
+        ),
+      },
     )
   }
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
   const headers = buildProxyHeaders(req)
-  const timeoutMs = getProxyTimeoutMs()
+  const timeoutMs = timeoutOverrideMs && timeoutOverrideMs > 0 ? timeoutOverrideMs : getProxyTimeoutMs()
   const init: RequestInit = {
     method: req.method,
     headers,
@@ -151,18 +200,25 @@ async function proxyToBase(
         : err instanceof Error
           ? err.message
           : String(err)
+    console.error("[fastapi-proxy-error]", cause)
     const message = isAbortOrTimeout(err)
-      ? `连接后端超时（${Math.round(timeoutMs / 1000)}s），请稍后重试`
+      ? CUSTOMER_ERROR_MESSAGES.timeout
       : proxyFailedMessage
     return new Response(
       JSON.stringify({
         detail: {
           code: isAbortOrTimeout(err) ? "FASTAPI_PROXY_TIMEOUT" : "FASTAPI_PROXY_FAILED",
           message,
-          cause,
         },
       }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
+      {
+        status: 503,
+        headers: clientServiceErrorHeaders(
+          isAbortOrTimeout(err)
+            ? "timeout"
+            : unavailableCode.startsWith("CLOUD_") ? "cloud_service" : "local_service",
+        ),
+      },
     )
   }
 }
@@ -173,23 +229,34 @@ export async function proxyMultipartToFastapi(req: Request, path: string): Promi
   if (!base) {
     return new Response(
       JSON.stringify({
-        detail: { code: "FASTAPI_UNAVAILABLE", message: "后端服务未配置（请设置 FASTAPI_URL）" },
+        detail: { code: "FASTAPI_UNAVAILABLE", message: CUSTOMER_ERROR_MESSAGES.localUnavailable },
       }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
+      { status: 503, headers: clientServiceErrorHeaders("local_service") },
     )
   }
   const url = new URL(path, base.endsWith("/") ? base : base + "/").toString()
   const headers = buildProxyHeaders(req)
-  const formData = await req.formData()
+  // Keep the original multipart boundary and byte stream intact. Rebuilding a
+  // FormData body while forwarding the original content-type leaves FastAPI
+  // with a boundary that does not exist in the body.
+  headers.delete("content-length")
   const timeoutMs = getProxyTimeoutMs()
   try {
-    const upstream = await fetch(url, {
+    if (!req.body) {
+      return new Response(
+        JSON.stringify({ detail: { code: "EMPTY_UPLOAD_BODY", message: "上传内容为空" } }),
+        { status: 400, headers: { "content-type": "application/json; charset=utf-8" } },
+      )
+    }
+    const body = await req.arrayBuffer()
+    const init: RequestInit = {
       method: req.method,
       headers,
-      body: formData,
+      body,
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
-    })
+    }
+    const upstream = await fetch(url, init)
     const respHeaders = new Headers(upstream.headers)
     return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
   } catch (err) {
@@ -199,18 +266,21 @@ export async function proxyMultipartToFastapi(req: Request, path: string): Promi
         : err instanceof Error
           ? err.message
           : String(err)
+    console.error("[fastapi-proxy-error]", cause)
     const message = isAbortOrTimeout(err)
-      ? `连接后端超时（${Math.round(timeoutMs / 1000)}s），请稍后重试`
-      : "无法连接后端服务，请确认 FastAPI 已启动（pnpm dev:all）"
+      ? CUSTOMER_ERROR_MESSAGES.timeout
+      : CUSTOMER_ERROR_MESSAGES.localUnavailable
     return new Response(
       JSON.stringify({
         detail: {
           code: isAbortOrTimeout(err) ? "FASTAPI_PROXY_TIMEOUT" : "FASTAPI_PROXY_FAILED",
           message,
-          cause,
         },
       }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
+      {
+        status: 503,
+        headers: clientServiceErrorHeaders(isAbortOrTimeout(err) ? "timeout" : "local_service"),
+      },
     )
   }
 }

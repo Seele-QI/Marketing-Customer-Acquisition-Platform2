@@ -97,43 +97,70 @@ def _append_seedance_tier(
 
 
 def list_seedance_endpoints() -> list[SeedanceEndpoint]:
-    """首选 → 次选 → 三选；次选/三选缺省时兼容旧 env 别名。"""
+    """结构化 sync 优先（任意数量）；否则首选 → 次选 → 三选 env。"""
+    from lib.synced_providers import list_synced_video_providers
+
     out: list[SeedanceEndpoint] = []
+    synced = list_synced_video_providers()
+    if synced:
+        for i, p in enumerate(synced):
+            default_media = "url" if i == 0 else "base64"
+            extra = p.get("extra") or {}
+            media = str(extra.get("media_mode") or default_media)
+            _append_seedance_tier(
+                out,
+                name=str(p.get("name") or f"video_{i + 1}"),
+                base_url=str(p.get("base_url") or ""),
+                api_key=str(p.get("api_key") or ""),
+                model=str(p.get("model") or SEEDANCE_AICOST_MODEL),
+                media_mode=media,
+            )
+    else:
+        _append_seedance_tier(
+            out,
+            name="primary",
+            base_url=os.getenv("SEEDANCE_PRIMARY_BASE_URL") or "",
+            api_key=os.getenv("SEEDANCE_PRIMARY_API_KEY") or "",
+            model=(os.getenv("SEEDANCE_PRIMARY_MODEL") or DEFAULT_PRIMARY_MODEL).strip(),
+            media_mode=os.getenv("SEEDANCE_PRIMARY_MEDIA_MODE") or "url",
+        )
 
-    _append_seedance_tier(
-        out,
-        name="primary",
-        base_url=os.getenv("SEEDANCE_PRIMARY_BASE_URL") or "",
-        api_key=os.getenv("SEEDANCE_PRIMARY_API_KEY") or "",
-        model=(os.getenv("SEEDANCE_PRIMARY_MODEL") or DEFAULT_PRIMARY_MODEL).strip(),
-        media_mode=os.getenv("SEEDANCE_PRIMARY_MEDIA_MODE") or "url",
-    )
+        sec_base = (
+            os.getenv("SEEDANCE_SECONDARY_BASE_URL") or os.getenv("SEEDANCE_BASE_URL") or ""
+        ).strip()
+        sec_key = (
+            os.getenv("SEEDANCE_SECONDARY_API_KEY")
+            or os.getenv("SEEDANCE_API_KEY")
+            or os.getenv("AICOST_API_KEY")
+            or ""
+        ).strip()
+        sec_model = (os.getenv("SEEDANCE_SECONDARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
+        sec_media = os.getenv("SEEDANCE_SECONDARY_MEDIA_MODE") or "base64"
+        _append_seedance_tier(
+            out,
+            name="secondary",
+            base_url=sec_base or DEFAULT_BASE_URL,
+            api_key=sec_key,
+            model=sec_model,
+            media_mode=sec_media,
+        )
 
-    sec_base = (os.getenv("SEEDANCE_SECONDARY_BASE_URL") or os.getenv("SEEDANCE_BASE_URL") or "").strip()
-    sec_key = (os.getenv("SEEDANCE_SECONDARY_API_KEY") or os.getenv("SEEDANCE_API_KEY") or os.getenv("AICOST_API_KEY") or "").strip()
-    sec_model = (os.getenv("SEEDANCE_SECONDARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
-    sec_media = os.getenv("SEEDANCE_SECONDARY_MEDIA_MODE") or "base64"
-    _append_seedance_tier(
-        out,
-        name="secondary",
-        base_url=sec_base or DEFAULT_BASE_URL,
-        api_key=sec_key,
-        model=sec_model,
-        media_mode=sec_media,
-    )
-
-    ter_base = (os.getenv("SEEDANCE_TERTIARY_BASE_URL") or os.getenv("XINGHE_BASE_URL") or DEFAULT_BASE_URL).strip()
-    ter_key = (os.getenv("SEEDANCE_TERTIARY_API_KEY") or os.getenv("XINGHE_API_KEY") or "").strip()
-    ter_model = (os.getenv("SEEDANCE_TERTIARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
-    ter_media = os.getenv("SEEDANCE_TERTIARY_MEDIA_MODE") or "base64"
-    _append_seedance_tier(
-        out,
-        name="tertiary",
-        base_url=ter_base,
-        api_key=ter_key,
-        model=ter_model,
-        media_mode=ter_media,
-    )
+        ter_base = (
+            os.getenv("SEEDANCE_TERTIARY_BASE_URL") or os.getenv("XINGHE_BASE_URL") or DEFAULT_BASE_URL
+        ).strip()
+        ter_key = (
+            os.getenv("SEEDANCE_TERTIARY_API_KEY") or os.getenv("XINGHE_API_KEY") or ""
+        ).strip()
+        ter_model = (os.getenv("SEEDANCE_TERTIARY_MODEL") or SEEDANCE_AICOST_MODEL).strip()
+        ter_media = os.getenv("SEEDANCE_TERTIARY_MEDIA_MODE") or "base64"
+        _append_seedance_tier(
+            out,
+            name="tertiary",
+            base_url=ter_base,
+            api_key=ter_key,
+            model=ter_model,
+            media_mode=ter_media,
+        )
 
     # 去重：同一 base_url+api_key 只保留首次出现
     seen: set[tuple[str, str]] = set()

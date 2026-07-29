@@ -116,7 +116,11 @@ export function GlobalSearchBar({
   const isHero = variant === "hero"
 
   return (
-    <div ref={rootRef} className={cn("relative w-full", className)}>
+    <div
+      ref={rootRef}
+      data-tutorial-id={instanceId === "default" || instanceId === "header" ? "global-search" : undefined}
+      className={cn("relative w-full", className)}
+    >
       <div className="relative">
         <Search
           className={cn(

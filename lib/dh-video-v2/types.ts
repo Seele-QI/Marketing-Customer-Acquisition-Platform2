@@ -70,6 +70,7 @@ export type DhVideoV2Status = {
 export type DhV2PlanScriptRequest = {
   script: string
   creative_idea: string
+  business_task_id: string
   image_count?: number
   images_base64?: string[]
   has_audio_ref: boolean

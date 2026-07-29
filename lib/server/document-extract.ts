@@ -9,9 +9,11 @@ export { MAX_DOCUMENT_BYTES, MAX_DOCUMENTS } from "@/lib/ip-positioning-upload"
 export const MAX_EXTRACTED_CHARS_PER_FILE = 8_000
 export const MAX_TOTAL_EXTRACTED_CHARS = 20_000
 
-const TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown"])
+const TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".csv"])
 const DOCX_EXTENSIONS = new Set([".docx"])
 const PDF_EXTENSIONS = new Set([".pdf"])
+const XLSX_EXTENSIONS = new Set([".xlsx"])
+const PPTX_EXTENSIONS = new Set([".pptx"])
 
 function getExtension(name: string): string {
   const idx = name.lastIndexOf(".")
@@ -24,7 +26,11 @@ function decodeBase64(base64: string): Buffer {
 }
 
 function trimExtractedText(text: string, maxChars: number): { text: string; truncated: boolean } {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
+  const normalized = text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
   if (normalized.length <= maxChars) {
     return { text: normalized, truncated: false }
   }
@@ -62,6 +68,95 @@ function extractPlainText(buffer: Buffer): string {
   return buffer.toString("utf8")
 }
 
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .trim()
+}
+
+function xmlTagValues(xml: string, tag: string): string[] {
+  const values: string[] = []
+  const pattern = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "gi")
+  for (const match of xml.matchAll(pattern)) {
+    const value = decodeXmlText(match[1] ?? "")
+    if (value) values.push(value)
+  }
+  return values
+}
+
+async function loadZip(buffer: Buffer) {
+  const JSZip = (await import("jszip")).default
+  const zip = await JSZip.loadAsync(buffer)
+  let total = 0
+  for (const entry of Object.values(zip.files)) {
+    const size = (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0
+    if (size > 8 * 1024 * 1024) throw new Error("OOXML 单个内容块解压后过大")
+    total += size
+    if (total > 25 * 1024 * 1024) throw new Error("OOXML 解压后总大小超过安全限制")
+  }
+  return zip
+}
+
+function hasMimeConflict(ext: string, type: string): boolean {
+  if (!type || type === "application/octet-stream") return false
+  const normalized = type.toLowerCase()
+  if (PDF_EXTENSIONS.has(ext)) return normalized !== "application/pdf"
+  if (DOCX_EXTENSIONS.has(ext)) return normalized !== "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  if (XLSX_EXTENSIONS.has(ext)) return normalized !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  if (PPTX_EXTENSIONS.has(ext)) return normalized !== "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  if (TEXT_EXTENSIONS.has(ext)) return !normalized.startsWith("text/") && normalized !== "application/csv"
+  return false
+}
+
+async function extractXlsxText(buffer: Buffer): Promise<string> {
+  const zip = await loadZip(buffer)
+  const sharedEntry = zip.file("xl/sharedStrings.xml")
+  const sharedStrings = sharedEntry
+    ? xmlTagValues(await sharedEntry.async("string"), "si").map(decodeXmlText)
+    : []
+  const sheetEntries = Object.values(zip.files)
+    .filter((entry) => !entry.dir && /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  const sheets: string[] = []
+  for (const entry of sheetEntries) {
+    const xml = await entry.async("string")
+    const rows: string[] = []
+    for (const rowMatch of xml.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/gi)) {
+      const cells: string[] = []
+      for (const cellMatch of (rowMatch[1] ?? "").matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/gi)) {
+        const attributes = cellMatch[1] ?? ""
+        const inner = cellMatch[2] ?? ""
+        const rawValue = xmlTagValues(inner, "v")[0] ?? xmlTagValues(inner, "t")[0] ?? ""
+        const value = /\bt=["']s["']/i.test(attributes)
+          ? sharedStrings[Number(rawValue)] ?? rawValue
+          : rawValue
+        cells.push(value)
+      }
+      if (cells.some(Boolean)) rows.push(cells.join("\t"))
+    }
+    if (rows.length) sheets.push(`${entry.name}\n${rows.join("\n")}`)
+  }
+  return sheets.join("\n\n")
+}
+
+async function extractPptxText(buffer: Buffer): Promise<string> {
+  const zip = await loadZip(buffer)
+  const slides = Object.values(zip.files)
+    .filter((entry) => !entry.dir && /^ppt\/slides\/slide\d+\.xml$/i.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  const pages: string[] = []
+  for (const [index, slide] of slides.entries()) {
+    const text = xmlTagValues(await slide.async("string"), "(?:a:)?t")
+    if (text.length) pages.push(`第 ${index + 1} 页\n${text.join("\n")}`)
+  }
+  return pages.join("\n\n")
+}
+
 export async function extractDocumentText(
   file: UploadedDocumentPayload,
 ): Promise<ExtractedDocument> {
@@ -87,6 +182,9 @@ export async function extractDocumentText(
   }
 
   const ext = getExtension(file.name)
+  if (hasMimeConflict(ext, file.type)) {
+    return { ...base, text: "", truncated: false, error: "文件扩展名与 MIME 类型不一致" }
+  }
   try {
     let raw = ""
     if (PDF_EXTENSIONS.has(ext) || file.type === "application/pdf") {
@@ -98,6 +196,16 @@ export async function extractDocumentText(
       raw = await extractDocxText(buffer)
     } else if (TEXT_EXTENSIONS.has(ext) || file.type.startsWith("text/")) {
       raw = extractPlainText(buffer)
+    } else if (
+      XLSX_EXTENSIONS.has(ext) ||
+      file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ) {
+      raw = await extractXlsxText(buffer)
+    } else if (
+      PPTX_EXTENSIONS.has(ext) ||
+      file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) {
+      raw = await extractPptxText(buffer)
     } else if (ext === ".doc") {
       return {
         ...base,
@@ -110,7 +218,7 @@ export async function extractDocumentText(
         ...base,
         text: "",
         truncated: false,
-        error: "暂不支持该文件格式，请上传 Word/PDF/TXT/MD",
+        error: "暂不支持该文件格式，请上传 Word/PDF/TXT/MD/CSV/XLSX/PPTX",
       }
     }
 

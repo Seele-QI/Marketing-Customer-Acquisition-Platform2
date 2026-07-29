@@ -1,5 +1,7 @@
 import crypto from "node:crypto"
 
+import type { BusinessTaskBilling } from "@/lib/credit/business-task"
+
 import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
 import { getCreditBalance } from "@/lib/api/with-auth"
 import {
@@ -39,7 +41,8 @@ export type CompleteTextBilling = {
   userId: number
   refIdPrefix?: string
   cookieHeader?: string
-  provider: LlmProviderId
+  provider: string
+  businessTask?: BusinessTaskBilling
 }
 
 export type CompleteTextParams = {
@@ -289,7 +292,7 @@ async function invokeProvider(
   }
 }
 
-async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<void> {
+export async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<void> {
   if (!billing.cookieHeader) {
     const err = new Error("缺少 cookieHeader，无法扣费")
     ;(err as Error & { statusCode?: number }).statusCode = 500
@@ -319,6 +322,7 @@ async function settleGeoArticleBilling(billing: CompleteTextBilling): Promise<vo
       billingKey: "geo.article",
       params: { provider: billing.provider },
       refId,
+      businessTask: billing.businessTask,
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   DH_VIDEO_TASK_TIMEOUT_MS,
+  DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS,
   getTaskHardTimeoutMs,
 } from "../lib/task-runtime/constants.ts"
 import {
@@ -11,6 +12,10 @@ import {
   loadRuntimeStore,
   saveRuntimeStore,
 } from "../lib/task-runtime/store.ts"
+import { getTaskRuntime, resetTaskRuntimeForTests } from "../lib/task-runtime/runtime.ts"
+import { queryDhVideoV2Status } from "../lib/dh-video-v2/api.ts"
+import { dhVideoEconomyAdapter } from "../lib/task-runtime/adapters/dh-video-economy.ts"
+import type { RuntimeTask } from "../lib/task-runtime/types.ts"
 import { HISTORY_MAX_AGE_MS } from "../lib/video/types.ts"
 
 function createMemoryStorage(seed?: Record<string, string>) {
@@ -113,5 +118,103 @@ test("14-day cutoff filters old history records", () => {
 test("dh-video-v2 hard timeout is 50 minutes", () => {
   assert.equal(DH_VIDEO_TASK_TIMEOUT_MS, 50 * 60 * 1000)
   assert.equal(getTaskHardTimeoutMs("dh-video-v2"), DH_VIDEO_TASK_TIMEOUT_MS)
+  assert.equal(DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS, 65 * 60 * 1000)
+  assert.equal(getTaskHardTimeoutMs("dh-video-economy"), DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS)
   assert.equal(getTaskHardTimeoutMs("image-video"), null)
+})
+
+test("starting an already-started runtime repairs a lost poll timer", async () => {
+  const storage = createMemoryStorage()
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window")
+  const localStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage")
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch")
+
+  Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true })
+  let polls = 0
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: async () => {
+      polls += 1
+      return Response.json({
+        task_id: "dhv2_timer_repair",
+        status: "completed",
+        progress: 100,
+        result_url: "/static/video-postprocess/dh-v2/dhv2_timer_repair/final.mp4",
+        segment_count: 1,
+        segments_completed: 1,
+        segments: [{ index: 0, status: "completed" }],
+      })
+    },
+  })
+
+  try {
+    resetTaskRuntimeForTests()
+    const runtime = getTaskRuntime()
+    runtime.register({ kind: "dh-video-v2", taskId: "dhv2_timer_repair" })
+
+    // Reproduce a timer disappearing while the singleton remains marked started.
+    ;(runtime as unknown as { clearTimer(kind: string): void }).clearTimer("dh-video-v2")
+    runtime.start()
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(polls, 1)
+    assert.equal(runtime.getTask("dh-video-v2")?.status, "success")
+  } finally {
+    resetTaskRuntimeForTests()
+    if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor)
+    else delete (globalThis as { window?: unknown }).window
+    if (localStorageDescriptor) Object.defineProperty(globalThis, "localStorage", localStorageDescriptor)
+    else delete (globalThis as { localStorage?: unknown }).localStorage
+    if (fetchDescriptor) Object.defineProperty(globalThis, "fetch", fetchDescriptor)
+    else delete (globalThis as { fetch?: unknown }).fetch
+  }
+})
+
+test("dh-video-v2 status polling aborts a stalled request", async () => {
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch")
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+      }),
+  })
+
+  try {
+    await assert.rejects(
+      queryDhVideoV2Status("dhv2_stalled", { timeoutMs: 10 }),
+      /状态查询超时/,
+    )
+  } finally {
+    if (fetchDescriptor) Object.defineProperty(globalThis, "fetch", fetchDescriptor)
+    else delete (globalThis as { fetch?: unknown }).fetch
+  }
+})
+
+test("dh-video-economy transient polling failures are delegated to runtime retry", async () => {
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch")
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: async () => {
+      throw new TypeError("fetch failed")
+    },
+  })
+
+  const task: RuntimeTask = {
+    kind: "dh-video-economy",
+    taskId: "dhe_transient_failure",
+    status: "running",
+    progress: 3,
+    stageLabel: "校验素材",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+
+  try {
+    await assert.rejects(dhVideoEconomyAdapter.poll(task), /fetch failed/)
+  } finally {
+    if (fetchDescriptor) Object.defineProperty(globalThis, "fetch", fetchDescriptor)
+    else delete (globalThis as { fetch?: unknown }).fetch
+  }
 })

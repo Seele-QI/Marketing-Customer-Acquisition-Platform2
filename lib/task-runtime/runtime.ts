@@ -3,6 +3,7 @@
  * 单例，与 React 树解耦；Provider 仅负责挂载与 toast。
  */
 import { dhVideoV2Adapter } from "@/lib/task-runtime/adapters/dh-video-v2"
+import { dhVideoEconomyAdapter } from "@/lib/task-runtime/adapters/dh-video-economy"
 import { imageVideoAdapter, mashupAdapter } from "@/lib/task-runtime/adapters/clip"
 import { extractAdapter } from "@/lib/task-runtime/adapters/extract"
 import { promoVideoAdapter } from "@/lib/task-runtime/adapters/promo"
@@ -27,6 +28,7 @@ type Listener = (event: RuntimeEvent) => void
 
 const adapters: Record<TaskKind, TaskAdapter> = {
   "dh-video-v2": dhVideoV2Adapter,
+  "dh-video-economy": dhVideoEconomyAdapter,
   "image-video": imageVideoAdapter,
   mashup: mashupAdapter,
   "promo-video": promoVideoAdapter,
@@ -44,16 +46,26 @@ class TaskRuntime {
   private started = false
 
   start(): void {
-    if (this.started) return
-    this.started = true
-    this.tasks = loadRuntimeStore()
+    if (!this.started) {
+      this.started = true
+      this.tasks = loadRuntimeStore()
+    }
+    this.ensureRunningTaskPolls()
+    this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
+  }
+
+  private ensureRunningTaskPolls(): void {
     for (const kind of ALL_TASK_KINDS) {
       const t = this.tasks[kind]
-      if (t?.status === "running" && t.taskId) {
+      if (
+        t?.status === "running" &&
+        t.taskId &&
+        !this.timers.has(kind) &&
+        !this.inflight.has(kind)
+      ) {
         this.schedulePoll(kind, 0)
       }
     }
-    this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
   }
 
   stop(): void {

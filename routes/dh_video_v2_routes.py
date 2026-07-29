@@ -19,6 +19,14 @@ router = APIRouter()
 logger = logging.getLogger("dh_video_v2_routes")
 
 _dh_video_v2_task_store: dict[str, dict[str, Any]] = {}
+_TERMINAL_TASK_STATUSES = {
+    "completed",
+    "failed",
+    "partial_failed",
+    "timeout",
+    "expired",
+    "cancelled",
+}
 
 
 def _new_task_id() -> str:
@@ -62,6 +70,16 @@ class DhV2RetrySegmentRequest(BaseModel):
 def _patch_task(task_id: str, **fields) -> None:
     stored = _dh_video_v2_task_store.get(task_id) or {}
     _dh_video_v2_task_store[task_id] = {**stored, **fields}
+
+
+@router.get("/api/dh-video-v2/runtime-state")
+async def dh_video_v2_runtime_state():
+    active_count = sum(
+        1
+        for task in _dh_video_v2_task_store.values()
+        if str(task.get("status") or "").lower() not in _TERMINAL_TASK_STATUSES
+    )
+    return {"active": active_count > 0, "active_count": active_count}
 
 
 def _public_base_url(public_base: str) -> str:
@@ -487,6 +505,7 @@ async def dh_video_v2_submit(req: Request):
     body = await req.json()
     submit_req = DhV2SubmitRequest(**body)
     task_id = _new_task_id()
+    business_task_id = (submit_req.client_task_id or task_id).strip()
     public_base = str(req.base_url).rstrip("/")
 
     active_segs = [s for s in submit_req.segments if str(s.dialogue or "").strip()]
@@ -502,6 +521,9 @@ async def dh_video_v2_submit(req: Request):
             ref_id=f"{task_id}:video",
             segment_count=segment_count,
             provider=submit_req.provider,
+            business_task_id=business_task_id,
+            business_type="video_digital_human",
+            billing_stage="video_generation",
         )
     except CreditError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
@@ -518,6 +540,7 @@ async def dh_video_v2_submit(req: Request):
         "segments": segment_states,
         "error": "",
         "provider": submit_req.provider,
+        "business_task_id": business_task_id,
         "created_at": time.time(),
     }
 
@@ -552,11 +575,15 @@ async def dh_video_v2_retry_segment(req: Request):
 
     ref_id = f"{task_id}:retry:{retry_req.segmentIndex}"
     provider = str(task.get("provider") or "seedance")
+    business_task_id = str(task.get("business_task_id") or task_id)
     try:
         consume_dh_v2_video_retry(
             user_id=user.id,
             ref_id=ref_id,
             provider=provider,
+            business_task_id=business_task_id,
+            business_type="video_digital_human",
+            billing_stage="video_retry",
             note=f"dh-v2 重试段 #{retry_req.segmentIndex + 1}",
         )
     except CreditError as e:

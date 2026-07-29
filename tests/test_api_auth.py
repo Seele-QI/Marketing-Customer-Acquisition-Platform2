@@ -3,6 +3,8 @@ import importlib
 import os
 import sqlite3
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -107,6 +109,28 @@ def test_consume_with_idempotency_single_call(tmp_db):
     assert bal == 10000 - 3
 
 
+def test_poster_image_scene_costs_twenty_credits(tmp_db):
+    auth_mod, _, uid = tmp_db
+    assert auth_mod.SCENE_COST_TABLE["poster_image"] == 20
+    balance = auth_mod.consume_with_idempotency(
+        user_id=uid,
+        scene="poster_image",
+        ref_id="poster-image-1",
+    )
+    assert balance == 10000 - 20
+
+
+def test_image_creation_scene_costs_twenty_credits(tmp_db):
+    auth_mod, _, uid = tmp_db
+    assert auth_mod.SCENE_COST_TABLE["image_creation"] == 20
+    balance = auth_mod.consume_with_idempotency(
+        user_id=uid,
+        scene="image_creation",
+        ref_id="image-creation-1",
+    )
+    assert balance == 10000 - 20
+
+
 def test_consume_ai_llm_variable_cost(tmp_db):
     auth_mod, credit_mod, uid = tmp_db
     bal = auth_mod.consume_ai_llm(user_id=uid, ref_id="llm-1", cost=30)
@@ -129,6 +153,42 @@ def test_consume_with_idempotency_duplicate_ref(tmp_db):
     bal1 = auth_mod.consume_with_idempotency(user_id=uid, scene="ai_chat", ref_id="r-dup")
     bal2 = auth_mod.consume_with_idempotency(user_id=uid, scene="ai_chat", ref_id="r-dup")
     assert bal1 == bal2, "同一 ref_id 应只扣一次"
+
+
+def test_consume_with_idempotency_records_business_task_context(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    auth_mod.consume_with_idempotency(
+        user_id=uid,
+        scene="dh_v2_plan_script",
+        ref_id="video-context:plan",
+        business_task_id="video-context",
+        business_type="video_digital_human",
+        billing_stage="script",
+    )
+
+    task = next(
+        item
+        for item in credit_mod.list_display_ledger(uid, 20)
+        if item.get("business_task_id") == "video-context"
+    )
+    assert task["delta"] == -20
+    assert task["breakdown"] == [
+        {"stage": "script", "label": "口播文案", "amount": 20}
+    ]
+
+
+def test_consume_rejects_invalid_business_task_context(tmp_db):
+    auth_mod, _, uid = tmp_db
+    with pytest.raises(HTTPException) as exc:
+        auth_mod.consume_with_idempotency(
+            user_id=uid,
+            scene="dh_v2_plan_script",
+            ref_id="invalid-context",
+            business_task_id="video-1",
+            business_type="not-supported",
+            billing_stage="script",
+        )
+    assert exc.value.status_code == 400
 
 
 def test_consume_rejects_unknown_scene(tmp_db):
@@ -155,6 +215,32 @@ def test_safe_refund_is_idempotent(tmp_db):
     after_refund2 = credit_mod.get_account(uid).balance
     assert after_refund - after_consume == 3
     assert after_refund == after_refund2, "重复退款应幂等"
+
+
+def test_safe_refund_nets_against_the_original_business_task(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    auth_mod.consume_with_idempotency(
+        user_id=uid,
+        scene="dh_v2_plan_script",
+        ref_id="video-refund:plan",
+        business_task_id="video-refund",
+        business_type="video_digital_human",
+        billing_stage="script",
+    )
+
+    auth_mod.safe_refund(
+        user_id=uid,
+        scene="dh_v2_plan_script",
+        ref_id="video-refund:plan",
+        reason="plan failed",
+    )
+
+    task = next(
+        item
+        for item in credit_mod.list_display_ledger(uid, 20)
+        if item.get("business_task_id") == "video-refund"
+    )
+    assert task["delta"] == 0
 
 
 def test_assert_task_owner_blocks_other_user(tmp_db):
@@ -237,6 +323,8 @@ def test_geo_scenes_in_cost_table(tmp_db):
         "geo_authority_link",
         "dh_v2_plan_script",
         "dh_v2_video_retry",
+        "dh_economy_video_segment",
+        "dh_economy_video_retry",
         "promo_storyboard",
         "copy_extract",
         "video_image_to_video",
@@ -277,3 +365,62 @@ def test_consume_dh_v2_video_segments_rejects_invalid_cost(tmp_db):
             cost=451,
         )
     assert exc.value.status_code == 400
+
+
+def test_consume_economy_video_billing_is_idempotent(tmp_db):
+    auth_mod, credit_mod, uid = tmp_db
+    before = credit_mod.get_account(uid).balance
+
+    first = auth_mod.consume_billing_event(
+        user_id=uid,
+        billing_key="video.dh_economy_segment",
+        params={"duration_seconds": 36.0, "segment_count": 2},
+        ref_id="economy-1:video",
+    )
+    second = auth_mod.consume_billing_event(
+        user_id=uid,
+        billing_key="video.dh_economy_segment",
+        params={"duration_seconds": 36.0, "segment_count": 2},
+        ref_id="economy-1:video",
+    )
+
+    assert first == second
+    assert first[1:] == (500, "dh_economy_video_segment")
+    assert credit_mod.get_account(uid).balance == before - 500
+
+
+def test_hybrid_economy_billing_forwards_dynamic_params_to_cloud(tmp_db):
+    auth_mod, _, uid = tmp_db
+    request = SimpleNamespace(cookies={"session_id": "test-session"})
+
+    with (
+        patch("lib.cloud_client.is_cloud_hybrid_mode", return_value=True),
+        patch("lib.request_context.get_current_request", return_value=request),
+        patch(
+            "lib.cloud_client.consume_billing_remote",
+            create=True,
+            return_value=(9000, 1000, "dh_economy_video_segment"),
+        ) as remote_consume,
+        patch.object(auth_mod, "consume_with_idempotency") as legacy_consume,
+    ):
+        result = auth_mod.consume_billing_event(
+            user_id=uid,
+            billing_key="video.dh_economy_segment",
+            params={"duration_seconds": 61.0, "segment_count": 4},
+            ref_id="economy-hybrid-61s:video",
+            business_task_id="economy-hybrid-61s",
+            business_type="dh-video-economy",
+            billing_stage="video",
+        )
+
+    assert result == (9000, 1000, "dh_economy_video_segment")
+    remote_consume.assert_called_once_with(
+        request,
+        billing_key="video.dh_economy_segment",
+        params={"duration_seconds": 61.0, "segment_count": 4},
+        ref_id="economy-hybrid-61s:video",
+        business_task_id="economy-hybrid-61s",
+        business_type="dh-video-economy",
+        billing_stage="video",
+    )
+    legacy_consume.assert_not_called()

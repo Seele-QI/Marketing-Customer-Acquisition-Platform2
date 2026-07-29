@@ -21,21 +21,43 @@ const PLAN_READY_INTERVAL_MS = 1_500
 
 const JSON_HEADERS = { "Content-Type": "application/json" }
 const FETCH_OPTS: RequestInit = { credentials: "include" }
+const STATUS_POLL_TIMEOUT_MS = 20_000
 
 const NETWORK_HINT =
   typeof window !== "undefined" && window.electronAPI?.isElectron
     ? "无法连接本地服务，请稍候重试；若持续失败请从托盘打开日志文件夹查看 next.log"
     : "无法连接后端服务，请确认已启动 FastAPI（pnpm dev:all 或 uvicorn main:app --port 8000）"
 
-async function dhV2Fetch(path: string, init?: RequestInit): Promise<Response> {
+async function dhV2Fetch(
+  path: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<Response> {
+  const timeoutController = timeoutMs && !init?.signal ? new AbortController() : null
+  let timedOut = false
+  const timeoutId = timeoutController
+    ? setTimeout(() => {
+        timedOut = true
+        timeoutController.abort()
+      }, timeoutMs)
+    : null
   try {
-    return await fetch(path, { ...FETCH_OPTS, ...init })
+    return await fetch(path, {
+      ...FETCH_OPTS,
+      ...init,
+      ...(timeoutController ? { signal: timeoutController.signal } : {}),
+    })
   } catch (e) {
+    if (timedOut) {
+      throw new Error("视频任务状态查询超时，将自动重试")
+    }
     const msg = e instanceof Error ? e.message : String(e)
-    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    if (/failed to fetch|fetch failed|networkerror|load failed/i.test(msg)) {
       throw new Error(NETWORK_HINT)
     }
     throw e
+  } finally {
+    if (timeoutId != null) clearTimeout(timeoutId)
   }
 }
 
@@ -123,6 +145,20 @@ export async function ensureDhVideoV2PlanScriptReady(options?: {
   const onStatus = options?.onStatus
   const isElectron = Boolean(window.electronAPI?.isElectron)
 
+  // 绝大多数请求本地配置已经可用。先探测可避免每次创作都走一次云端同步，
+  // 也避免同步命中新版本时重启本地服务、打断当前请求。
+  try {
+    const current = await queryDhVideoV2PlanScriptReady()
+    if (current.ready) return current
+    if (!isElectron) {
+      throw new Error(
+        "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。",
+      )
+    }
+  } catch (e) {
+    if (!isElectron) throw e
+  }
+
   if (isElectron && window.electronAPI?.syncConfig) {
     onStatus?.("正在同步云端配置…")
     try {
@@ -132,7 +168,7 @@ export async function ensureDhVideoV2PlanScriptReady(options?: {
     }
   }
 
-  const deadline = Date.now() + (isElectron ? PLAN_READY_POLL_MS : 0)
+  const deadline = Date.now() + PLAN_READY_POLL_MS
   for (;;) {
     try {
       const ready = await queryDhVideoV2PlanScriptReady()
@@ -207,9 +243,14 @@ export async function submitDhVideoV2(
   return { ...data, task_id: taskId }
 }
 
-export async function queryDhVideoV2Status(taskId: string): Promise<DhVideoV2Status> {
+export async function queryDhVideoV2Status(
+  taskId: string,
+  options?: { timeoutMs?: number },
+): Promise<DhVideoV2Status> {
   const r = await dhV2Fetch(
     `/api/dh-video-v2/status?taskId=${encodeURIComponent(taskId)}`,
+    undefined,
+    options?.timeoutMs ?? STATUS_POLL_TIMEOUT_MS,
   )
   const data = (await r.json().catch(() => ({}))) as DhVideoV2Status &
     Record<string, unknown> & { detail?: unknown; error?: { message?: string } }

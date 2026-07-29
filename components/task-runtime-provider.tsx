@@ -21,6 +21,7 @@ type Props = {
 
 const KIND_TO_VIEW: Record<TaskKind, string> = {
   "dh-video-v2": "数字人视频创作（新）",
+  "dh-video-economy": "数字人视频创作（经济版）",
   "image-video": "图文视频",
   mashup: "视频混剪",
   "promo-video": "宣传视频",

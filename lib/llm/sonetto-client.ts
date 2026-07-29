@@ -1,8 +1,23 @@
 import { getSonettoModel, type SonettoProvider } from "@/lib/llm/model-registry"
 import { parseOpenAiUsage, type LlmUsage } from "@/lib/llm/pricing"
+import {
+  diagnoseNewApiPrimaryMisconfig,
+  readOptionalNewApiTier,
+} from "@/lib/llm/provider-env"
+import { listSyncedLlmOpenai } from "@/lib/llm/synced-providers"
 import { readServerEnv } from "@/lib/server-env"
 
 const DEFAULT_NEWAPI_BASE = "https://www.aicost.xyz"
+
+/**
+ * 第三方中转（NewAPI / GPT·Claude）。
+ * 默认启用（有三要素即可）；仅当 NEWAPI_ENABLED=0/false/off 时强制关闭。
+ */
+export function isNewApiRelayEnabled(): boolean {
+  const raw = readServerEnv("NEWAPI_ENABLED").toLowerCase()
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false
+  return true
+}
 
 export type SonettoContentPart =
   | { type: "text"; text: string }
@@ -18,7 +33,7 @@ export type SonettoChatResult =
   | { ok: false; status: number; detail: string }
 
 export type NewApiRelayEndpoint = {
-  name: "primary" | "secondary" | "tertiary"
+  name: string
   baseUrl: string
   apiKey: string
   gptModel?: string
@@ -37,28 +52,68 @@ function normalizeNewApiBaseUrl(raw: string): string {
 }
 
 function relayTier(
-  name: NewApiRelayEndpoint["name"],
+  name: string,
   baseEnv: string,
   keyEnv: string,
   gptEnv: string,
   claudeEnv: string,
 ): NewApiRelayEndpoint | null {
-  const baseUrl = readServerEnv(baseEnv)
-  const apiKey = readServerEnv(keyEnv)
-  if (!baseUrl || !apiKey) return null
-  const gptModel = readServerEnv(gptEnv)
-  const claudeModel = readServerEnv(claudeEnv)
+  const tier = readOptionalNewApiTier({
+    label: `NewAPI ${name}`,
+    baseUrl: readServerEnv(baseEnv),
+    apiKey: readServerEnv(keyEnv),
+    gptModel: readServerEnv(gptEnv),
+    claudeModel: readServerEnv(claudeEnv),
+    baseUrlEnv: baseEnv,
+    apiKeyEnv: keyEnv,
+    gptModelEnv: gptEnv,
+    claudeModelEnv: claudeEnv,
+  })
+  if (!tier) return null
   return {
     name,
-    baseUrl: normalizeNewApiBaseUrl(baseUrl),
-    apiKey,
-    ...(gptModel ? { gptModel } : {}),
-    ...(claudeModel ? { claudeModel } : {}),
+    baseUrl: normalizeNewApiBaseUrl(tier.baseUrl),
+    apiKey: tier.apiKey,
+    ...(tier.gptModel ? { gptModel: tier.gptModel } : {}),
+    ...(tier.claudeModel ? { claudeModel: tier.claudeModel } : {}),
   }
 }
 
-/** 首选 → 次选 → 三选 NewAPI 中转（去重 base+key） */
+/** 从云端结构化 providers 构建任意数量 openai_chat 中转（同 URL+Key 合并 GPT/Claude） */
+function buildRelaysFromSyncedOpenai(): NewApiRelayEndpoint[] {
+  const rows = listSyncedLlmOpenai()
+  if (!rows.length) return []
+  const buckets = new Map<string, NewApiRelayEndpoint>()
+  for (const p of rows) {
+    const baseUrl = normalizeNewApiBaseUrl(p.base_url)
+    const apiKey = p.api_key.trim()
+    if (!baseUrl || !apiKey) continue
+    const sig = `${baseUrl}|${apiKey}`
+    let ep = buckets.get(sig)
+    if (!ep) {
+      ep = {
+        name: p.name || `openai_${buckets.size + 1}`,
+        baseUrl,
+        apiKey,
+      }
+      buckets.set(sig, ep)
+    }
+    const model = (p.model || "").trim()
+    if (!model) continue
+    if (model.toLowerCase().includes("claude")) {
+      if (!ep.claudeModel) ep.claudeModel = model
+    } else if (!ep.gptModel) {
+      ep.gptModel = model
+    }
+  }
+  return Array.from(buckets.values()).filter((e) => e.gptModel || e.claudeModel)
+}
+
+/** 首选 → 次选 → …（结构化配置优先；否则回退 env 三档） */
 export function listNewApiRelayEndpoints(): NewApiRelayEndpoint[] {
+  const fromSynced = buildRelaysFromSyncedOpenai()
+  if (fromSynced.length) return fromSynced
+
   const candidates: NewApiRelayEndpoint[] = []
   const primary = relayTier(
     "primary",
@@ -101,12 +156,18 @@ export function listNewApiRelayEndpoints(): NewApiRelayEndpoint[] {
 function resolveRelayModelId(
   relay: NewApiRelayEndpoint,
   provider: SonettoProvider,
-  requestedModelId: string,
-): string {
+): string | null {
   if (provider === "sonetto_gpt") {
-    return relay.gptModel || requestedModelId
+    return relay.gptModel?.trim() || null
   }
-  return relay.claudeModel || requestedModelId
+  return relay.claudeModel?.trim() || null
+}
+
+function relaysForProvider(
+  provider: SonettoProvider,
+  relays: NewApiRelayEndpoint[],
+): NewApiRelayEndpoint[] {
+  return relays.filter((r) => Boolean(resolveRelayModelId(r, provider)))
 }
 
 function shouldFailoverToNextRelay(status: number): boolean {
@@ -124,7 +185,7 @@ export function getSonettoBaseUrl(): string {
 }
 
 export function getSonettoApiKey(provider: SonettoProvider): string {
-  const relays = listNewApiRelayEndpoints()
+  const relays = relaysForProvider(provider, listNewApiRelayEndpoints())
   if (relays.length) return relays[0].apiKey
   const unified = readServerEnv("NEWAPI_KEY")
   if (unified) return unified
@@ -133,8 +194,8 @@ export function getSonettoApiKey(provider: SonettoProvider): string {
 }
 
 export function isSonettoProviderConfigured(provider: SonettoProvider): boolean {
-  if (listNewApiRelayEndpoints().length > 0) return true
-  return Boolean(getSonettoApiKey(provider))
+  if (!isNewApiRelayEnabled()) return false
+  return relaysForProvider(provider, listNewApiRelayEndpoints()).length > 0
 }
 
 /** aicost / NewAPI 默认 280s；可通过 NEWAPI_TIMEOUT_MS 覆盖 */
@@ -219,26 +280,27 @@ export async function sonettoChatCompletion(input: {
   timeoutMs?: number
   temperature?: number
 }): Promise<SonettoChatResult> {
+  if (!isNewApiRelayEnabled()) {
+    return {
+      ok: false,
+      status: 503,
+      detail:
+        "第三方 NewAPI（GPT/Claude）中转已关闭（NEWAPI_ENABLED=0）。请改用 DeepSeek / 豆包，或移除该开关并配置三要素",
+    }
+  }
+
   const model = getSonettoModel(input.modelId)
   if (!model) {
     return { ok: false, status: 400, detail: `不支持的模型: ${input.modelId}` }
   }
 
-  const relays = listNewApiRelayEndpoints()
+  const need = model.provider === "sonetto_gpt" ? "gpt" : "claude"
+  const relays = relaysForProvider(model.provider, listNewApiRelayEndpoints())
   if (!relays.length) {
-    const apiKey = getSonettoApiKey(model.provider)
-    if (!apiKey) {
-      return {
-        ok: false,
-        status: 503,
-        detail: "未配置 NEWAPI_KEY（或 SONETTO_GPT_API_KEY / SONETTO_CLAUDE_API_KEY）",
-      }
-    }
-    relays.push({
-      name: "primary",
-      baseUrl: getSonettoBaseUrl(),
-      apiKey,
-    })
+    const detail =
+      diagnoseNewApiPrimaryMisconfig(need) ||
+      "未配置可用的 NewAPI 渠道（须同时配置 URL + Key + Model）"
+    return { ok: false, status: 503, detail }
   }
 
   const timeoutMs = input.timeoutMs ?? sonettoTimeoutMs()
@@ -246,7 +308,8 @@ export async function sonettoChatCompletion(input: {
 
   for (let i = 0; i < relays.length; i++) {
     const relay = relays[i]
-    const modelId = resolveRelayModelId(relay, model.provider, input.modelId)
+    const modelId = resolveRelayModelId(relay, model.provider)
+    if (!modelId) continue
     const result = await postSonettoChat(relay, { ...input, modelId, timeoutMs })
     if (result.ok) {
       return { ok: true, text: result.text, usage: result.usage, relay: result.relay }
@@ -275,32 +338,47 @@ export function buildSonettoStreamRequest(input: {
   messages: SonettoMessage[]
   maxTokens?: number
 }): { ok: true; setup: SonettoStreamSetup } | { ok: false; status: number; detail: string } {
+  if (!isNewApiRelayEnabled()) {
+    return {
+      ok: false,
+      status: 503,
+      detail:
+        "第三方 NewAPI（GPT/Claude）中转已关闭（NEWAPI_ENABLED=0）。请改用 DeepSeek / 豆包，或移除该开关并配置三要素",
+    }
+  }
+
   const model = getSonettoModel(input.modelId)
   if (!model) {
     return { ok: false, status: 400, detail: `不支持的模型: ${input.modelId}` }
   }
 
-  const relays = listNewApiRelayEndpoints()
+  const need = model.provider === "sonetto_gpt" ? "gpt" : "claude"
+  const relays = relaysForProvider(model.provider, listNewApiRelayEndpoints())
   const relay = relays[0]
-  const apiKey = relay?.apiKey || getSonettoApiKey(model.provider)
-  if (!apiKey) {
+  if (!relay) {
     return {
       ok: false,
       status: 503,
-      detail: "未配置 NEWAPI_KEY（或 SONETTO_GPT_API_KEY / SONETTO_CLAUDE_API_KEY）",
+      detail:
+        diagnoseNewApiPrimaryMisconfig(need) ||
+        "未配置可用的 NewAPI 渠道（须同时配置 URL + Key + Model）",
     }
   }
 
-  const baseUrl = relay?.baseUrl || getSonettoBaseUrl()
-  const modelId = relay
-    ? resolveRelayModelId(relay, model.provider, input.modelId)
-    : input.modelId
+  const modelId = resolveRelayModelId(relay, model.provider)
+  if (!modelId) {
+    return {
+      ok: false,
+      status: 503,
+      detail: diagnoseNewApiPrimaryMisconfig(need) || "NewAPI 缺少对应 Model",
+    }
+  }
 
   return {
     ok: true,
     setup: {
-      url: `${baseUrl}/chat/completions`,
-      authorization: `Bearer ${apiKey}`,
+      url: `${relay.baseUrl}/chat/completions`,
+      authorization: `Bearer ${relay.apiKey}`,
       requestBody: {
         model: modelId,
         messages: input.messages,
@@ -309,7 +387,7 @@ export function buildSonettoStreamRequest(input: {
         ...(input.maxTokens != null ? { max_tokens: input.maxTokens } : {}),
       },
       timeoutMs: sonettoTimeoutMs(),
-      relay: relay?.name,
+      relay: relay.name,
     },
   }
 }

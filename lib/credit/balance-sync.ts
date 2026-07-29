@@ -1,6 +1,12 @@
 /** 全局积分余额变更事件名 */
 export const CREDIT_BALANCE_CHANGED_EVENT = "credit-balance-changed"
 
+export type MemorySseMetadata = {
+  status: "loaded" | "unavailable"
+  count: number
+  items: Array<Record<string, unknown>>
+}
+
 export function formatCreditPoints(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value)
 }
@@ -17,6 +23,7 @@ function handleSseDataPayload(
   eventType: string,
   data: string,
   onDelta: (delta: string) => void,
+  onMemory?: (memory: MemorySseMetadata) => void,
 ): "done" | "continue" {
   if (data === "[DONE]") return "done"
 
@@ -28,6 +35,22 @@ function handleSseDataPayload(
       }
     } catch {
       /* ignore malformed billing event */
+    }
+    return "continue"
+  }
+
+  if (eventType === "memory") {
+    try {
+      const parsed = JSON.parse(data) as Partial<MemorySseMetadata>
+      if (
+        (parsed.status === "loaded" || parsed.status === "unavailable") &&
+        typeof parsed.count === "number" &&
+        Array.isArray(parsed.items)
+      ) {
+        onMemory?.({ status: parsed.status, count: parsed.count, items: parsed.items })
+      }
+    } catch {
+      /* ignore malformed memory metadata */
     }
     return "continue"
   }
@@ -58,6 +81,7 @@ export async function consumeBillingAwareSseStream(
   response: Response,
   onDelta: (delta: string) => void,
   signal?: AbortSignal,
+  onMemory?: (memory: MemorySseMetadata) => void,
 ): Promise<void> {
   const reader = response.body?.getReader()
   if (!reader) throw new Error("响应体不可读")
@@ -90,7 +114,7 @@ export async function consumeBillingAwareSseStream(
       }
       if (!line.startsWith("data:")) continue
       const data = line.slice(5).trim()
-      const status = handleSseDataPayload(currentEvent, data, onDelta)
+      const status = handleSseDataPayload(currentEvent, data, onDelta, onMemory)
       if (status === "done") return
     }
   }

@@ -22,6 +22,8 @@ import {
   loadDraft,
   saveDraft,
 } from "@/lib/workflow-draft-store"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
+import { guardDemoAction } from "@/lib/tutorial/demo-mode"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -142,6 +144,12 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
 
   /* ── Submit ── */
   const handleExtract = React.useCallback(async () => {
+    if (!guardDemoAction("copywriting-extract")) {
+      toast({
+        description: "演示模式已拦截真实提取。请在教程中心查看已保存示例。",
+      })
+      return
+    }
     const trimmed = url.trim()
     if (!trimmed) {
       toast({ description: "请粘贴视频链接或分享口令" })
@@ -229,11 +237,14 @@ export default function CopywritingExtractView({ onJumpToVideo, onAiRewrite }: P
     <main className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-10">
         {/* ── Header ── */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight">文案提取</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">
-            粘贴视频链接或分享口令，自动识别链接并提取口播文案。优先使用平台自带字幕，无字幕时通过语音识别提取。
-          </p>
+        <div className="mb-8 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">文案提取</h1>
+            <p className="mt-2 text-[14px] text-muted-foreground">
+              粘贴视频链接或分享口令，自动识别链接并提取口播文案。优先使用平台自带字幕，无字幕时通过语音识别提取。
+            </p>
+          </div>
+          <ModuleTutorialButton view="文案提取" />
         </div>
 
         {/* ── Input Card ── */}

@@ -4,23 +4,20 @@ import { NextResponse } from "next/server"
 
 import { withAuth } from "@/lib/api/with-auth"
 import { getServerFastapiBase } from "@/lib/fastapi-base"
-import { expandJobs } from "@/lib/geo/article-batch-jobs"
+import { completeCloudArticleText } from "@/lib/geo/article-cloud-completion"
+import { expandMatrixJobs } from "@/lib/geo/article-batch-jobs"
 import { generateArticlesConcurrent } from "@/lib/geo/article-generate"
 import type { BatchGenerateEvent } from "@/lib/geo/article-types"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
+import { viralSkillIdsForPlatforms } from "@/lib/geo/matrix-platforms"
+import { settleGeoArticleBilling, type CompleteTextParams } from "@/lib/geo/llm/router"
+import { listCopywritingProviderCandidates } from "@/lib/llm/copywriting-router"
 import type { MatrixProject } from "@/lib/geo/matrix-types"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
-const VALID_PROVIDERS = new Set<LlmProviderId>([
-  "deepseek",
-  "doubao",
-  "kimi",
-  "gpt",
-  "claude",
-  "gemini",
-])
+const CLOUD_MODEL_NOT_READY = "CLOUD_MODEL_NOT_READY"
+const CLOUD_MODEL_UNAVAILABLE = "CLOUD_MODEL_UNAVAILABLE"
 
 async function fetchProject(
   projectId: string,
@@ -53,61 +50,59 @@ async function handleBatchGenerate(
     return NextResponse.json({ error: "无效 JSON" }, { status: 400 })
   }
 
-  const provider = String(body.provider ?? "deepseek") as LlmProviderId
-  if (!VALID_PROVIDERS.has(provider)) {
-    return NextResponse.json({ error: "不支持的模型 provider" }, { status: 400 })
+  const projectId = String(body.projectId ?? "").trim()
+  if (!projectId) {
+    return NextResponse.json({ error: "请选择矩阵项目" }, { status: 400 })
+  }
+  const project = await fetchProject(projectId, cookieHeader)
+  if (!project) {
+    return NextResponse.json({ error: "矩阵项目不存在" }, { status: 404 })
   }
 
-  const mode = body.mode === "matrix" ? "matrix" : "direction"
-  const platformIds = Array.isArray(body.platformIds)
-    ? body.platformIds.map(String).filter(Boolean)
-    : []
-  const copiesPerSlot =
-    typeof body.copiesPerSlot === "number" ? body.copiesPerSlot : Number(body.copiesPerSlot)
+  const providers = listCopywritingProviderCandidates({ hasImages: false }).filter(
+    (candidate) => candidate.source === "cloud",
+  )
+  if (providers.length === 0) {
+    return NextResponse.json(
+      { code: CLOUD_MODEL_NOT_READY, error: "云端模型配置尚未同步，请稍后重试" },
+      { status: 503 },
+    )
+  }
 
+  const dates = Array.isArray(body.dates) ? body.dates.map(String).filter(Boolean) : []
+  const rawCopies =
+    typeof body.copiesPerSlot === "number" ? body.copiesPerSlot : Number(body.copiesPerSlot)
   let preview
   try {
-    if (mode === "direction") {
-      preview = expandJobs({
-        mode: "direction",
-        direction: String(body.direction ?? ""),
-        platformIds,
-        copiesPerSlot: Number.isFinite(copiesPerSlot) ? copiesPerSlot : undefined,
-      })
-    } else {
-      const projectId = String(body.projectId ?? "").trim()
-      if (!projectId) {
-        return NextResponse.json({ error: "请选择矩阵项目" }, { status: 400 })
-      }
-      const project = await fetchProject(projectId, cookieHeader)
-      if (!project) {
-        return NextResponse.json({ error: "矩阵项目不存在" }, { status: 404 })
-      }
-      const dates = Array.isArray(body.dates) ? body.dates.map(String).filter(Boolean) : []
-      preview = expandJobs({
-        mode: "matrix",
-        project,
-        dates,
-        platformIds,
-        copiesPerSlot: Number.isFinite(copiesPerSlot) ? copiesPerSlot : undefined,
-      })
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "任务展开失败"
-    return NextResponse.json({ error: message }, { status: 400 })
+    preview = expandMatrixJobs({
+      mode: "matrix",
+      project,
+      dates,
+      copiesPerSlot: Number.isFinite(rawCopies) ? rawCopies : undefined,
+    })
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "任务展开失败" },
+      { status: 400 },
+    )
   }
 
   const batchId = crypto.randomUUID()
   const jobs = preview.jobs
-  const modelSkillId =
-    body.modelSkillId === null || body.modelSkillId === undefined
-      ? null
-      : String(body.modelSkillId)
-  const viralSkillIds = Array.isArray(body.viralSkillIds)
-    ? body.viralSkillIds.map(String)
-    : []
-  const enterpriseSnapshot =
-    body.enterpriseSnapshot != null ? String(body.enterpriseSnapshot) : null
+  const complete = async (params: CompleteTextParams): Promise<string> =>
+    completeCloudArticleText({
+      providers,
+      system: params.system,
+      user: params.user,
+      maxTokens: params.maxTokens,
+      settleBilling: async (provider) => {
+        if (!params.billing) return
+        await settleGeoArticleBilling({
+          ...params.billing,
+          provider: provider.model || provider.name,
+        })
+      },
+    })
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -120,60 +115,53 @@ async function handleBatchGenerate(
         type: "batch_start",
         batchId,
         total: jobs.length,
-        jobs: jobs.map((j) => ({
-          jobId: j.jobId,
-          title: j.title,
-          platformId: j.platformId,
-          date: j.date,
+        jobs: jobs.map((job) => ({
+          jobId: job.jobId,
+          title: job.title,
+          platformId: job.platformId,
+          date: job.date,
         })),
       })
 
       let successCount = 0
       let failCount = 0
-
       try {
         await generateArticlesConcurrent(
           jobs,
           {
-            provider,
             batchId,
-            modelSkillId,
-            viralSkillIds,
-            enterpriseSnapshot,
+            modelSkillId: project.modelSkillId,
+            viralSkillIds: viralSkillIdsForPlatforms(
+              project.matrix.platforms.map((platform) => platform.platformId),
+            ),
+            enterpriseSnapshot: project.enterpriseSnapshot,
             userId,
             cookieHeader,
+            complete,
           },
           {
             concurrency: 20,
-            onProgress: (ev) => {
-              if (ev.type === "job_start") {
+            onProgress: (event) => {
+              if (event.type === "job_start") {
                 send({
                   type: "job_start",
-                  jobId: ev.jobId,
-                  index: ev.index,
-                  total: ev.total,
+                  jobId: event.jobId,
+                  index: event.index,
+                  total: event.total,
                 })
-              } else if (ev.type === "job_done") {
+              } else if (event.type === "job_done") {
                 successCount += 1
-                send({ type: "job_done", jobId: ev.jobId, article: ev.article })
-              } else if (ev.type === "job_error") {
+                send({ type: "job_done", jobId: event.jobId, article: event.article })
+              } else {
                 failCount += 1
-                send({ type: "job_error", jobId: ev.jobId, error: ev.error })
+                send({ type: "job_error", jobId: event.jobId, error: event.error })
               }
             },
           },
         )
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "批量生成失败"
-        controller.enqueue(
-          encoder.encode(
-            encodeSse({
-              type: "job_error",
-              jobId: "batch",
-              error: message,
-            }),
-          ),
-        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : CLOUD_MODEL_UNAVAILABLE
+        send({ type: "job_error", jobId: "batch", error: message })
       }
 
       send({ type: "batch_complete", successCount, failCount })

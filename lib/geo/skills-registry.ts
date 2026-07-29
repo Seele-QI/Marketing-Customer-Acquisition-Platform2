@@ -1,4 +1,5 @@
 import registry from "@/skills/geo/registry.json"
+import type { EnterpriseSkillQualityReport } from "@/lib/geo/enterprise-skill-quality"
 import {
   listEnterpriseSkills as listStoredEnterpriseSkills,
   getDefaultEnterpriseSkill,
@@ -28,6 +29,7 @@ export type GeoSkillEntry = {
   content?: string
   provider?: string
   createdAt?: string
+  quality?: EnterpriseSkillQualityReport
 }
 
 const SKILLS = registry.skills as GeoSkillEntry[]
@@ -44,26 +46,28 @@ function enterpriseSkillToEntry(skill: EnterpriseSkill): GeoSkillEntry {
     content: skill.content,
     provider: skill.provider,
     createdAt: skill.createdAt,
+    quality: skill.quality,
   }
 }
 
 /** C 层：读取 localStorage 中的用户生成 Skill（仅客户端） */
-export function listEnterpriseSkills(): GeoSkillEntry[] {
+export function listEnterpriseSkills(accountScope: string): GeoSkillEntry[] {
   if (typeof window === "undefined") return []
-  return listStoredEnterpriseSkills().map(enterpriseSkillToEntry)
+  return listStoredEnterpriseSkills(accountScope).map(enterpriseSkillToEntry)
 }
 
 export function getEnterpriseSkillEntry(
+  accountScope: string,
   id: string | null | undefined,
 ): GeoSkillEntry | undefined {
   if (!id) return undefined
-  const stored = listStoredEnterpriseSkills().find((s) => s.id === id)
+  const stored = listStoredEnterpriseSkills(accountScope).find((s) => s.id === id)
   return stored ? enterpriseSkillToEntry(stored) : undefined
 }
 
-export function getDefaultEnterpriseSkillEntry(): GeoSkillEntry | undefined {
+export function getDefaultEnterpriseSkillEntry(accountScope: string): GeoSkillEntry | undefined {
   if (typeof window === "undefined") return undefined
-  const def = getDefaultEnterpriseSkill()
+  const def = getDefaultEnterpriseSkill(accountScope)
   return def ? enterpriseSkillToEntry(def) : undefined
 }
 
@@ -71,8 +75,8 @@ export function listGeoSkills(): GeoSkillEntry[] {
   return SKILLS
 }
 
-export function listAllGeoSkills(): GeoSkillEntry[] {
-  return [...SKILLS, ...listEnterpriseSkills()]
+export function listAllGeoSkills(accountScope?: string): GeoSkillEntry[] {
+  return [...SKILLS, ...(accountScope ? listEnterpriseSkills(accountScope) : [])]
 }
 
 export function listCreationGuidelineSkills(): GeoSkillEntry[] {
@@ -87,11 +91,11 @@ export function listPlatformViralSkills(): GeoSkillEntry[] {
   return SKILLS.filter((s) => s.category === "platform-viral")
 }
 
-export function getGeoSkillById(id: string | null | undefined): GeoSkillEntry | undefined {
+export function getGeoSkillById(id: string | null | undefined, accountScope?: string): GeoSkillEntry | undefined {
   if (!id) return undefined
   const staticSkill = SKILLS.find((s) => s.id === id)
   if (staticSkill) return staticSkill
-  return getEnterpriseSkillEntry(id)
+  return accountScope ? getEnterpriseSkillEntry(accountScope, id) : undefined
 }
 
 export function getDefaultGeoSkill(): GeoSkillEntry | undefined {
@@ -100,4 +104,9 @@ export function getDefaultGeoSkill(): GeoSkillEntry | undefined {
 
 export function getDefaultModelWeightSkill(): GeoSkillEntry | undefined {
   return listModelWeightSkills().find((s) => s.default) ?? listModelWeightSkills()[0]
+}
+
+/** 内容矩阵的新项目默认优先优化豆包引用；注册缺失时保持通用回退。 */
+export function getDefaultMatrixModelWeightSkill(): GeoSkillEntry | undefined {
+  return getGeoSkillById("model-doubao") ?? getDefaultModelWeightSkill()
 }

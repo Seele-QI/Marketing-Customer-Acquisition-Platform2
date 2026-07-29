@@ -52,21 +52,52 @@ export async function waitForHttpReady(
   url: string,
   timeoutMs = 30_000,
   intervalMs = 500,
+  options: {
+    expectedHeader?: { name: string; value: string };
+    signal?: AbortSignal;
+  } = {},
 ): Promise<void> {
   const start = Date.now();
+  const abortError = () => new Error(`waitForHttpReady aborted: ${url}`);
+  const throwIfAborted = () => {
+    if (options.signal?.aborted) throw abortError();
+  };
+  const waitInterval = () => new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      options.signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, intervalMs);
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+  });
   // 用内置 fetch（Node 18+），超时用 AbortController
   while (Date.now() - start < timeoutMs) {
+    throwIfAborted();
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort(options.signal?.reason);
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => ctrl.abort(), 2000);
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 2000);
       const res = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(timer);
-      // 任何 HTTP 响应（200/401/403/404/500）都算 ready —— 服务在跑
-      if (res.status > 0) return;
+      // 只有成功响应且代际标识匹配时，才确认当前子进程已经就绪。
+      const expected = options.expectedHeader;
+      if (res.status >= 200
+          && res.status < 300
+          && (!expected || res.headers.get(expected.name) === expected.value)) {
+        return;
+      }
     } catch {
+      throwIfAborted();
       // 还没起来，继续等
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
     }
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await waitInterval();
   }
   throw new Error(`waitForHttpReady timeout: ${url}`);
 }

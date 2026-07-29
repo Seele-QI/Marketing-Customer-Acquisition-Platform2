@@ -22,6 +22,9 @@ import {
 import { downloadImageFromUrl } from "@/lib/download-image"
 import { cn } from "@/lib/utils"
 import { toFriendlyUpdateError } from "@/lib/update-error"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
+import { MemoryCenterDialog } from "@/components/memory/memory-center-dialog"
+import { MemorySettingsCard } from "@/components/memory/memory-settings-card"
 
 type UpdateStatusState = {
   status: string
@@ -312,6 +315,7 @@ function AppUpdateSection() {
 export function SettingsView() {
   const [items, setItems] = React.useState<ArchivedSecondaryImage[]>([])
   const [preview, setPreview] = React.useState<ArchivedSecondaryImage | null>(null)
+  const [memoryCenterOpen, setMemoryCenterOpen] = React.useState(false)
 
   const refresh = React.useCallback(() => {
     setItems(listArchivedSecondaryImages())
@@ -356,6 +360,9 @@ export function SettingsView() {
       />
 
       <div className="relative mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
+        <div className="mb-4 flex justify-end">
+          <ModuleTutorialButton view="设置" />
+        </div>
         <header className="relative mb-8 overflow-hidden rounded-2xl border border-border/60 bg-card/75 shadow-sm ring-1 ring-teal-500/10 backdrop-blur-md dark:bg-card/50 dark:ring-teal-400/10">
           <div
             aria-hidden
@@ -385,6 +392,8 @@ export function SettingsView() {
         </header>
 
         <AppUpdateSection />
+
+        <MemorySettingsCard onOpen={() => setMemoryCenterOpen(true)} />
 
         <section className="rounded-2xl border border-border/70 bg-card/55 p-5 shadow-sm ring-1 ring-border/40 backdrop-blur-sm dark:bg-card/40 sm:p-6">
           <div className="mb-6 flex flex-col gap-4 border-b border-border/60 pb-5 sm:flex-row sm:items-center sm:justify-between">
@@ -549,6 +558,7 @@ export function SettingsView() {
           </div>
         </div>
       ) : null}
+      <MemoryCenterDialog open={memoryCenterOpen} onOpenChange={setMemoryCenterOpen} />
     </div>
   )
 }

@@ -23,6 +23,9 @@
 ### C 层（企业知识库）
 
 - **来源**：企业知识库搭建页 → 实体 + 文档 → 大模型生成 SKILL.md
+- **最小官方信息**：联系人姓名必填；手机、微信、邮箱任选一种，备用联系方式按需添加，不要求补充非必要资料
+- **引用边界**：官方联系方式写入企业 Skill；普通内容默认不展示，仅在任务明确要求联系、咨询、预约或购买方式时按需引用
+- **隐私提示**：生成时联系方式会发送给所选大模型，并随 Skill 保存在浏览器本地
 - **存储**：浏览器 `localStorage`（`geo-enterprise-skills-v1`），**不写入** `registry.json`
 - **选用**：`GeoSkillToolbar` C 层下拉；localStorage `geo-article-enterprise-skill`
 - **可选导出**：未来可保存到 `enterprise-knowledge/custom/` 并手动注册

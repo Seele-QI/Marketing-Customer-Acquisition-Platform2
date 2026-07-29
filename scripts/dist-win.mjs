@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Windows 安装包完整出包：dir → 写 exe 图标 → NSIS
+ * Windows 安装包完整出包：重建运行资源 → dir → 写 exe 图标 → NSIS
  */
 
 import { spawnSync } from 'node:child_process';
@@ -16,9 +16,15 @@ function run(cmd, args) {
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
+run('pnpm', ['resources:build']);
 run('pnpm', ['electron:build']);
 run('npx', ['electron-builder', '--win', '--dir', '--publish', 'never']);
 run('node', ['scripts/patch-exe-icon.mjs']);
+run('node', [
+  'scripts/generate-app-update-config.mjs',
+  '--resources',
+  'release/win-unpacked/resources',
+]);
 run('npx', ['electron-builder', '--win', 'nsis', '--prepackaged', 'release/win-unpacked', '--publish', 'never']);
 
 console.log('\n[dist:win] done');

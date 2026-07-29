@@ -30,6 +30,8 @@ PROMO_STORYBOARD_COST = 50
 COPY_EXTRACT_COST = 5
 DH_V2_PLAN_SCRIPT_COST = 20
 DH_V2_VIDEO_RETRY_COST = 450
+VIDEO_ECONOMY_SEGMENT_COST = 250
+VIDEO_ECONOMY_RETRY_COST = VIDEO_ECONOMY_SEGMENT_COST
 
 VIDEO_SEGMENT_COST_BY_PROVIDER: dict[str, int] = {
     "seedance": 450,
@@ -52,9 +54,11 @@ class BillingResult:
 
 def classify_geo_provider(provider: str) -> str:
     p = (provider or "deepseek").strip().lower()
-    if p in PREMIUM_GEO_PROVIDERS:
+    if p in PREMIUM_GEO_PROVIDERS or any(
+        p.startswith(f"{premium}-") for premium in PREMIUM_GEO_PROVIDERS
+    ):
         return "premium"
-    return "economy"
+    return classify_model(p)
 
 
 def classify_model(model_id: str) -> str:
@@ -63,10 +67,11 @@ def classify_model(model_id: str) -> str:
         return "economy"
     if is_sonetto_model_id(mid):
         return "premium"
-    if mid.startswith("doubao") or mid.startswith("deepseek") or "ark" in mid:
+    leaf = mid.rsplit("/", 1)[-1]
+    if leaf.startswith("doubao") or leaf.startswith("deepseek") or "ark" in leaf:
         return "economy"
     for prefix in PREMIUM_MODEL_PREFIXES:
-        if mid.startswith(prefix.lower()) or mid == prefix.lower():
+        if leaf.startswith(prefix.lower()) or leaf == prefix.lower():
             return "premium"
     return "economy"
 
@@ -134,6 +139,29 @@ def resolve_billing_cost(billing_key: str, params: dict[str, Any] | None = None)
             scene="dh_v2_video_retry",
             cost=unit,
             note=f"dh-v2 重试单段 ({provider})",
+        )
+
+    if key == "video.dh_economy_segment":
+        try:
+            segment_count = int(params.get("segment_count") or params.get("segmentCount") or 1)
+        except (TypeError, ValueError):
+            segment_count = 0
+        if segment_count < 1:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_SEGMENT_COUNT", "message": "段数至少为 1"},
+            )
+        return BillingResult(
+            scene="dh_economy_video_segment",
+            cost=VIDEO_ECONOMY_SEGMENT_COST * segment_count,
+            note=f"经济版数字人视频 {segment_count}×20s",
+        )
+
+    if key == "video.dh_economy_retry":
+        return BillingResult(
+            scene="dh_economy_video_retry",
+            cost=VIDEO_ECONOMY_RETRY_COST,
+            note="经济版数字人视频重试单段",
         )
 
     if key == "video.promo_segment":

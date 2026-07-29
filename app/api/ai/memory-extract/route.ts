@@ -1,103 +1,148 @@
 import crypto from "node:crypto"
 import { NextResponse } from "next/server"
-import { deepseekChatCompletion } from "@/lib/deepseek-chat"
-import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
+
+import {
+  extractMemoryOperations,
+  listMemoryExtractionProviders,
+  type MemoryObservationInput,
+} from "@/lib/llm/memory-extractor"
+import { withAuth } from "@/lib/api/with-auth"
+import { getCloudApiBase } from "@/lib/fastapi-base"
 
 export const maxDuration = 60
 
-const MEMORY_EXTRACT_SYSTEM = `你是一个信息提取助手。你的任务是从对话中提取用户的关键信息。
-
-请从以下对话中提取用户信息，返回 JSON 格式：
-{
-  "industry": "用户所在的行业/赛道（如：互联网运营、装修设计、教育培训）",
-  "role": "用户的角色/职位（如：运营总监、室内设计师、英语老师）",
-  "goals": ["用户的创作/商业目标"],
-  "preferences": ["用户偏好的平台、内容风格、形式等"],
-  "facts": ["关于用户的其他关键事实"]
-}
-
-规则：
-- 只提取用户明确提到的信息，不要推测
-- 如果某项没有足够信息，用空字符串或空数组
-- industry 和 role 用中文简短描述
-- 每个数组最多 3 项，只保留最核心的
-- 返回纯 JSON，不要包含 markdown 代码块`
-
 type Body = {
-  messages?: { role: string; content: string }[]
+  scope?: "copywriting" | "positioning" | "geo"
+  sessionId?: string
+  messageId?: string
+  userMessage?: string
+  messages?: Array<{ role?: string; content?: string }>
 }
 
-export const POST = withAuth(async (request, { userId, cookieHeader }) => {
+type ObserveResponse = {
+  observationId?: string
+  claimed?: MemoryObservationInput[]
+}
+
+function lastUserMessage(body: Body): string {
+  if (typeof body.userMessage === "string" && body.userMessage.trim()) {
+    return body.userMessage.trim().slice(0, 12_000)
+  }
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const row = messages[index]
+    if (row?.role === "user" && typeof row.content === "string" && row.content.trim()) {
+      return row.content.trim().slice(0, 12_000)
+    }
+  }
+  return ""
+}
+
+function internalHeaders(cookieHeader: string): HeadersInit {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Cookie: cookieHeader,
+  }
+  const key = (process.env.CREDIT_METERED_KEY || "").trim()
+  if (key) headers["X-Metered-Key"] = key
+  return headers
+}
+
+async function markRetryableFailure(input: {
+  base: string
+  cookieHeader: string
+  observationIds: string[]
+}): Promise<void> {
+  if (input.observationIds.length === 0) return
+  await fetch(`${input.base}/api/memory/consolidate`, {
+    method: "POST",
+    headers: internalHeaders(input.cookieHeader),
+    body: JSON.stringify({
+      observationIds: input.observationIds,
+      candidates: [],
+      retryableFailure: true,
+      errorCode: "MEMORY_EXTRACTION_FAILED",
+    }),
+  }).catch(() => {})
+}
+
+export const POST = withAuth(async (request, { cookieHeader }) => {
   let body: Body
   try {
-    body = await request.json()
+    body = (await request.json()) as Body
   } catch {
     return NextResponse.json({ detail: "请求体须为 JSON" }, { status: 400 })
   }
 
-  const raw = Array.isArray(body.messages) ? body.messages : []
-  const messages = raw
-    .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: String(m.content ?? "").trim().slice(0, 8000),
-    }))
-    .filter((m) => m.content.length > 0)
-
-  if (messages.length === 0) {
-    return NextResponse.json({ detail: "缺少有效对话内容" }, { status: 400 })
+  const text = lastUserMessage(body)
+  if (!text) {
+    return NextResponse.json({ detail: "缺少有效的用户消息" }, { status: 400 })
   }
+  const base = getCloudApiBase()
+  if (!base) {
+    return NextResponse.json({ status: "retryable", updated: 0 }, { status: 202 })
+  }
+  const scope = body.scope === "positioning" || body.scope === "geo" ? body.scope : "copywriting"
+  const sessionId = String(body.sessionId || `session-${crypto.randomUUID()}`).slice(0, 160)
+  const messageId = String(body.messageId || crypto.randomUUID()).slice(0, 160)
 
-  // Take the last 6 messages to keep context focused
-  const recentMessages = messages.slice(-6)
-
-  const conversationText = recentMessages
-    .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content}`)
-    .join("\n\n")
-
-  const refId = `memory-extract:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  let observation: ObserveResponse
   try {
-    await chargeCredit({ cookieHeader, scene: "ai_chat", refId })
-  } catch (e) {
-    return chargeErrorResponse(e)
-  }
-
-  const result = await deepseekChatCompletion(
-    [
-      { role: "system", content: MEMORY_EXTRACT_SYSTEM },
-      { role: "user", content: `请从以下对话中提取用户信息：\n\n${conversationText}` },
-    ],
-    30_000,
-  )
-
-  if (!result.ok) {
-    return NextResponse.json({ detail: result.detail }, { status: result.status })
-  }
-
-  // Parse the JSON response
-  let extracted: {
-    industry?: string
-    role?: string
-    goals?: string[]
-    preferences?: string[]
-    facts?: string[]
-  }
-  try {
-    // Strip potential markdown code blocks
-    const jsonStr = result.text.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "").trim()
-    extracted = JSON.parse(jsonStr) as typeof extracted
+    const response = await fetch(`${base}/api/memory/observe`, {
+      method: "POST",
+      headers: internalHeaders(cookieHeader),
+      body: JSON.stringify({ scope, sessionId, messageId, text }),
+    })
+    if (!response.ok) throw new Error(`MEMORY_OBSERVE_${response.status}`)
+    observation = (await response.json()) as ObserveResponse
   } catch {
-    return NextResponse.json(
-      { detail: "AI 返回格式异常，未包含有效 JSON", raw: result.text.slice(0, 200) },
-      { status: 502 },
-    )
+    return NextResponse.json({ status: "retryable", updated: 0 }, { status: 202 })
   }
 
-  return NextResponse.json({
-    industry: typeof extracted.industry === "string" ? extracted.industry.trim() : "",
-    role: typeof extracted.role === "string" ? extracted.role.trim() : "",
-    goals: Array.isArray(extracted.goals) ? extracted.goals.filter((g): g is string => typeof g === "string").slice(0, 3) : [],
-    preferences: Array.isArray(extracted.preferences) ? extracted.preferences.filter((p): p is string => typeof p === "string").slice(0, 3) : [],
-    facts: Array.isArray(extracted.facts) ? extracted.facts.filter((f): f is string => typeof f === "string").slice(0, 3) : [],
+  const claimed = Array.isArray(observation.claimed) ? observation.claimed : []
+  if (claimed.length === 0) {
+    return NextResponse.json({
+      status: "queued",
+      observationId: observation.observationId,
+      updated: 0,
+    })
+  }
+
+  const extraction = await extractMemoryOperations({
+    providers: listMemoryExtractionProviders(),
+    observations: claimed,
+    signal: request.signal,
   })
+  const observationIds = claimed.map((row) => row.id)
+  if (!extraction.ok) {
+    await markRetryableFailure({ base, cookieHeader, observationIds })
+    return NextResponse.json({ status: "retryable", updated: 0 }, { status: 202 })
+  }
+
+  try {
+    const response = await fetch(`${base}/api/memory/consolidate`, {
+      method: "POST",
+      headers: internalHeaders(cookieHeader),
+      body: JSON.stringify({
+        observationIds,
+        candidates: extraction.operations,
+      }),
+    })
+    if (!response.ok) throw new Error(`MEMORY_CONSOLIDATE_${response.status}`)
+    const result = (await response.json()) as {
+      created?: number
+      reinforced?: number
+      superseded?: number
+    }
+    const updated =
+      Number(result.created || 0) + Number(result.reinforced || 0) + Number(result.superseded || 0)
+    return NextResponse.json({
+      status: updated > 0 ? "updated" : "queued",
+      observationId: observation.observationId,
+      updated,
+    })
+  } catch {
+    await markRetryableFailure({ base, cookieHeader, observationIds })
+    return NextResponse.json({ status: "retryable", updated: 0 }, { status: 202 })
+  }
 })

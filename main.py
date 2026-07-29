@@ -89,10 +89,14 @@ POST_PROCESS_ROOT = _POST_PROCESS_OVERRIDE or os.path.join(_DATA_DIR, "video-pos
 GENERATED_VIDEO_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "generated")
 MANUAL_UPLOAD_ROOT = os.path.join(_DATA_DIR, "video-cache", "manual-uploads")
 COVER_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "covers")
+POSTER_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "posters")
+IMAGE_WORKBENCH_CACHE_ROOT = os.path.join(_DATA_DIR, "video-cache", "image-workbench")
 os.makedirs(POST_PROCESS_ROOT, exist_ok=True)
 os.makedirs(GENERATED_VIDEO_CACHE_ROOT, exist_ok=True)
 os.makedirs(MANUAL_UPLOAD_ROOT, exist_ok=True)
 os.makedirs(COVER_CACHE_ROOT, exist_ok=True)
+os.makedirs(POSTER_CACHE_ROOT, exist_ok=True)
+os.makedirs(IMAGE_WORKBENCH_CACHE_ROOT, exist_ok=True)
 
 # —— 远端下载大小上限（防 DoS / OOM）——
 MAX_REMOTE_VIDEO_BYTES = int(os.getenv("MAX_REMOTE_VIDEO_BYTES") or 300 * 1024 * 1024)
@@ -132,6 +136,21 @@ app.mount(
     "/static/video-covers",
     _HardenedStaticFiles(directory=COVER_CACHE_ROOT, html=False),
     name="video-covers",
+)
+app.mount(
+    "/static/posters",
+    _HardenedStaticFiles(directory=POSTER_CACHE_ROOT, html=False),
+    name="posters",
+)
+app.mount(
+    "/static/image-workbench",
+    _HardenedStaticFiles(directory=IMAGE_WORKBENCH_CACHE_ROOT, html=False),
+    name="image-workbench",
+)
+app.mount(
+    "/static/manual-uploads",
+    _HardenedStaticFiles(directory=MANUAL_UPLOAD_ROOT, html=False),
+    name="manual-uploads",
 )
 
 
@@ -244,9 +263,11 @@ async def health_check():
     data_dir = os.getenv("DATA_DIR") or POST_PROCESS_ROOT
     checks["data_dir_writable"] = "ok" if os.access(data_dir, os.W_OK) else "fail"
     ok = checks.get("ffmpeg") == "ok" and checks["data_dir_writable"] == "ok"
+    generation = (os.getenv("ELECTRON_SERVICE_GENERATION") or "").strip()
     return JSONResponse(
         status_code=200 if ok else 503,
         content={"status": "ok" if ok else "degraded", "checks": checks},
+        headers={"X-Electron-Service-Generation": generation} if generation else None,
     )
 
 
@@ -435,6 +456,9 @@ class EditTaskStatusResponse(BaseModel):
 class ManualUploadResponse(BaseModel):
     upload_id: str
     file_url: str = ""
+    thumbnail_url: str = ""
+    original_name: str = ""
+    size: int = 0
 
 
 class CoverGenerateRequest(BaseModel):
@@ -445,6 +469,7 @@ class CoverGenerateRequest(BaseModel):
     resolution: str = "1k"
     linked_task_id: str = ""
     source: str = ""
+    request_ref: str = ""
 
 
 class CoverSubmitResponse(BaseModel):
@@ -459,6 +484,58 @@ class CoverStatusResponse(BaseModel):
     stage_label: str = ""
     original_name: str = ""
     size: int = 0
+
+
+class PosterGenerateRequest(BaseModel):
+    prompt: str
+    aspect_ratio: str = "3:4"
+    resolution: str = "2k"
+    count: int = 2
+
+
+class PosterSubmitResponse(BaseModel):
+    poster_task_id: str
+
+
+class PosterStatusResponse(BaseModel):
+    poster_task_id: str
+    status: str
+    image_urls: list[str] = Field(default_factory=list)
+    warning: str = ""
+    error: str = ""
+    stage_label: str = ""
+    aspect_ratio: str = "3:4"
+
+
+class ImageWorkbenchReferenceInput(BaseModel):
+    role: str = "general"
+    mime_type: str
+    data_base64: str
+
+
+class ImageWorkbenchGenerateRequest(BaseModel):
+    mode: str
+    prompt: str
+    aspect_ratio: str = "1:1"
+    resolution: str = "2k"
+    count: int = 2
+    reference_images: list[ImageWorkbenchReferenceInput] = Field(default_factory=list)
+    reference_mode: str = ""
+
+
+class ImageWorkbenchSubmitResponse(BaseModel):
+    task_id: str
+
+
+class ImageWorkbenchStatusResponse(BaseModel):
+    task_id: str
+    mode: str
+    status: str
+    image_urls: list[str] = Field(default_factory=list)
+    warning: str = ""
+    error: str = ""
+    stage_label: str = ""
+    aspect_ratio: str = "1:1"
 
 
 class ImageToVideoRequest(BaseModel):
@@ -611,12 +688,18 @@ class CreditConsumeRequest(BaseModel):
     cost: int | None = None
     ref_id: str = ""
     note: str = ""
+    business_task_id: str = ""
+    business_type: str = ""
+    billing_stage: str = ""
 
 
 class CreditBillingRequest(BaseModel):
     billing_key: str
     params: dict = Field(default_factory=dict)
     ref_id: str = ""
+    business_task_id: str = ""
+    business_type: str = ""
+    billing_stage: str = ""
 
 
 class RedeemCodeRequest(BaseModel):
@@ -725,6 +808,11 @@ _image_task_store: dict[str, dict] = {}
 _mashup_task_store: dict[str, dict] = {}
 _cover_task_store: dict[str, dict] = {}
 _cover_pipeline_tasks: dict[str, asyncio.Task] = {}
+_cover_request_refs: dict[str, str] = {}
+_poster_task_store: dict[str, dict] = {}
+_poster_pipeline_tasks: dict[str, asyncio.Task] = {}
+_image_workbench_task_store: dict[str, dict] = {}
+_image_workbench_pipeline_tasks: dict[str, asyncio.Task] = {}
 _image_pipeline_tasks: dict[str, asyncio.Task] = {}
 _mashup_pipeline_tasks: dict[str, asyncio.Task] = {}
 
@@ -1102,6 +1190,11 @@ async def video_cover_submit(req: CoverGenerateRequest):
 
     aspect_ratio = (req.aspect_ratio or "9:16").strip() or "9:16"
     resolution = (req.resolution or "1k").strip() or "1k"
+    request_ref = (req.request_ref or "").strip()[:200]
+    if request_ref:
+        existing_task_id = _cover_request_refs.get(request_ref)
+        if existing_task_id and existing_task_id in _cover_task_store:
+            return CoverSubmitResponse(cover_task_id=existing_task_id)
 
     local_ref_path = ""
     if ref_b64:
@@ -1123,8 +1216,11 @@ async def video_cover_submit(req: CoverGenerateRequest):
         "local_ref_path": local_ref_path,
         "linked_video_task_id": (req.linked_task_id or "").strip(),
         "source": (req.source or "").strip(),
+        "request_ref": request_ref,
         "created_at": int(time.time()),
     }
+    if request_ref:
+        _cover_request_refs[request_ref] = cover_task_id
 
     task = asyncio.create_task(_run_cover_pipeline(cover_task_id))
     _cover_pipeline_tasks[cover_task_id] = task
@@ -1148,6 +1244,447 @@ async def video_cover_status(coverTaskId: str = ""):
         error=stored.get("error") or "",
         stage_label=stored.get("stage_label") or "",
     )
+
+
+POSTER_ASPECT_RATIOS = {"1:1", "3:4", "4:3", "9:16", "16:9", "9:25", "25:9"}
+POSTER_RESOLUTIONS = {"1k", "2k"}
+
+
+def _new_poster_task_id() -> str:
+    return f"poster_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+
+
+def _poster_public_url(poster_task_id: str, candidate: int) -> str:
+    return f"/static/posters/{poster_task_id}-{candidate}.png"
+
+
+async def _generate_poster_candidate(
+    rh: RunningHubClient,
+    stored: dict,
+    candidate: int,
+) -> str:
+    rh_task_id = await rh.submit_text_image(
+        prompt=stored["prompt"],
+        aspect_ratio=stored["aspect_ratio"],
+        resolution=stored["resolution"],
+    )
+    result = await rh.wait_for_completion(rh_task_id, max_wait=600)
+    remote_url = _pick_first_result_url(result)
+    if not remote_url:
+        raise RunningHubError(f"候选图 {candidate} 生成完成但未返回结果 URL")
+
+    out_path = os.path.join(
+        POSTER_CACHE_ROOT,
+        f"{stored['poster_task_id']}-{candidate}.png",
+    )
+    await download_to_path(
+        remote_url,
+        out_path,
+        max_bytes=MAX_REMOTE_IMAGE_BYTES,
+        timeout=120.0,
+    )
+    return _poster_public_url(stored["poster_task_id"], candidate)
+
+
+async def _run_poster_pipeline(poster_task_id: str) -> None:
+    stored = _poster_task_store.get(poster_task_id)
+    if not stored:
+        return
+
+    rh: RunningHubClient | None = None
+    try:
+        stored["status"] = "running"
+        stored["stage_label"] = "正在生成 2 张海报"
+        rh = _get_rh_client()
+        results = await asyncio.gather(
+            *(
+                _generate_poster_candidate(rh, stored, candidate)
+                for candidate in range(1, stored["count"] + 1)
+            ),
+            return_exceptions=True,
+        )
+        image_urls = [result for result in results if isinstance(result, str) and result]
+        errors = [str(result) for result in results if isinstance(result, BaseException)]
+
+        if not image_urls:
+            raise RunningHubError("；".join(errors) or "候选图生成失败")
+
+        stored.update(
+            {
+                "status": "success",
+                "image_urls": image_urls,
+                "warning": (
+                    f"仅生成 {len(image_urls)} 张候选海报，可重试补充另一张。"
+                    if len(image_urls) < stored["count"]
+                    else ""
+                ),
+                "error": "",
+                "stage_label": "海报生成完成",
+            }
+        )
+    except Exception as exc:
+        stored.update(
+            {
+                "status": "failed",
+                "image_urls": [],
+                "warning": "",
+                "error": str(exc) or "海报生成失败",
+                "stage_label": "海报生成失败",
+            }
+        )
+    finally:
+        if rh is not None:
+            await rh.close()
+        _poster_pipeline_tasks.pop(poster_task_id, None)
+
+
+@app.post("/api/poster/generate", response_model=PosterSubmitResponse)
+async def poster_generate(req: PosterGenerateRequest):
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="缺少提示词 prompt")
+
+    aspect_ratio = (req.aspect_ratio or "3:4").strip()
+    if aspect_ratio not in POSTER_ASPECT_RATIOS:
+        raise HTTPException(status_code=400, detail="不支持的海报比例")
+
+    resolution = (req.resolution or "2k").strip().lower()
+    if resolution not in POSTER_RESOLUTIONS:
+        raise HTTPException(status_code=400, detail="不支持的分辨率")
+    if req.count != 2:
+        raise HTTPException(status_code=400, detail="海报固定生成 2 张")
+
+    poster_task_id = _new_poster_task_id()
+    _poster_task_store[poster_task_id] = {
+        "poster_task_id": poster_task_id,
+        "status": "queued",
+        "image_urls": [],
+        "warning": "",
+        "error": "",
+        "stage_label": "排队中",
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "count": 2,
+        "created_at": int(time.time()),
+    }
+    task = asyncio.create_task(_run_poster_pipeline(poster_task_id))
+    _poster_pipeline_tasks[poster_task_id] = task
+    return PosterSubmitResponse(poster_task_id=poster_task_id)
+
+
+@app.get("/api/poster/status", response_model=PosterStatusResponse)
+async def poster_status(posterTaskId: str = ""):
+    poster_task_id = (posterTaskId or "").strip()
+    if not poster_task_id:
+        raise HTTPException(status_code=400, detail="缺少 posterTaskId")
+
+    stored = _poster_task_store.get(poster_task_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="海报任务不存在")
+
+    return PosterStatusResponse(
+        poster_task_id=poster_task_id,
+        status=stored.get("status") or "queued",
+        image_urls=stored.get("image_urls") or [],
+        warning=stored.get("warning") or "",
+        error=stored.get("error") or "",
+        stage_label=stored.get("stage_label") or "",
+        aspect_ratio=stored.get("aspect_ratio") or "3:4",
+    )
+
+
+IMAGE_WORKBENCH_MODES = {"poster", "image"}
+IMAGE_WORKBENCH_ASPECT_RATIOS = {
+    "1:1",
+    "3:4",
+    "4:3",
+    "9:16",
+    "16:9",
+    "9:25",
+    "25:9",
+}
+IMAGE_WORKBENCH_RESOLUTIONS = {"1k", "2k"}
+IMAGE_WORKBENCH_REFERENCE_MIME_SUFFIX = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+IMAGE_WORKBENCH_REFERENCE_MODES = {"preserve_subject", "style_only", "remix"}
+IMAGE_WORKBENCH_MAX_REFERENCE_BYTES = 10 * 1024 * 1024
+
+
+def _new_image_workbench_task_id() -> str:
+    return f"image_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+
+
+def _image_workbench_public_url(task_id: str, candidate: int) -> str:
+    return f"/static/image-workbench/{task_id}-{candidate}.png"
+
+
+def _decode_image_workbench_reference(
+    image: ImageWorkbenchReferenceInput,
+    index: int,
+) -> str:
+    mime_type = (image.mime_type or "").strip().lower()
+    suffix = IMAGE_WORKBENCH_REFERENCE_MIME_SUFFIX.get(mime_type)
+    if not suffix:
+        raise HTTPException(status_code=400, detail=f"第 {index} 张参考图格式不受支持")
+
+    normalized = _normalize_b64_payload(image.data_base64)
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"第 {index} 张参考图内容为空")
+    try:
+        raw = base64.b64decode(normalized, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"第 {index} 张参考图 Base64 无效") from exc
+    if len(raw) > IMAGE_WORKBENCH_MAX_REFERENCE_BYTES:
+        raise HTTPException(status_code=400, detail=f"第 {index} 张参考图不能超过 10MB")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(raw)
+    finally:
+        tmp.close()
+    return tmp.name
+
+
+async def _generate_image_workbench_candidate(
+    rh: RunningHubClient,
+    stored: dict,
+    candidate: int,
+    reference_urls: list[str],
+) -> str:
+    if reference_urls:
+        rh_task_id = await rh.submit_image_to_image(
+            prompt=stored["prompt"],
+            image_urls=reference_urls,
+            aspect_ratio=stored["aspect_ratio"],
+            resolution=stored["resolution"],
+        )
+    else:
+        rh_task_id = await rh.submit_text_image(
+            prompt=stored["prompt"],
+            aspect_ratio=stored["aspect_ratio"],
+            resolution=stored["resolution"],
+        )
+
+    result = await rh.wait_for_completion(rh_task_id, max_wait=600)
+    remote_url = _pick_first_result_url(result)
+    if not remote_url:
+        raise RunningHubError(f"候选图 {candidate} 生成完成但未返回结果 URL")
+
+    out_path = os.path.join(
+        IMAGE_WORKBENCH_CACHE_ROOT,
+        f"{stored['task_id']}-{candidate}.png",
+    )
+    await download_to_path(
+        remote_url,
+        out_path,
+        max_bytes=MAX_REMOTE_IMAGE_BYTES,
+        timeout=120.0,
+    )
+    return _image_workbench_public_url(stored["task_id"], candidate)
+
+
+def _public_image_workbench_error(error: Exception) -> str:
+    message = str(error)
+    if "参考图" in message or "上传" in message:
+        return "参考图处理失败，请更换图片后重试。"
+    if "未返回结果" in message or "结果 URL" in message:
+        return "候选图生成失败，本次未获得可用结果。"
+    return "创作服务暂时繁忙，请稍后重试。"
+
+
+async def _run_image_workbench_pipeline(task_id: str) -> None:
+    stored = _image_workbench_task_store.get(task_id)
+    if not stored:
+        return
+
+    rh: RunningHubClient | None = None
+    reference_local_paths = list(stored.get("reference_local_paths") or [])
+    try:
+        stored["status"] = "running"
+        rh = _get_rh_client()
+        reference_urls: list[str] = []
+        if reference_local_paths:
+            stored["stage_label"] = "正在处理参考图"
+            for path in reference_local_paths:
+                reference_urls.append(await rh.upload_file(path))
+
+        stored["stage_label"] = "正在生成 2 张候选图"
+        results = await asyncio.gather(
+            *(
+                _generate_image_workbench_candidate(
+                    rh,
+                    stored,
+                    candidate,
+                    reference_urls,
+                )
+                for candidate in range(1, stored["count"] + 1)
+            ),
+            return_exceptions=True,
+        )
+        image_urls = [result for result in results if isinstance(result, str) and result]
+        errors = [str(result) for result in results if isinstance(result, BaseException)]
+        if not image_urls:
+            raise RunningHubError("；".join(errors) or "候选图生成失败")
+
+        stored.update(
+            {
+                "status": "success",
+                "image_urls": image_urls,
+                "warning": (
+                    f"仅生成 {len(image_urls)} 张候选图，可重新生成补充。"
+                    if len(image_urls) < stored["count"]
+                    else ""
+                ),
+                "error": "",
+                "stage_label": "图片生成完成",
+            }
+        )
+    except Exception as exc:
+        logger.exception("image workbench generation failed task_id=%s", task_id)
+        stored.update(
+            {
+                "status": "failed",
+                "image_urls": [],
+                "warning": "",
+                "error": _public_image_workbench_error(exc),
+                "stage_label": "图片生成失败",
+            }
+        )
+    finally:
+        if rh is not None:
+            await rh.close()
+        if reference_local_paths:
+            _cleanup_temp(*reference_local_paths)
+        _image_workbench_pipeline_tasks.pop(task_id, None)
+
+
+@app.post(
+    "/api/image-workbench/generate",
+    response_model=ImageWorkbenchSubmitResponse,
+)
+async def image_workbench_generate(req: ImageWorkbenchGenerateRequest):
+    mode = (req.mode or "").strip().lower()
+    if mode not in IMAGE_WORKBENCH_MODES:
+        raise HTTPException(status_code=400, detail="不支持的图片创作模式")
+
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="缺少提示词 prompt")
+
+    aspect_ratio = (req.aspect_ratio or "").strip()
+    if aspect_ratio not in IMAGE_WORKBENCH_ASPECT_RATIOS:
+        raise HTTPException(status_code=400, detail="不支持的图片比例")
+    resolution = (req.resolution or "").strip().lower()
+    if resolution not in IMAGE_WORKBENCH_RESOLUTIONS:
+        raise HTTPException(status_code=400, detail="不支持的分辨率")
+    if req.count != 2:
+        raise HTTPException(status_code=400, detail="图片工作台固定生成 2 张候选图")
+
+    max_references = 2 if mode == "poster" else 4
+    if len(req.reference_images) > max_references:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "海报最多添加 2 张参考图"
+                if mode == "poster"
+                else "图片创作最多添加 4 张参考图"
+            ),
+        )
+    if mode == "poster":
+        invalid_role = next(
+            (
+                image.role
+                for image in req.reference_images
+                if image.role not in {"subject", "style"}
+            ),
+            "",
+        )
+        if invalid_role:
+            raise HTTPException(status_code=400, detail="海报参考图角色无效")
+    elif req.reference_images:
+        reference_mode = (req.reference_mode or "remix").strip()
+        if reference_mode not in IMAGE_WORKBENCH_REFERENCE_MODES:
+            raise HTTPException(status_code=400, detail="不支持的参考方式")
+
+    local_paths: list[str] = []
+    try:
+        for index, image in enumerate(req.reference_images, start=1):
+            local_paths.append(_decode_image_workbench_reference(image, index))
+    except Exception:
+        if local_paths:
+            _cleanup_temp(*local_paths)
+        raise
+
+    task_id = _new_image_workbench_task_id()
+    _image_workbench_task_store[task_id] = {
+        "task_id": task_id,
+        "mode": mode,
+        "status": "queued",
+        "image_urls": [],
+        "warning": "",
+        "error": "",
+        "stage_label": "排队中",
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "count": 2,
+        "reference_local_paths": local_paths,
+        "created_at": int(time.time()),
+    }
+    task = asyncio.create_task(_run_image_workbench_pipeline(task_id))
+    _image_workbench_pipeline_tasks[task_id] = task
+    return ImageWorkbenchSubmitResponse(task_id=task_id)
+
+
+@app.get(
+    "/api/image-workbench/status",
+    response_model=ImageWorkbenchStatusResponse,
+)
+async def image_workbench_status(taskId: str = ""):
+    task_id = (taskId or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="缺少 taskId")
+    stored = _image_workbench_task_store.get(task_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="图片任务不存在")
+    return ImageWorkbenchStatusResponse(
+        task_id=task_id,
+        mode=stored.get("mode") or "image",
+        status=stored.get("status") or "queued",
+        image_urls=stored.get("image_urls") or [],
+        warning=stored.get("warning") or "",
+        error=stored.get("error") or "",
+        stage_label=stored.get("stage_label") or "",
+        aspect_ratio=stored.get("aspect_ratio") or "1:1",
+    )
+
+
+async def _generate_manual_upload_thumbnail(video_path: str, thumbnail_path: str) -> bool:
+    """Extract a preview frame without making upload success depend on FFmpeg."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(_FFMPEG_EXE),
+            "-y",
+            "-i",
+            video_path,
+            "-vf",
+            "thumbnail,scale=320:-2",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            thumbnail_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(process.communicate(), timeout=30)
+        return process.returncode == 0 and os.path.isfile(thumbnail_path) and os.path.getsize(thumbnail_path) > 0
+    except (FileNotFoundError, OSError, asyncio.TimeoutError):
+        return False
 
 
 @app.post("/api/video/manual-upload", response_model=ManualUploadResponse)
@@ -1177,15 +1714,28 @@ async def video_manual_upload(request: Request, file: UploadFile = File(...)):
     finally:
         await file.close()
 
+    file_url = f"/static/manual-uploads/{upload_id}/source{ext}"
+    thumbnail_path = os.path.join(upload_dir, "thumbnail.jpg")
+    has_thumbnail = await _generate_manual_upload_thumbnail(stored_path, thumbnail_path)
+    thumbnail_url = f"/static/manual-uploads/{upload_id}/thumbnail.jpg" if has_thumbnail else ""
     _manual_upload_store[upload_id] = {
         "upload_id": upload_id,
         "user_id": user.id,
         "path": stored_path,
+        "file_url": file_url,
+        "thumbnail_path": thumbnail_path if has_thumbnail else "",
+        "thumbnail_url": thumbnail_url,
         "original_name": filename,
         "size": size,
         "created_at": int(time.time()),
     }
-    return ManualUploadResponse(upload_id=upload_id, file_url="", original_name=filename, size=size)
+    return ManualUploadResponse(
+        upload_id=upload_id,
+        file_url=file_url,
+        thumbnail_url=thumbnail_url,
+        original_name=filename,
+        size=size,
+    )
 
 
 async def _run_edit_job(edit_job_id: str, req: EditVideoRequest, base_url: str = "", user_id: int | None = None):
@@ -2376,7 +2926,9 @@ async def credit_ledger(request: Request, limit: int = 20):
     if not user:
         raise HTTPException(status_code=401, detail={"code": "NOT_LOGGED_IN", "message": "未登录"})
     limit = max(1, min(100, limit))
-    items = list_ledger(user.id, limit)
+    from lib.credit import list_display_ledger
+
+    items = list_display_ledger(user.id, limit)
     return {"items": items, "count": len(items)}
 
 
@@ -2418,6 +2970,9 @@ async def credit_consume(req: CreditConsumeRequest, request: Request):
         ref_id=ref_id,
         note=note,
         cost=None,
+        business_task_id=req.business_task_id,
+        business_type=req.business_type,
+        billing_stage=req.billing_stage,
     )
     resolved_cost = SCENE_COST_TABLE[scene]
     return {
@@ -2453,6 +3008,9 @@ async def credit_consume_billing(req: CreditBillingRequest, request: Request):
             billing_key=billing_key,
             params=req.params or {},
             ref_id=ref_id,
+            business_task_id=req.business_task_id,
+            business_type=req.business_type,
+            billing_stage=req.billing_stage,
         )
     except CreditError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
@@ -2471,6 +3029,9 @@ class CreditMeteredRequest(BaseModel):
     ref_id: str = ""
     cost: int
     note: str = ""
+    business_task_id: str = ""
+    business_type: str = ""
+    billing_stage: str = ""
 
 
 def _require_metered_key(request: Request) -> None:
@@ -2519,6 +3080,9 @@ async def credit_consume_metered(req: CreditMeteredRequest, request: Request):
         ref_id=ref_id,
         cost=req.cost,
         note=note,
+        business_task_id=req.business_task_id,
+        business_type=req.business_type,
+        billing_stage=req.billing_stage,
     )
     return {
         "balance": new_balance,
@@ -3139,6 +3703,244 @@ except ImportError:
     _DOUYIN_ENABLED = False
 
 from lib.crypto_utils import encrypt_cookie
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  一键分发：账号连接 + 抖音优先发布
+# ════════════════════════════════════════════════════════════════════════
+
+from lib.connector_service import disconnect_platform as connector_disconnect, get_all_platforms, save_cookie_payload, save_cookie_string, save_platform_credentials
+from lib.interactive_login import interactive_login_manager
+from lib.publisher.manager import list_bound_platforms, publish_to_platform
+
+
+class DistributionConnectRequest(BaseModel):
+    platform: str
+    credentials: dict[str, str] = {}
+    cookieJson: str = ""
+
+
+class DistributionBrowserLoginRequest(BaseModel):
+    platform: str
+
+
+class DistributionBrowserStatusRequest(BaseModel):
+    session_id: str
+    platform: str = ""
+
+
+class DistributionPublishRequest(BaseModel):
+    platform: str
+    videoUrl: str
+    title: str
+    description: str = ""
+    tags: list[str] = []
+    submitMode: str = "manual_confirm"
+
+
+class DistributionAdaptRequest(BaseModel):
+    contentType: str
+    source: dict
+    platforms: list[str]
+
+
+class DistributionJobCreateRequest(BaseModel):
+    previewToken: str
+    idempotencyKey: str
+    confirmed: bool = False
+    submitMode: str = "manual_confirm"
+
+
+def _distribution_description(description: str, tags: list[str]) -> str:
+    body = (description or "").strip()
+    tag_line = " ".join(f"#{str(tag).lstrip('#')}" for tag in tags if str(tag).strip())
+    return f"{body}\n\n{tag_line}" if body and tag_line else body or tag_line
+
+
+@app.get("/api/connectors/platforms")
+async def distribution_connector_platforms(request: Request):
+    user = require_user(request)
+    try:
+        return {"platforms": get_all_platforms(user.id)}
+    except sqlite3.Error as exc:
+        __import__("logging").getLogger(__name__).exception("加载分发平台账号失败: %s", exc)
+        raise HTTPException(status_code=503, detail="账号服务暂时不可用，请稍后重试") from exc
+
+
+@app.post("/api/connectors/connect")
+async def distribution_connector_connect(req: DistributionConnectRequest, request: Request):
+    user = require_user(request)
+    platform = req.platform.strip().lower()
+    try:
+        if req.cookieJson.strip():
+            save_cookie_payload(user.id, platform, req.cookieJson.strip(), verified=False)
+        elif req.credentials:
+            save_platform_credentials(user.id, platform, req.credentials, verified=False)
+        else:
+            raise HTTPException(status_code=400, detail="请提供 credentials 或 cookieJson")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    status = next((item for item in get_all_platforms(user.id) if item["platform_id"] == platform), None)
+    return {"success": True, "status": status}
+
+
+@app.post("/api/connectors/disconnect/{platform_id}")
+async def distribution_connector_disconnect(platform_id: str, request: Request):
+    user = require_user(request)
+    return {"success": connector_disconnect(user.id, platform_id)}
+
+
+@app.post("/api/connectors/browser/start")
+async def distribution_browser_start(req: DistributionBrowserLoginRequest, request: Request):
+    user = require_user(request)
+    platform = req.platform.strip().lower()
+    result = await interactive_login_manager.start_interactive_login(platform, user_id=user.id)
+    if not result.get("success"):
+        code = result.get("code") or "browser_launch_failed"
+        status_code = 400 if code == "unsupported_platform" else 409 if code == "profile_in_use" else 503
+        raise HTTPException(status_code=status_code, detail={"code": code, "message": result.get("error") or "登录浏览器启动失败"})
+    return result
+
+
+@app.get("/api/connectors/browser/health")
+async def distribution_browser_health(request: Request):
+    require_user(request)
+    return interactive_login_manager.get_browser_health()
+
+
+@app.post("/api/connectors/browser/status")
+async def distribution_browser_status(req: DistributionBrowserStatusRequest, request: Request):
+    user = require_user(request)
+    result = await interactive_login_manager.check_login_status(req.session_id, user_id=user.id)
+    if result.get("status") == "success":
+        platform = result.get("platform") or req.platform or "douyin"
+        account_info = result.get("account_info") or {}
+        nickname = str(account_info.get("nickname") or "").strip()
+        if not nickname:
+            return {
+                "status": "error",
+                "code": "identity_not_verified",
+                "error": "已检测到登录，但无法确认账号身份，请重新验证",
+            }
+        try:
+            if result.get("cookie_json"):
+                account = save_cookie_payload(
+                    user.id,
+                    platform,
+                    result["cookie_json"],
+                    nickname=nickname,
+                    platform_user_id=str(account_info.get("platform_user_id") or ""),
+                    verified=True,
+                )
+            else:
+                account = save_cookie_string(
+                    user.id,
+                    platform,
+                    result.get("cookies", ""),
+                    nickname=nickname,
+                    platform_user_id=str(account_info.get("platform_user_id") or ""),
+                    verified=True,
+                )
+        except Exception as exc:
+            return {"status": "error", "error": f"保存登录状态失败: {exc}"}
+        result["account_info"] = {
+            "nickname": account["nickname"],
+            "platform_user_id": account["platform_user_id"],
+        }
+        result["verified_at"] = account["verified_at"]
+    return result
+
+
+@app.post("/api/connectors/browser/cancel")
+async def distribution_browser_cancel(req: DistributionBrowserStatusRequest, request: Request):
+    user = require_user(request)
+    return await interactive_login_manager.cancel_login(req.session_id, user_id=user.id)
+
+
+@app.get("/api/publish/accounts")
+async def distribution_publish_accounts(request: Request):
+    user = require_user(request)
+    get_all_platforms(user.id)
+    return {"accounts": [item for item in list_bound_platforms(user.id) if item.get("platform") in {"douyin", "xiaohongshu", "kuaishou", "shipinhao"}]}
+
+
+@app.post("/api/publish")
+async def distribution_publish(req: DistributionPublishRequest, request: Request):
+    user = require_user(request)
+    from lib.publisher.submit_mode import submit_mode_scope
+    platform = req.platform.strip().lower()
+    if not req.videoUrl.strip():
+        raise HTTPException(status_code=400, detail="videoUrl 不能为空")
+    if not req.title.strip():
+        raise HTTPException(status_code=400, detail="title 不能为空")
+    try:
+        with submit_mode_scope(req.submitMode):
+            result = await publish_to_platform(user_id=user.id, platform=platform, video_url=req.videoUrl.strip(), title=req.title.strip(), description=_distribution_description(req.description, req.tags))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result.to_dict()
+
+
+@app.post("/api/distribution/adapt")
+async def distribution_adapt(req: DistributionAdaptRequest, request: Request):
+    user = require_user(request)
+    from lib.distribution_jobs import store
+    try:
+        return store.create_preview(user.id, req.contentType, req.source, req.platforms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/distribution/jobs")
+async def distribution_create_job(req: DistributionJobCreateRequest, request: Request):
+    user = require_user(request)
+    from lib.distribution_jobs import schedule_job, store
+    try:
+        job = store.create_job(user.id, req.previewToken, req.idempotencyKey, req.confirmed, req.submitMode)
+        if job["status"] in {"queued", "failed"}:
+            schedule_job(user.id, job["jobId"])
+        return job
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/distribution/jobs/{job_id}")
+async def distribution_get_job(job_id: str, request: Request):
+    user = require_user(request)
+    from lib.distribution_jobs import store
+    try:
+        return store.get_job(user.id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/distribution/jobs/{job_id}/items/{platform}/resume")
+async def distribution_resume_job_item(job_id: str, platform: str, request: Request):
+    user = require_user(request)
+    from lib.distribution_jobs import schedule_job, store
+    try:
+        store.reset_item(user.id, job_id, platform)
+        schedule_job(user.id, job_id)
+        return store.get_job(user.id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/distribution/jobs/{job_id}/items/{platform}/retry")
+async def distribution_retry_job_item(job_id: str, platform: str, request: Request):
+    return await distribution_resume_job_item(job_id, platform, request)
+
+
+@app.post("/api/distribution/jobs/{job_id}/cancel")
+async def distribution_cancel_job(job_id: str, request: Request):
+    user = require_user(request)
+    from lib.distribution_jobs import store
+    try:
+        return store.cancel(user.id, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -4066,10 +4868,18 @@ async def _run_promo_video(task_id: str, gen_req: PromoVideoGenerateRequest) -> 
 from routes.promo_video_routes import router as promo_video_router
 from routes.geo_matrix_routes import router as geo_matrix_router
 from routes.dh_video_v2_routes import router as dh_video_v2_router
+from routes.dh_video_economy_routes import router as dh_video_economy_router
+from routes.user_memory_routes import router as user_memory_router
+from routes.agent_team_routes import router as agent_team_router
+from routes.business_assistant_routes import router as business_assistant_router
 
 app.include_router(promo_video_router)
 app.include_router(geo_matrix_router)
 app.include_router(dh_video_v2_router)
+app.include_router(dh_video_economy_router)
+app.include_router(user_memory_router)
+app.include_router(agent_team_router)
+app.include_router(business_assistant_router)
 
 
 # ── 全局 404 handler：API 路径返回 JSON，避免返回 HTML 错误页导致前端下载到 .htm ──

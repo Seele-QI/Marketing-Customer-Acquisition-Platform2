@@ -40,15 +40,18 @@ const targetScripts = path.join(projectRoot, 'resources', 'scripts');
 
 console.log('[build-next-standalone] starting...');
 
-/* ============ Step 1: pnpm build ============ */
+/* ============ Step 1: Next build ============ */
 
 async function runBuild() {
-  console.log('[build-next-standalone] running pnpm build (desktop FASTAPI → 127.0.0.1:8010)...');
+  console.log('[build-next-standalone] running Next build (desktop FASTAPI → 127.0.0.1:8010)...');
+  const nextCli = path.join(projectRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
   return new Promise((resolve, reject) => {
-    const child = spawn('pnpm', ['build'], {
+    // Run the actual Next process. On Windows, `shell: true` can emit `exit`
+    // before the descendant has finished materializing .next/standalone.
+    const child = spawn(process.execPath, [nextCli, 'build'], {
       cwd: projectRoot,
       stdio: 'inherit',
-      shell: process.platform === 'win32',
+      shell: false,
       env: {
         ...process.env,
         // 构建期写入客户端 bundle + routes-manifest rewrites，避免落到 dev 默认 8000
@@ -56,9 +59,9 @@ async function runBuild() {
         NEXT_PUBLIC_FASTAPI_URL: 'http://127.0.0.1:8010',
       },
     });
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`pnpm build exit ${code}`));
+      else reject(new Error(`next build exit ${code}`));
     });
     child.on('error', reject);
   });

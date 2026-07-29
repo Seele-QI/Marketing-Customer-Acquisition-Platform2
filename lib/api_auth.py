@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
@@ -31,8 +32,13 @@ from lib.credit import (
     VIDEO_CLONE_VOICE_COST,
     VIDEO_IMAGE_TO_VIDEO_COST,
     VIDEO_MASHUP_COST,
+    VIDEO_ECONOMY_SEGMENT_COST,
+    VIDEO_ECONOMY_RETRY_COST,
     VIDEO_SEGMENT_COST,
+    BILLING_STAGE_LABELS,
+    BUSINESS_TYPE_LABELS,
     consume,
+    ensure_credit_schema,
     refund,
 )
 from lib.credit_pricing import resolve_billing_cost, segment_cost_for_provider
@@ -50,6 +56,8 @@ SCENE_COST_TABLE: dict[str, int] = {
     "ai_rewrite": CHAT_COST,
     "ai_ip_positioning": 20,
     "ai_ark_image": 20,
+    "poster_image": 20,
+    "image_creation": 20,
     "ai_llm": AI_LLM_COST_PLACEHOLDER,
     "copywriting_llm": COPYWRITING_LLM_COST_PLACEHOLDER,
     "geo_article": GEO_ARTICLE_COST_PLACEHOLDER,
@@ -60,6 +68,8 @@ SCENE_COST_TABLE: dict[str, int] = {
     "dh_v2_plan_script": DH_V2_PLAN_SCRIPT_COST,
     "dh_v2_video_segment": DH_V2_VIDEO_SEGMENT_UNIT,
     "dh_v2_video_retry": DH_V2_VIDEO_RETRY_COST,
+    "dh_economy_video_segment": VIDEO_ECONOMY_SEGMENT_COST,
+    "dh_economy_video_retry": VIDEO_ECONOMY_RETRY_COST,
     "promo_video_segment": PROMO_VIDEO_SEGMENT_PLACEHOLDER,
     "promo_storyboard": PROMO_STORYBOARD_COST,
     "copy_extract": COPY_EXTRACT_COST,
@@ -72,6 +82,7 @@ _VARIABLE_SCENE_ALLOWED_COSTS: dict[str, frozenset[int]] = {
 
 
 def ensure_credit_idempotency_index() -> None:
+    ensure_credit_schema()
     with transaction() as conn:
         conn.execute(
             """
@@ -80,6 +91,37 @@ def ensure_credit_idempotency_index() -> None:
                 WHERE ref_id IS NOT NULL AND ref_id != ''
             """
         )
+
+
+_BUSINESS_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+
+
+def validate_business_task_context(
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> tuple[str, str, str]:
+    task_id = (business_task_id or "").strip()
+    task_type = (business_type or "").strip()
+    stage = (billing_stage or "").strip()
+    if not task_id and not task_type and not stage:
+        return "", "", ""
+    if not _BUSINESS_TASK_ID_RE.fullmatch(task_id):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_BUSINESS_TASK_ID", "message": "业务任务 ID 无效"},
+        )
+    if task_type not in BUSINESS_TYPE_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_BUSINESS_TYPE", "message": "业务任务类型无效"},
+        )
+    if stage not in BILLING_STAGE_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_BILLING_STAGE", "message": "业务计费阶段无效"},
+        )
+    return task_id, task_type, stage
 
 
 def require_user(request: Request) -> CurrentUser:
@@ -160,6 +202,22 @@ def _validate_variable_cost(scene: str, cost: int) -> None:
             )
         return
 
+    if scene == "dh_economy_video_segment":
+        if cost <= 0 or cost % VIDEO_ECONOMY_SEGMENT_COST != 0:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "经济版视频扣费须为每 20 秒 250 积分的整数倍"},
+            )
+        return
+
+    if scene == "dh_economy_video_retry":
+        if cost != VIDEO_ECONOMY_RETRY_COST:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_COST", "message": "经济版重试扣费金额无效"},
+            )
+        return
+
     if scene == "ai_llm":
         if not isinstance(cost, int) or cost < 1 or cost > MAX_LLM_COST:
             raise HTTPException(
@@ -186,6 +244,9 @@ def consume_with_idempotency(
     ref_id: str,
     note: str = "",
     cost: int | None = None,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
 ) -> int:
     if scene not in SCENE_COST_TABLE:
         raise HTTPException(
@@ -197,6 +258,9 @@ def consume_with_idempotency(
             status_code=400,
             detail={"code": "MISSING_REF_ID", "message": "缺少幂等键 ref_id"},
         )
+    task_id, task_type, stage = validate_business_task_context(
+        business_task_id, business_type, billing_stage
+    )
 
     from lib.cloud_client import consume_remote, is_cloud_hybrid_mode
     from lib.request_context import get_current_request
@@ -213,7 +277,16 @@ def consume_with_idempotency(
         else:
             _validate_variable_cost(scene, cost)
         try:
-            return consume_remote(req, scene=scene, ref_id=ref_id, note=note or scene, cost=cost)
+            return consume_remote(
+                req,
+                scene=scene,
+                ref_id=ref_id,
+                note=note or scene,
+                cost=cost,
+                business_task_id=task_id,
+                business_type=task_type,
+                billing_stage=stage,
+            )
         except HTTPException:
             raise
         except Exception as exc:
@@ -237,7 +310,15 @@ def consume_with_idempotency(
     else:
         _validate_variable_cost(scene, cost)
 
-    return consume(user_id, cost, ref_id=ref_id, note=note or scene)
+    return consume(
+        user_id,
+        cost,
+        ref_id=ref_id,
+        note=note or scene,
+        business_task_id=task_id,
+        business_type=task_type,
+        billing_stage=stage,
+    )
 
 
 def consume_billing_event(
@@ -246,8 +327,47 @@ def consume_billing_event(
     billing_key: str,
     params: dict[str, Any] | None,
     ref_id: str,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
 ) -> tuple[int, int, str]:
     """解析 billing_key 并扣费。返回 (balance_after, cost, scene)。"""
+    from lib.cloud_client import consume_billing_remote, is_cloud_hybrid_mode
+    from lib.request_context import get_current_request
+
+    if is_cloud_hybrid_mode():
+        req = get_current_request()
+        if req is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "CLOUD_CONTEXT_MISSING",
+                    "message": "混合模式缺少请求上下文",
+                },
+            )
+        try:
+            return consume_billing_remote(
+                req,
+                billing_key=billing_key,
+                params=params,
+                ref_id=ref_id,
+                business_task_id=business_task_id,
+                business_type=business_type,
+                billing_stage=billing_stage,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            from lib.credit import CreditError
+
+            if isinstance(exc, CreditError):
+                raise
+            logger.exception("cloud billing consume failed")
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "CLOUD_CONSUME_FAILED", "message": str(exc)},
+            ) from exc
+
     result = resolve_billing_cost(billing_key, params)
     balance = consume_with_idempotency(
         user_id=user_id,
@@ -255,27 +375,53 @@ def consume_billing_event(
         ref_id=ref_id,
         note=result.note,
         cost=result.cost,
+        business_task_id=business_task_id,
+        business_type=business_type,
+        billing_stage=billing_stage,
     )
     return balance, result.cost, result.scene
 
 
-def consume_ai_llm(*, user_id: int, ref_id: str, cost: int, note: str = "") -> int:
+def consume_ai_llm(
+    *,
+    user_id: int,
+    ref_id: str,
+    cost: int,
+    note: str = "",
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> int:
     return consume_with_idempotency(
         user_id=user_id,
         scene="ai_llm",
         ref_id=ref_id,
         note=note or "AI 模型计量",
         cost=cost,
+        business_task_id=business_task_id,
+        business_type=business_type,
+        billing_stage=billing_stage,
     )
 
 
-def consume_voice_clone(*, user_id: int, ref_id: str, note: str = "") -> int:
+def consume_voice_clone(
+    *,
+    user_id: int,
+    ref_id: str,
+    note: str = "",
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> int:
     return consume_with_idempotency(
         user_id=user_id,
         scene="video_clone_voice",
         ref_id=ref_id,
         note=note or "音色克隆",
         cost=VIDEO_CLONE_VOICE_COST,
+        business_task_id=business_task_id,
+        business_type=business_type,
+        billing_stage=billing_stage,
     )
 
 
@@ -304,6 +450,9 @@ def consume_dh_v2_video_segments(
     segment_count: int,
     provider: str = "seedance",
     note: str = "",
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
 ) -> int:
     if segment_count < 1:
         raise HTTPException(
@@ -318,6 +467,9 @@ def consume_dh_v2_video_segments(
         ref_id=ref_id,
         note=note or f"dh-v2 视频生成 {segment_count} 段",
         cost=total,
+        business_task_id=business_task_id,
+        business_type=business_type,
+        billing_stage=billing_stage,
     )
 
 
@@ -327,6 +479,9 @@ def consume_dh_v2_video_retry(
     ref_id: str,
     provider: str = "seedance",
     note: str = "",
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
 ) -> int:
     unit = segment_cost_for_provider(provider)
     return consume_with_idempotency(
@@ -335,6 +490,9 @@ def consume_dh_v2_video_retry(
         ref_id=ref_id,
         note=note or "dh-v2 重试单段",
         cost=unit,
+        business_task_id=business_task_id,
+        business_type=business_type,
+        billing_stage=billing_stage,
     )
 
 
@@ -346,20 +504,30 @@ def safe_refund(*, user_id: int, scene: str, ref_id: str, reason: str = "") -> N
     refund_ref = f"refund:{ref_id}"
 
     with transaction() as conn:
-        row = conn.execute(
+        duplicate = conn.execute(
             "SELECT 1 FROM credit_ledger "
             "WHERE user_id = ? AND ref_id = ? AND type = 'refund' LIMIT 1",
             (user_id, refund_ref),
         ).fetchone()
-        if row is not None:
+        if duplicate is not None:
             return
+        original = conn.execute(
+            """SELECT delta, business_task_id, business_type, billing_stage
+               FROM credit_ledger
+               WHERE user_id = ? AND ref_id = ? AND type = 'consume'
+               ORDER BY id DESC LIMIT 1""",
+            (user_id, ref_id),
+        ).fetchone()
 
-    amount = SCENE_COST_TABLE[scene]
+    amount = -int(original["delta"]) if original is not None else SCENE_COST_TABLE[scene]
     try:
         refund(
             user_id,
             amount,
             ref_id=refund_ref,
+            business_task_id=str(original["business_task_id"] or "") if original else "",
+            business_type=str(original["business_type"] or "") if original else "",
+            billing_stage=str(original["billing_stage"] or "") if original else "",
             note=(reason or "任务失败退款")[:80],
         )
     except Exception:

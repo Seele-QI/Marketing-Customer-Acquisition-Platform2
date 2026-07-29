@@ -91,7 +91,16 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
 
   const refId = `dh-v2-plan:${userId}:${crypto.randomUUID()}`
   try {
-    await chargeCredit({ cookieHeader, scene: "dh_v2_plan_script", refId })
+    await chargeCredit({
+      cookieHeader,
+      scene: "dh_v2_plan_script",
+      refId,
+      businessTask: {
+        businessTaskId: body.business_task_id,
+        businessType: "video_digital_human",
+        billingStage: "script",
+      },
+    })
   } catch (e) {
     return chargeErrorResponse(e)
   }

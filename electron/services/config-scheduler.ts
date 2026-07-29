@@ -1,36 +1,33 @@
 /**
- * 每 12 小时自动同步云端 Key 配置。
+ * 每 1 分钟自动同步云端 Key / 模型配置。
  */
 
-import type { BrowserWindow } from 'electron';
 import logger from './logger';
-import { syncConfig, type ConfigSyncResult } from './config-sync-client';
 
-const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+const ONE_MINUTE_MS = 60 * 1000;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-export type ConfigSyncHandler = (result: ConfigSyncResult) => void | Promise<void>;
+export type ConfigSyncRequest = () => Promise<unknown>;
 
 export function startConfigSyncScheduler(
-  getWindow: () => BrowserWindow | null,
-  getNextOrigin: () => string,
-  onResult?: ConfigSyncHandler,
+  requestSync: ConfigSyncRequest,
 ): void {
   stopConfigSyncScheduler();
 
   const run = async () => {
-    const result = await syncConfig(getWindow(), getNextOrigin());
-    if (onResult) {
-      await onResult(result);
+    try {
+      await requestSync();
+    } catch (error) {
+      logger.error('config-scheduler: sync failed unexpectedly', error);
     }
   };
 
   void run();
   timer = setInterval(() => {
     void run();
-  }, TWELVE_HOURS_MS);
-  logger.info('config-scheduler: started (interval 12h)');
+  }, ONE_MINUTE_MS);
+  logger.info('config-scheduler: started (interval 1m)');
 }
 
 export function stopConfigSyncScheduler(): void {

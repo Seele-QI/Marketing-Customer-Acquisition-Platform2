@@ -69,7 +69,7 @@ export function ScriptPlanPanel({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-tutorial-id="dh-v2-script-plan">
       <div className={cn("rounded-2xl border p-4", tokens.cardBorder, tokens.card)}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

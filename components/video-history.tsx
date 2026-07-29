@@ -35,6 +35,7 @@ function getExcerpt(text: string, max = 50): string {
 const SOURCE_LABELS: Record<HistoryVideoSource, string> = {
   "digital-human": "数字人口播",
   "dh-video-v2": "数字人口播视频（新）",
+  "dh-video-economy": "数字人视频创作（经济版）",
   "image-video": "图文视频",
   mashup: "视频混剪",
   "promo-video": "宣传视频",
@@ -82,7 +83,10 @@ export function VideoHistory() {
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-[#fafaf8] dark:bg-slate-950">
+    <div
+      className="h-full overflow-y-auto bg-[#fafaf8] dark:bg-slate-950"
+      data-tutorial-id="video-history-view"
+    >
       <div className="mx-auto max-w-4xl px-5 py-8 sm:px-8 sm:py-10">
         <header className="mb-8">
           <div className="mb-4 h-1 w-12 rounded-full bg-rose-500/60" />

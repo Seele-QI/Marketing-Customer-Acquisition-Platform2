@@ -16,6 +16,7 @@ API 端点:
     video_task_id = await client.submit_video(image_url, audio_url, motion)
 """
 
+import asyncio
 import os
 import time
 import logging
@@ -29,6 +30,7 @@ BASE_URL = "https://www.runninghub.cn/openapi/v2"
 
 AUDIO_CLONE_APP_ID = "1965614643077070850"
 VIDEO_WORKFLOW_ID = "2072599683289141249"
+ECONOMY_VIDEO_APP_ID = "2073634796697378818"
 
 # 视频工作流节点 ID（对应 ComfyUI 工作流）
 VIDEO_NODE_IMAGE = "221"   # LoadImage — 数字人形象
@@ -37,7 +39,10 @@ VIDEO_NODE_PROMPT = "254"  # TextInput_ — 5 行动作描述提示词
 
 # 封面图 API
 COVER_IMAGE_ENDPOINT = "/rhart-image-g-2/image-to-image"
+TEXT_IMAGE_ENDPOINT = "/rhart-image-g-2/text-to-image"
 COVER_UPLOAD_ENDPOINT = "/media/upload/binary"
+UPLOAD_MAX_ATTEMPTS = 3
+UPLOAD_RETRY_DELAYS = (1, 2)
 
 # 轮询间隔（秒）
 POLL_INTERVAL = 5
@@ -199,14 +204,31 @@ class RunningHubClient:
         client = await self._get_client()
         url = f"{BASE_URL}/media/upload/binary"
 
-        try:
-            with open(file_path, "rb") as f:
-                files = {"file": (file_path.replace("\\", "/").split("/")[-1], f)}
-                # multipart/form-data 不带 Content-Type header（让 httpx 自动设置）
-                resp = await client.post(url, files=files)
-        except httpx.RequestError as e:
-            raise RunningHubError(f"文件上传网络错误: {e}") from e
+        resp: httpx.Response | None = None
+        for attempt in range(UPLOAD_MAX_ATTEMPTS):
+            try:
+                with open(file_path, "rb") as f:
+                    files = {"file": (file_path.replace("\\", "/").split("/")[-1], f)}
+                    # multipart/form-data 不带 Content-Type header（让 httpx 自动设置）
+                    resp = await client.post(url, files=files)
+                break
+            except httpx.RequestError as exc:
+                if attempt + 1 >= UPLOAD_MAX_ATTEMPTS:
+                    raise RunningHubError(
+                        f"文件上传网络错误（已重试 {UPLOAD_MAX_ATTEMPTS} 次）: {exc}"
+                    ) from exc
+                delay = UPLOAD_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "RunningHub upload transient error; retrying attempt=%s/%s delay=%ss error=%s",
+                    attempt + 1,
+                    UPLOAD_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
 
+        if resp is None:
+            raise RunningHubError("文件上传失败：未获得 RunningHub 响应")
         if not resp.is_success:
             raise self._build_http_error("文件上传", resp)
 
@@ -286,6 +308,62 @@ class RunningHubClient:
         logger.info(f"Audio clone task submitted: taskId={task_id}")
         return task_id
 
+    async def submit_economy_audio_clone(self, reference_audio_url: str, text: str) -> str:
+        """Submit the economy workflow's documented voice-clone AI-App."""
+        client = await self._get_client()
+        url = f"{BASE_URL}/run/ai-app/{AUDIO_CLONE_APP_ID}"
+        payload = {
+            "nodeInfoList": [
+                {"nodeId": "13", "fieldName": "audio", "fieldValue": reference_audio_url},
+                {"nodeId": "15", "fieldName": "audio", "fieldValue": reference_audio_url},
+                {"nodeId": "14", "fieldName": "value", "fieldValue": text},
+            ],
+            "instanceType": "default",
+            "usePersonalQueue": "false",
+        }
+        try:
+            resp = await client.post(url, json=payload)
+        except httpx.RequestError as exc:
+            raise RunningHubError(f"经济版音色克隆任务提交网络错误: {exc}") from exc
+        if not resp.is_success:
+            raise self._build_http_error("经济版音色克隆任务提交", resp)
+        task_id = str((resp.json() or {}).get("taskId") or "").strip()
+        if not task_id:
+            raise RunningHubError(f"经济版音色克隆返回缺少 taskId: {resp.text[:500]}")
+        return task_id
+
+    async def submit_economy_video(
+        self,
+        image_url: str,
+        audio_url: str,
+        motion_prompt: str,
+    ) -> str:
+        """Submit one economy lip-sync segment using the documented AI-App nodes."""
+        client = await self._get_client()
+        url = f"{BASE_URL}/run/ai-app/{ECONOMY_VIDEO_APP_ID}"
+        payload = {
+            "nodeInfoList": [
+                {"nodeId": "186", "fieldName": "value", "fieldValue": "1024"},
+                {"nodeId": "180", "fieldName": "image", "fieldValue": image_url},
+                {"nodeId": "6", "fieldName": "audio", "fieldValue": audio_url},
+                {"nodeId": "7", "fieldName": "start_time", "fieldValue": "0:00"},
+                {"nodeId": "7", "fieldName": "end_time", "fieldValue": "5:00"},
+                {"nodeId": "114", "fieldName": "positive_prompt", "fieldValue": motion_prompt},
+            ],
+            "instanceType": "plus",
+            "usePersonalQueue": "false",
+        }
+        try:
+            resp = await client.post(url, json=payload)
+        except httpx.RequestError as exc:
+            raise RunningHubError(f"经济版视频任务提交网络错误: {exc}") from exc
+        if not resp.is_success:
+            raise self._build_http_error("经济版视频任务提交", resp)
+        task_id = str((resp.json() or {}).get("taskId") or "").strip()
+        if not task_id:
+            raise RunningHubError(f"经济版视频返回缺少 taskId: {resp.text[:500]}")
+        return task_id
+
     # ── 视频生成 ──────────────────────────────────────────
 
     async def submit_video(
@@ -351,7 +429,76 @@ class RunningHubClient:
         logger.info(f"Video generation task submitted: taskId={task_id}")
         return task_id
 
-    # ── 封面图生成 ──────────────────────────────────────────
+    # ── 图片生成 ─────────────────────────────────────────────
+
+    async def submit_text_image(
+        self,
+        prompt: str,
+        aspect_ratio: str = "3:4",
+        resolution: str = "1k",
+    ) -> str:
+        """提交 RunningHub G-2 文生图任务并返回任务 ID。"""
+        client = await self._get_client()
+        url = f"{BASE_URL}{TEXT_IMAGE_ENDPOINT}"
+        payload = {
+            "prompt": prompt,
+            "aspectRatio": aspect_ratio,
+            "resolution": resolution,
+        }
+
+        try:
+            resp = await client.post(url, json=payload)
+        except httpx.RequestError as exc:
+            raise RunningHubError(f"图片生成任务提交网络错误: {exc}") from exc
+
+        if not resp.is_success:
+            raise self._build_http_error("图片生成任务提交", resp)
+
+        data = resp.json()
+        task_id = data.get("taskId", "") or data.get("task_id", "")
+        if not task_id:
+            raise RunningHubError(f"图片生成返回缺少 taskId: {resp.text[:500]}")
+
+        logger.info("Text-to-image task submitted: taskId=%s", task_id)
+        return task_id
+
+    async def submit_image_to_image(
+        self,
+        prompt: str,
+        image_urls: list[str],
+        aspect_ratio: str = "3:4",
+        resolution: str = "1k",
+    ) -> str:
+        """提交 RunningHub G-2 图生图任务并返回任务 ID。"""
+        clean_urls = [url.strip() for url in image_urls if url and url.strip()]
+        if not clean_urls:
+            raise RunningHubError("图生图至少需要一张参考图")
+
+        client = await self._get_client()
+        url = f"{BASE_URL}{COVER_IMAGE_ENDPOINT}"
+
+        payload = {
+            "prompt": prompt,
+            "imageUrls": clean_urls,
+            "aspectRatio": aspect_ratio,
+            "resolution": resolution,
+        }
+
+        try:
+            resp = await client.post(url, json=payload)
+        except httpx.RequestError as e:
+            raise RunningHubError(f"图生图任务提交网络错误: {e}") from e
+
+        if not resp.is_success:
+            raise self._build_http_error("图生图任务提交", resp)
+
+        data = resp.json()
+        task_id = data.get("taskId", "") or data.get("task_id", "")
+        if not task_id:
+            raise RunningHubError(f"图生图返回缺少 taskId: {resp.text[:500]}")
+
+        logger.info("Image-to-image task submitted: taskId=%s", task_id)
+        return task_id
 
     async def submit_cover_image(
         self,
@@ -360,43 +507,13 @@ class RunningHubClient:
         aspect_ratio: str = "3:4",
         resolution: str = "1k",
     ) -> str:
-        """
-        提交封面图生成任务（图生图）。
-
-        Args:
-            prompt: 封面图描述 prompt
-            image_urls: 参考图片 URL 列表（数字人形象照）
-            aspect_ratio: 比例，默认 3:4
-            resolution: 分辨率，默认 1k
-
-        Returns:
-            taskId: RunningHub 任务 ID
-        """
-        client = await self._get_client()
-        url = f"{BASE_URL}{COVER_IMAGE_ENDPOINT}"
-
-        payload = {
-            "prompt": prompt,
-            "imageUrls": image_urls,
-            "aspectRatio": aspect_ratio,
-            "resolution": resolution,
-        }
-
-        try:
-            resp = await client.post(url, json=payload)
-        except httpx.RequestError as e:
-            raise RunningHubError(f"封面图生成任务提交网络错误: {e}") from e
-
-        if not resp.is_success:
-            raise self._build_http_error("封面图生成任务提交", resp)
-
-        data = resp.json()
-        task_id = data.get("taskId", "")
-        if not task_id:
-            raise RunningHubError(f"封面图生成返回缺少 taskId: {resp.text[:500]}")
-
-        logger.info(f"Cover image task submitted: taskId={task_id}")
-        return task_id
+        """兼容视频封面调用的图生图包装。"""
+        return await self.submit_image_to_image(
+            prompt=prompt,
+            image_urls=image_urls,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+        )
 
     # ── 任务查询 ──────────────────────────────────────────
 

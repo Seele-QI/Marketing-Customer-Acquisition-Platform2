@@ -4,13 +4,13 @@ import { NextResponse } from "next/server"
 import { runIpPositioningAnalysis } from "@/lib/ip-positioning-analyze"
 import {
   normalizeIntake,
-  resolveIpPositioningModel,
   validateIntake,
   type IpPositioningRequestBody,
 } from "@/lib/ip-positioning-schema"
 import { recordCost } from "@/lib/cost-tracker"
 import { extractDocuments } from "@/lib/server/document-extract"
 import { chargeCredit, chargeErrorResponse, withAuth } from "@/lib/api/with-auth"
+import { listCopywritingProviderCandidates } from "@/lib/llm/copywriting-router"
 
 export const maxDuration = 120
 export const runtime = "nodejs"
@@ -31,9 +31,15 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     return NextResponse.json({ detail: validationError }, { status: 400 })
   }
 
-  const { modelId, error: modelError } = resolveIpPositioningModel(body.modelId)
-  if (modelError) {
-    return NextResponse.json({ detail: modelError }, { status: 503 })
+  const cloudProviders = listCopywritingProviderCandidates({ hasImages: false }).filter(
+    (candidate) => candidate.source === "cloud",
+  )
+  if (cloudProviders.length === 0) {
+    const message = "云端模型配置尚未同步，请稍后重试"
+    return NextResponse.json(
+      { detail: { code: "CLOUD_MODEL_NOT_READY", message } },
+      { status: 503 },
+    )
   }
 
   const documents = await extractDocuments(body.files)
@@ -46,7 +52,7 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   }
 
   const analysis = await runIpPositioningAnalysis({
-    modelId,
+    providers: cloudProviders,
     intake,
     documents,
   })
@@ -54,7 +60,7 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   if (!analysis.ok) {
     recordCost({
       feature: "ip-positioning",
-      model: modelId,
+      model: "cloud",
       promptTokens: 0,
       completionTokens: 0,
       durationMs: Date.now() - startTime,
@@ -62,7 +68,13 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
       error: analysis.detail,
     })
     return NextResponse.json(
-      { detail: analysis.detail, rawText: analysis.rawText },
+      {
+        detail: {
+          code: analysis.code,
+          message: analysis.detail,
+          ...(analysis.failures ? { attempts: analysis.failures } : {}),
+        },
+      },
       { status: analysis.status },
     )
   }

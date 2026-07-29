@@ -6,6 +6,8 @@ import { Bot, Loader2, Send, Table2, User } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/hooks/use-toast"
+import { getCustomerFacingErrorMessage } from "@/lib/api/customer-network-error"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 import {
   Dialog,
   DialogContent,
@@ -144,16 +146,16 @@ export function PositioningChatDialog({
         body: JSON.stringify(payload),
       })
 
-      const data = (await response.json()) as { reply?: string; detail?: string }
+      const data = (await response.json().catch(() => ({}))) as { reply?: string; detail?: unknown }
       if (!response.ok) {
-        throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`)
+        throw new Error(parseApiErrorResponse(response.status, { detail: data.detail }, "发送失败"))
       }
       const reply = typeof data.reply === "string" ? data.reply : ""
       if (!reply) throw new Error("未返回正文")
 
       setMessages((prev) => [...prev, { role: "assistant", content: reply }])
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "发送失败"
+      const msg = getCustomerFacingErrorMessage(e, "发送失败")
       setError(msg)
       setMessages((prev) => prev.slice(0, -1))
       setInput(text)

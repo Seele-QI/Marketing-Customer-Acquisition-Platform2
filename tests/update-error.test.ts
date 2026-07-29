@@ -1,6 +1,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { toFriendlyUpdateError } from "../lib/update-error.ts"
+import { toFriendlyUpdateError as toElectronFriendlyUpdateError } from "../electron/utils/friendly-update-error.ts"
 
 describe("toFriendlyUpdateError", () => {
   it("maps net::ERR_CONNECTION_CLOSED to friendly Chinese", () => {
@@ -30,5 +31,14 @@ describe("toFriendlyUpdateError", () => {
   it("handles empty", () => {
     assert.equal(toFriendlyUpdateError(""), "更新失败，请稍后重试")
     assert.equal(toFriendlyUpdateError(null), "更新失败，请稍后重试")
+  })
+
+  it("maps missing app-update.yml to an actionable repair message", () => {
+    const raw =
+      "ENOENT: no such file or directory, open 'E:\\AI\\cuocuo-ai\\resources\\app-update.yml'"
+    const expected = "更新配置缺失，请运行更新修复工具或覆盖安装新版客户端"
+
+    assert.equal(toFriendlyUpdateError(raw), expected)
+    assert.equal(toElectronFriendlyUpdateError(raw), expected)
   })
 })

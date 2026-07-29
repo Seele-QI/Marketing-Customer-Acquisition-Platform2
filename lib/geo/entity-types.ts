@@ -5,6 +5,19 @@ export type GeoEntityFaq = {
   answer: string
 }
 
+export type GeoContactMethod = "phone" | "wechat" | "email"
+
+export type GeoContactChannel = {
+  type: GeoContactMethod
+  value: string
+}
+
+export type GeoOfficialContact = {
+  contactName: string
+  primary: GeoContactChannel
+  backup?: GeoContactChannel
+}
+
 /** 权威链接抓取结果（与 authorityLinks 按 url 对齐） */
 export type AuthorityPage = {
   url: string
@@ -23,4 +36,5 @@ export type GeoEntityData = {
   /** 已抓取的网页正文，按 url 索引 */
   authorityPages?: AuthorityPage[]
   faqs: GeoEntityFaq[]
+  officialContact: GeoOfficialContact
 }

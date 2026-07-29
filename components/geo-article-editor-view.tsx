@@ -3,6 +3,7 @@
 import * as React from "react"
 import {
   ChevronRight,
+  Cloud,
   Download,
   Eye,
   ImagePlus,
@@ -20,16 +21,12 @@ import {
   type GeoWorkflowStepId,
 } from "@/components/geo/geo-workflow-shell"
 import { GeoScorePanel, type GeoScores } from "@/components/geo/geo-score-panel"
-import { GeoLlmProviderSelect } from "@/components/geo/geo-llm-provider-select"
-import { GeoSkillToolbar } from "@/components/geo/geo-knowledge-base-picker"
 import { GeoArticleBatchPanel } from "@/components/geo/article/geo-article-batch-panel"
 import {
   GeoArticleDocGrid,
   type DocGridItem,
 } from "@/components/geo/article/geo-article-doc-grid"
 import { GeoArticlePreviewDialog } from "@/components/geo/article/geo-article-preview-dialog"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
-import { getEnterpriseSkillEntry } from "@/lib/geo/skills-registry"
 import { downloadArticleMarkdown } from "@/lib/geo/article-export"
 import { parseMarkdownOutline } from "@/lib/geo/markdown-outline"
 import { scoreArticle } from "@/lib/geo/article-score-api"
@@ -46,9 +43,8 @@ import {
   type ArticleBatchConfig,
 } from "@/lib/geo/article-batch-store"
 import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
+import type { MatrixProject } from "@/lib/geo/matrix-types"
 import { toast } from "@/hooks/use-toast"
-
-const ARTICLE_PROVIDER_KEY = "geo-article-llm-provider"
 
 function parseMarkdownTitle(markdown: string, fallback: string): string {
   const match = markdown.match(/^#\s+(.+)$/m)
@@ -66,11 +62,8 @@ export function GeoArticleEditorView() {
   const [batchProgress, setBatchProgress] = React.useState({ done: 0, total: 0 })
   const [previewOpen, setPreviewOpen] = React.useState(false)
   const [activeSection, setActiveSection] = React.useState("")
-  const [modelSkillId, setModelSkillId] = React.useState<string | null>(null)
-  const [viralSkillIds, setViralSkillIds] = React.useState<string[]>([])
-  const [enterpriseSkillId, setEnterpriseSkillId] = React.useState<string | null>(null)
+  const [selectedMatrixProject, setSelectedMatrixProject] = React.useState<MatrixProject | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
-  const [provider, setProvider] = React.useState<LlmProviderId>("deepseek")
   const [scores, setScores] = React.useState<GeoScores | null>(null)
   const [scoreSummary, setScoreSummary] = React.useState<string | null>(null)
   const [scoreLoading, setScoreLoading] = React.useState(false)
@@ -87,42 +80,26 @@ export function GeoArticleEditorView() {
 
   const outline = React.useMemo(() => parseMarkdownOutline(markdown), [markdown])
 
-  React.useEffect(() => {
-    try {
-      const stored = localStorage.getItem(ARTICLE_PROVIDER_KEY)
-      if (
-        stored === "deepseek" ||
-        stored === "doubao" ||
-        stored === "kimi" ||
-        stored === "gpt" ||
-        stored === "claude" ||
-        stored === "gemini"
-      ) {
-        setProvider(stored)
-      }
-    } catch {
-      /* ignore */
+  const handleProjectChange = React.useCallback((project: MatrixProject | null) => {
+    setSelectedMatrixProject(project)
+    if (!project) {
+      setArticles([])
+      setGridItems([])
+      setActiveArticleId(null)
+      setMarkdown("")
+      return
     }
-    const batch = loadArticleBatch()
-    if (batch.articles.length > 0) {
-      setArticles(batch.articles)
-      setGridItems(batch.articles.map((a) => ({ kind: "article", article: a })))
-    }
+    const projectArticles = loadArticleBatch(project.id).articles
+    setArticles(projectArticles)
+    setGridItems(
+      projectArticles.map((article) => ({ kind: "article", article })),
+    )
+    setActiveArticleId(null)
+    setMarkdown("")
+    setScores(null)
+    setScoreSummary(null)
+    setStep(2)
   }, [])
-
-  const handleProviderChange = React.useCallback((id: LlmProviderId) => {
-    setProvider(id)
-    try {
-      localStorage.setItem(ARTICLE_PROVIDER_KEY, id)
-    } catch {
-      /* ignore */
-    }
-  }, [])
-
-  const enterpriseSnapshot = React.useMemo(
-    () => getEnterpriseSkillEntry(enterpriseSkillId)?.content ?? null,
-    [enterpriseSkillId],
-  )
 
   const handleBatchStart = React.useCallback(
     (jobs: { jobId: string; title: string; platformId: string; date?: string }[]) => {
@@ -154,11 +131,12 @@ export function GeoArticleEditorView() {
       )
       return [...withoutDup, { kind: "article", article }]
     })
-    const next = mergeArticles([article])
+    const next = mergeArticles([article], article.projectId)
     setArticles(next)
   }, [])
 
   const handleJobError = React.useCallback((jobId: string, error: string, meta?: Partial<GeneratedArticle>) => {
+    const snapshot = getJobSnapshot(jobId)
     setGridItems((prev) => {
       const pending = prev.find((i) => i.kind === "pending" && i.jobId === jobId)
       const fromArticle = prev.find(
@@ -175,17 +153,25 @@ export function GeoArticleEditorView() {
       const failed: GeneratedArticle = {
         id: meta?.id ?? `failed-${jobId}`,
         jobId,
-        mode: meta?.mode ?? (fromArticle?.kind === "article" ? fromArticle.article.mode : "direction"),
-        platformId: meta?.platformId ?? ("platformId" in base ? base.platformId : ""),
-        date: meta?.date ?? ("date" in base ? base.date : undefined),
-        title: meta?.title ?? ("title" in base ? base.title : "生成失败"),
+        projectId: meta?.projectId ?? snapshot?.projectId ?? (fromArticle?.kind === "article" ? fromArticle.article.projectId : undefined),
+        mode: meta?.mode ?? snapshot?.mode ?? (fromArticle?.kind === "article" ? fromArticle.article.mode : "matrix"),
+        platformId: meta?.platformId ?? snapshot?.platformId ?? ("platformId" in base ? base.platformId : ""),
+        date: meta?.date ?? snapshot?.date ?? ("date" in base ? base.date : undefined),
+        title: meta?.title ?? snapshot?.title ?? ("title" in base ? base.title : "生成失败"),
         markdown: "",
         status: "failed",
         error,
         createdAt: meta?.createdAt ?? Date.now(),
       }
-      mergeArticles([failed])
+      const failedProjectId = failed.projectId
+      mergeArticles([failed], failedProjectId)
       setArticles((a) => {
+        if (
+          selectedMatrixProject?.id &&
+          failedProjectId !== selectedMatrixProject.id
+        ) {
+          return a
+        }
         const filtered = a.filter((x) => x.jobId !== jobId)
         return [...filtered, failed]
       })
@@ -198,7 +184,7 @@ export function GeoArticleEditorView() {
         { kind: "article", article: failed },
       ]
     })
-  }, [])
+  }, [selectedMatrixProject?.id])
 
   const handleBatchComplete = React.useCallback((config: ArticleBatchConfig) => {
     saveBatchConfig(config)
@@ -206,18 +192,15 @@ export function GeoArticleEditorView() {
 
   const resolveRetryJob = React.useCallback(
     async (article: GeneratedArticle): Promise<ArticleJob> => {
+      if (article.mode !== "matrix") {
+        throw new Error("旧版自定义方向文章不支持重试，请从内容矩阵重新创作")
+      }
       const snapshot = getJobSnapshot(article.jobId)
       if (snapshot) return snapshot
-
-      const { lastConfig } = loadArticleBatch()
-      if (!lastConfig) {
-        throw new Error("缺少批次配置，请重新发起批量创作")
+      if (!article.projectId) {
+        throw new Error("该文章缺少所属矩阵信息，请从内容矩阵重新创作")
       }
-
-      let project = null
-      if (lastConfig.mode === "matrix" && lastConfig.projectId) {
-        project = await getMatrixProject(lastConfig.projectId)
-      }
+      const project = await getMatrixProject(article.projectId)
 
       return buildRetryJob({
         jobId: article.jobId,
@@ -225,7 +208,6 @@ export function GeoArticleEditorView() {
         platformId: article.platformId,
         date: article.date,
         title: article.title,
-        direction: lastConfig.direction,
         project,
       })
     },
@@ -250,11 +232,12 @@ export function GeoArticleEditorView() {
       setRetryingJobIds((prev) => new Set(prev).add(article.jobId))
 
       try {
+        const projectId = job.projectId ?? article.projectId
+        if (!projectId) {
+          throw new Error("缺少矩阵项目，请重新选择矩阵后重试")
+        }
         const result = await retryArticleGenerate({
-          provider,
-          modelSkillId,
-          viralSkillIds,
-          enterpriseSnapshot,
+          projectId,
           job,
         })
 
@@ -283,10 +266,6 @@ export function GeoArticleEditorView() {
     [
       retryingJobIds,
       resolveRetryJob,
-      provider,
-      modelSkillId,
-      viralSkillIds,
-      enterpriseSnapshot,
       handleArticleDone,
       handleJobError,
     ],
@@ -299,12 +278,13 @@ export function GeoArticleEditorView() {
     }
     setScoreLoading(true)
     try {
+      const projectId = activeArticle?.projectId
+      if (!projectId) {
+        throw new Error("缺少矩阵项目，无法按矩阵策略评分")
+      }
       const result = await scoreArticle({
-        provider,
         markdown,
-        modelSkillId,
-        viralSkillIds,
-        enterpriseSnapshot,
+        projectId,
         platformId: activeArticle?.platformId ?? null,
       })
       setScores(result.scores)
@@ -319,10 +299,7 @@ export function GeoArticleEditorView() {
     }
   }, [
     markdown,
-    provider,
-    modelSkillId,
-    viralSkillIds,
-    enterpriseSnapshot,
+    activeArticle?.projectId,
     activeArticle?.platformId,
   ])
 
@@ -359,7 +336,7 @@ export function GeoArticleEditorView() {
         markdown,
         title: parseMarkdownTitle(markdown, activeArticle?.title ?? "未命名文章"),
       }
-      upsertArticle(updated)
+      upsertArticle(updated, updated.projectId)
       setArticles((prev) => {
         const idx = prev.findIndex((a) => a.id === activeArticleId)
         if (idx < 0) return [...prev, updated]
@@ -429,6 +406,7 @@ export function GeoArticleEditorView() {
 
   return (
     <GeoWorkflowPage>
+      <div data-tutorial-id="geo-article-view">
       <GeoWorkflowHero
         title="深度优化"
         accentWord="文章创作"
@@ -445,15 +423,10 @@ export function GeoArticleEditorView() {
       </div>
 
       <div className="mb-4 flex flex-wrap items-end justify-end gap-2 sm:gap-3">
-        <GeoLlmProviderSelect value={provider} onChange={handleProviderChange} showLabel />
-        <GeoSkillToolbar
-          modelSkillId={modelSkillId}
-          viralSkillIds={viralSkillIds}
-          enterpriseSkillId={enterpriseSkillId}
-          onModelChange={setModelSkillId}
-          onViralChange={setViralSkillIds}
-          onEnterpriseChange={setEnterpriseSkillId}
-        />
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-[11px] font-medium text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-300">
+          <Cloud className="h-3.5 w-3.5" aria-hidden />
+          云端智能调度
+        </span>
       </div>
 
       {batchGenerating && batchProgress.total > 0 && (
@@ -478,10 +451,6 @@ export function GeoArticleEditorView() {
       {showBatchWorkspace ? (
         <div className="space-y-4">
           <GeoArticleBatchPanel
-            provider={provider}
-            modelSkillId={modelSkillId}
-            viralSkillIds={viralSkillIds}
-            enterpriseSnapshot={enterpriseSnapshot}
             generating={batchGenerating}
             onGeneratingChange={setBatchGenerating}
             onProgress={(done, total) => setBatchProgress({ done, total })}
@@ -489,6 +458,7 @@ export function GeoArticleEditorView() {
             onArticle={handleArticleDone}
             onJobError={handleJobError}
             onBatchComplete={handleBatchComplete}
+            onProjectChange={handleProjectChange}
           />
           <GeoArticleDocGrid
             items={gridItems}
@@ -663,6 +633,7 @@ export function GeoArticleEditorView() {
         title={editorTitle}
         markdown={markdown}
       />
+      </div>
     </GeoWorkflowPage>
   )
 }

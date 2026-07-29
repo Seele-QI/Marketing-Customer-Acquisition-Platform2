@@ -24,6 +24,20 @@ export type ElectronAppInfo = {
   feedConfigured: boolean
 }
 
+export type ServiceRuntimeStatus = {
+  state: 'idle' | 'updating' | 'ready' | 'failed'
+  updatedAt: string
+  configVersion?: string
+  message?: string
+}
+
+export type ClientErrorReportPayload = {
+  category: 'network' | 'local_service' | 'cloud_service' | 'timeout' | 'unknown'
+  requestPath: string
+  status?: number
+  timestamp: string
+}
+
 export interface ElectronAPI {
   checkForUpdate: () => Promise<{
     ok: boolean
@@ -41,6 +55,10 @@ export interface ElectronAPI {
   openLogsFolder: () => Promise<unknown>
   exportLogs: () => Promise<unknown>
   syncConfig: () => Promise<unknown>
+  getServiceRuntimeStatus: () => Promise<ServiceRuntimeStatus>
+  onServiceRuntimeStatus: (handler: (payload: ServiceRuntimeStatus) => void) => () => void
+  restartApp: () => Promise<{ ok: true }>
+  reportClientError: (payload: ClientErrorReportPayload) => Promise<{ ok: boolean }>
   onAuthRequireLogin: (handler: (payload: { message?: string }) => void) => () => void
   /** 云端 Key sync + 子进程重启完成后触发 */
   onConfigKeysReady: (handler: (payload: { ok?: boolean }) => void) => () => void

@@ -12,9 +12,13 @@ describe("dh-v2 plan-script-ai", () => {
     assert.equal(DEFAULT_NEWAPI_GPT_MODEL, "gpt-5.5")
   })
 
-  it("plan LLM order is gpt then deepseek without claude", () => {
-    assert.deepEqual(DH_V2_PLAN_LLM_PROVIDER_ORDER, ["sonetto_gpt", "deepseek"])
-    assert.equal(DH_V2_PLAN_LLM_PROVIDER_ORDER.includes("sonetto_claude"), false)
+  it("plan LLM order is gpt then claude then deepseek then doubao", () => {
+    assert.deepEqual(DH_V2_PLAN_LLM_PROVIDER_ORDER, [
+      "sonetto_gpt",
+      "sonetto_claude",
+      "deepseek",
+      "doubao",
+    ])
   })
 
   it("extractPlanJsonBlock parses fenced JSON", () => {

@@ -89,6 +89,9 @@ def migrate(conn: sqlite3.Connection) -> None:
             balance_after INTEGER NOT NULL,
             ref_id TEXT,
             note TEXT,
+            business_task_id TEXT,
+            business_type TEXT,
+            billing_stage TEXT,
             created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_ledger_user_time ON credit_ledger(user_id, created_at);
@@ -123,6 +126,15 @@ def migrate(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_geo_matrix_user ON geo_matrix_projects(user_id);
     """)
+
+    if _table_exists(conn, "credit_ledger"):
+        for column in ("business_task_id", "business_type", "billing_stage"):
+            if not _column_exists(conn, "credit_ledger", column):
+                conn.execute(f"ALTER TABLE credit_ledger ADD COLUMN {column} TEXT")
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_ledger_user_business_task
+               ON credit_ledger(user_id, business_type, business_task_id, created_at)"""
+        )
 
     if _table_exists(conn, "geo_matrix_projects") and not _column_exists(
         conn, "geo_matrix_projects", "provider"

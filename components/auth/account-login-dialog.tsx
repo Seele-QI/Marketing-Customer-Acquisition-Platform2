@@ -15,6 +15,11 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
+import {
+  FriendlyNetworkError,
+  getCustomerFacingErrorMessage,
+} from "@/lib/api/customer-network-error"
+import { parseAccountAuthResponse } from "@/lib/api/account-auth-response"
 
 export type AuthMe = {
   user: { id: number; email_masked: string; login_name?: string }
@@ -95,25 +100,7 @@ export function AccountLoginDialog({
         body: JSON.stringify(body),
         credentials: "include",
       })
-      const data = (await r.json().catch(() => ({}))) as {
-        detail?: { message?: string; cause?: string } | string
-        user?: AuthMe["user"]
-        balance?: number
-      }
-      if (!r.ok) {
-        const detail = data?.detail
-        const msg =
-          typeof detail === "string"
-            ? detail
-            : detail && typeof detail === "object" && detail.message
-              ? detail.message
-              : "登录失败"
-        const cause =
-          detail && typeof detail === "object" && typeof detail.cause === "string"
-            ? detail.cause.trim()
-            : ""
-        throw new Error(cause ? `${msg}（${cause}）` : msg)
-      }
+      const data = await parseAccountAuthResponse(r)
       const me: AuthMe = {
         user: data.user!,
         balance: data.balance ?? 0,
@@ -124,9 +111,9 @@ export function AccountLoginDialog({
       toast.success(tab === "register" ? "注册成功" : "登录成功")
       router.refresh()
     } catch (e) {
-      const message = e instanceof Error ? e.message : "请求失败"
+      const message = getCustomerFacingErrorMessage(e, "登录失败")
       setAuthError(message)
-      toast.error(message)
+      if (!(e instanceof FriendlyNetworkError)) toast.error(message)
     } finally {
       setAuthMessage("")
       setSending(false)

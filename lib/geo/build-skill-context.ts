@@ -1,4 +1,5 @@
 import { skillSummary } from "@/lib/geo/skill-summary"
+import { buildEnterpriseContext } from "@/lib/geo/enterprise-context"
 
 export type SkillContextInput = {
   modelSkillId?: string | null
@@ -16,7 +17,10 @@ export function buildSkillContextBlock(input: SkillContextInput): string {
 
   const ent = (input.enterpriseSnapshot ?? "").trim()
   if (ent) {
-    parts.push(`## C 层企业知识库\n${ent.slice(0, 4000)}`)
+    parts.push(`## C 层企业知识库\n${buildEnterpriseContext(ent, {
+      maxChars: 4_000,
+      includeContact: true,
+    })}`)
   }
 
   return parts.join("\n\n")

@@ -42,8 +42,11 @@
     "release",
     "release-run",
     "release-new",
+    "release-fixed",
+    "release-local-unpacked",
     "resources",
     "electron",
     ".electron-cache"
+    ,"一键分发源码"
   ]
 }

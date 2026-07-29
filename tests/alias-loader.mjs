@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
@@ -48,8 +49,12 @@ export async function resolve(specifier, context, nextResolve) {
 
 export async function load(url, context, nextLoad) {
   if (url.endsWith(".json")) {
-    const result = await nextLoad(url, { ...context, format: "json" })
-    return result
+    const json = JSON.parse(await readFile(fileURLToPath(url), "utf8"))
+    return {
+      shortCircuit: true,
+      format: "module",
+      source: `export default ${JSON.stringify(json)}`,
+    }
   }
   return nextLoad(url, context)
 }

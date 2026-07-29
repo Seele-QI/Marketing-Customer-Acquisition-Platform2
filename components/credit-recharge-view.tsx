@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CheckCircle2, Coins, Loader2, RefreshCw, TicketPercent, WandSparkles } from "lucide-react"
+import { CheckCircle2, Coins, Loader2, RefreshCw, TicketPercent } from "lucide-react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import type { CreditAccount, LedgerItem } from "@/lib/credit-types"
 import { formatCreditPoints, notifyCreditBalanceChanged } from "@/lib/credit/balance-sync"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
 
 type GeneratedCode = {
   code: string
@@ -28,10 +29,27 @@ function formatLedgerType(type: string) {
   const map: Record<string, string> = {
     register_bonus: "注册赠送",
     redeem: "兑换充值",
+    redeem_code: "兑换充值",
+    refund: "失败退款",
     consume: "消费扣减",
     admin_adjust: "管理员调整",
   }
   return map[type] ?? type
+}
+
+const BUSINESS_TYPE_LABELS: Record<string, string> = {
+  video_digital_human: "数字人视频创作",
+  geo_article_batch: "GEO 文章批量生成",
+  geo_matrix: "GEO 内容矩阵生成",
+  geo_enterprise_skill: "GEO 企业知识技能生成",
+}
+
+function formatTaskBreakdown(item: LedgerItem) {
+  if (!item.breakdown?.length) return item.note || "完整任务积分消耗"
+  const details = item.breakdown
+    .map((part) => `${part.label} ${formatCreditPoints(part.amount)}`)
+    .join(" + ")
+  return `${details}，共 ${formatCreditPoints(Math.max(0, -item.delta))} 积分`
 }
 
 export function CreditRechargeView() {
@@ -115,6 +133,9 @@ export function CreditRechargeView() {
   return (
     <main className="flex-1 overflow-y-auto bg-muted/20 p-6">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+        <div className="flex justify-end">
+          <ModuleTutorialButton view="充值兑换" />
+        </div>
         <section className="rounded-3xl border bg-gradient-to-br from-amber-500 via-orange-500 to-rose-500 p-8 text-white shadow-sm">
           <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
             <div className="space-y-3">
@@ -136,78 +157,61 @@ export function CreditRechargeView() {
           </div>
         </section>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr_1.15fr]">
-          <Card className="rounded-2xl">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TicketPercent className="h-5 w-5 text-amber-500" /> 充值兑换
-              </CardTitle>
-              <CardDescription>输入已登记且未使用的兑换码，成功后积分立即到账。</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="redeem-code">兑换码</Label>
-                <Input
-                  id="redeem-code"
-                  placeholder="XXXX-XXXX-XXXX-XXXX"
-                  value={code}
-                  onChange={(event) => setCode(event.target.value.toUpperCase())}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void redeem()
-                  }}
-                />
+        <Card className="rounded-2xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TicketPercent className="h-5 w-5 text-amber-500" /> 充值兑换
+            </CardTitle>
+            <CardDescription>输入已登记且未使用的兑换码，成功后积分立即到账。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="redeem-code">兑换码</Label>
+              <Input
+                id="redeem-code"
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                value={code}
+                onChange={(event) => setCode(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void redeem()
+                }}
+              />
+            </div>
+            <Button className="w-full" onClick={redeem} disabled={redeeming}>
+              {redeeming ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              立即兑换
+            </Button>
+            <Separator />
+            <div className="grid grid-cols-3 gap-3 text-center text-sm">
+              <div className="rounded-xl bg-muted p-3">
+                <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_recharged ?? 0)}</div>
+                <div className="text-xs text-muted-foreground">累计充值</div>
               </div>
-              <Button className="w-full" onClick={redeem} disabled={redeeming}>
-                {redeeming ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                立即兑换
-              </Button>
-              <Separator />
-              <div className="grid grid-cols-3 gap-3 text-center text-sm">
-                <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_recharged ?? 0)}</div>
-                  <div className="text-xs text-muted-foreground">累计充值</div>
-                </div>
-                <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_bonus ?? 0)}</div>
-                  <div className="text-xs text-muted-foreground">赠送积分</div>
-                </div>
-                <div className="rounded-xl bg-muted p-3">
-                  <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_consumed ?? 0)}</div>
-                  <div className="text-xs text-muted-foreground">累计消耗</div>
-                </div>
+              <div className="rounded-xl bg-muted p-3">
+                <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_bonus ?? 0)}</div>
+                <div className="text-xs text-muted-foreground">赠送积分</div>
               </div>
-              <Button variant="outline" className="w-full" onClick={refreshBalance} disabled={loading}>
-                <RefreshCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} /> 刷新余额
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border-blue-200 bg-blue-50/40">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-blue-700">
-                <WandSparkles className="h-5 w-5" /> 后台管理入口
-              </CardTitle>
-              <CardDescription>使用管理员账号与密码登录后，可生成兑换码并查看批次。</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-blue-700/80">
-                管理员独立页使用账号密码登录，可生成不同额度兑换码、查看批次并一键复制兑换码。
-              </p>
-              <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={() => window.location.href = "/admin/credit"}>
-                进入管理员页
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+              <div className="rounded-xl bg-muted p-3">
+                <div className="font-semibold tabular-nums">{formatCreditPoints(balance?.total_consumed ?? 0)}</div>
+                <div className="text-xs text-muted-foreground">累计消耗</div>
+              </div>
+            </div>
+            <Button variant="outline" className="w-full" onClick={refreshBalance} disabled={loading}>
+              <RefreshCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} /> 刷新余额
+            </Button>
+          </CardContent>
+        </Card>
 
         <Card className="rounded-2xl">
           <CardHeader>
-            <CardTitle>最近积分流水</CardTitle>
-            <CardDescription>展示最近 20 条充值、赠送与消费记录。</CardDescription>
+            <CardTitle>最近任务账单</CardTitle>
+            <CardDescription>
+              按完整业务任务汇总展示，零散模型调用不单列；充值、赠送与退款仍会保留。
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-hidden rounded-xl border">
-              <div className="grid grid-cols-5 bg-muted px-4 py-3 text-xs font-medium text-muted-foreground">
+              <div className="grid grid-cols-[1.15fr_1.1fr_0.75fr_0.8fr_2.2fr] bg-muted px-4 py-3 text-xs font-medium text-muted-foreground">
                 <span>时间</span>
                 <span>类型</span>
                 <span>变动</span>
@@ -218,16 +222,25 @@ export function CreditRechargeView() {
                 <div className="px-4 py-8 text-center text-sm text-muted-foreground">暂无流水记录</div>
               ) : (
                 ledger.map((item) => (
-                  <div key={item.id} className="grid grid-cols-5 border-t px-4 py-3 text-sm">
+                  <div key={item.id} className="grid grid-cols-[1.15fr_1.1fr_0.75fr_0.8fr_2.2fr] items-start border-t px-4 py-3 text-sm">
                     <span className="text-muted-foreground">{formatTime(item.created_at)}</span>
-                    <span>{formatLedgerType(item.type)}</span>
+                    <span>
+                      {item.entry_kind === "business_task"
+                        ? BUSINESS_TYPE_LABELS[item.business_type || ""] || "业务任务"
+                        : formatLedgerType(item.type)}
+                    </span>
                     <span className={item.delta >= 0 ? "text-emerald-600 tabular-nums" : "text-rose-600 tabular-nums"}>
                       {item.delta >= 0 ? "+" : ""}
                       {formatCreditPoints(item.delta)}
                     </span>
                     <span className="tabular-nums">{formatCreditPoints(item.balance_after)}</span>
-                    <span className="truncate text-muted-foreground" title={item.note}>
-                      {item.note || item.ref_id || "--"}
+                    <span
+                      className="break-words text-muted-foreground"
+                      title={item.entry_kind === "business_task" ? formatTaskBreakdown(item) : item.note}
+                    >
+                      {item.entry_kind === "business_task"
+                        ? formatTaskBreakdown(item)
+                        : item.note || item.ref_id || "--"}
                     </span>
                   </div>
                 ))

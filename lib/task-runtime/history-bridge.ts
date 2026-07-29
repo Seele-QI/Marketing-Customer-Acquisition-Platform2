@@ -6,7 +6,7 @@ import type { HistoryRecord, HistoryVideoSource } from "@/lib/video/types"
 import { createImageThumbnail } from "@/lib/video/utils"
 import type { RuntimeTask, TaskKind } from "@/lib/task-runtime/types"
 
-const VIDEO_KINDS: TaskKind[] = ["dh-video-v2", "image-video", "mashup", "promo-video"]
+const VIDEO_KINDS: TaskKind[] = ["dh-video-v2", "dh-video-economy", "image-video", "mashup", "promo-video"]
 
 export function kindWritesHistory(kind: TaskKind): boolean {
   return VIDEO_KINDS.includes(kind)
@@ -50,7 +50,7 @@ export async function writeHistoryFromTask(task: RuntimeTask): Promise<void> {
 
   addHistoryRecord(record)
 
-  if (task.status === "success" && videoUrl && source === "dh-video-v2") {
+  if (task.status === "success" && videoUrl && (source === "dh-video-v2" || source === "dh-video-economy")) {
     addShareVideo({
       id: task.taskId,
       title: script.trim().slice(0, 30) || "数字人口播视频",

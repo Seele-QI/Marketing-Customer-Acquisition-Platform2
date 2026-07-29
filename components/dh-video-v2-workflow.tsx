@@ -95,6 +95,7 @@ import {
   loadDraft,
   saveDraft,
 } from "@/lib/workflow-draft-store"
+import { guardDemoAction } from "@/lib/tutorial/demo-mode"
 import {
   blobToDataUrl,
   clearWorkflowAssets,
@@ -179,6 +180,7 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   const toastedRef = useRef("")
   const planStartedAtRef = useRef(0)
   const planAbortRef = useRef<AbortController | null>(null)
+  const businessTaskIdRef = useRef("")
   const stepRef = useRef<Step>("compose")
   /** 用户主动离开生成页时，禁止 runtime 轮询再把 step 拉回 generating */
   const userLeftGeneratingRef = useRef(false)
@@ -249,23 +251,6 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   const [draftHydrating, setDraftHydrating] = useState(true)
   const [imageRefs, setImageRefs] = useState<AssetRef[]>([])
   const [audioRefs, setAudioRefs] = useState<AssetRef[]>([])
-
-  useEffect(() => {
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "aa17e1" },
-      body: JSON.stringify({
-        sessionId: "aa17e1",
-        location: "dh-video-v2-workflow.tsx:step-change",
-        message: "step state changed",
-        data: { step, genStatus, taskId: taskId || null },
-        timestamp: Date.now(),
-        hypothesisId: "H3",
-      }),
-    }).catch(() => {})
-    // #endregion
-  }, [step, genStatus, taskId])
 
   useEffect(() => {
     let cancelled = false
@@ -413,38 +398,7 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   useEffect(() => {
     if (!dhRuntime) return
 
-    let syncBranch = "none"
-    if (dhRuntime.status === "running") syncBranch = "running"
-    else if (dhRuntime.status === "success") syncBranch = "success"
-    else if (dhRuntime.status === "failed") syncBranch = "failed"
-
     const segs = dhRuntime.result?.segments
-    const segmentStatuses = Array.isArray(segs)
-      ? segs.map((s) => String((s as Record<string, unknown>).status ?? ""))
-      : []
-
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "aa17e1" },
-      body: JSON.stringify({
-        sessionId: "aa17e1",
-        location: "dh-video-v2-workflow.tsx:dhRuntime-sync",
-        message: "dhRuntime sync effect",
-        data: {
-          currentStep: stepRef.current,
-          syncBranch,
-          dhRuntimeStatus: dhRuntime.status,
-          stageLabel: dhRuntime.stageLabel,
-          segmentStatuses,
-          willForceGenerating: syncBranch === "running" || syncBranch === "failed",
-          userLeftGenerating: userLeftGeneratingRef.current,
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H1",
-      }),
-    }).catch(() => {})
-    // #endregion
 
     setTaskId(dhRuntime.taskId)
     setGenProgress(dhRuntime.progress)
@@ -628,7 +582,17 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
     })
   }
 
-  const generateScriptPlan = async (opts?: { isRetry?: boolean }): Promise<DhV2ScriptPlan | null> => {
+  const generateScriptPlan = async (opts?: {
+    isRetry?: boolean
+    businessTaskId?: string
+  }): Promise<DhV2ScriptPlan | null> => {
+    if (!guardDemoAction("dh-video-v2 plan-script")) {
+      toast({
+        title: "演示模式已拦截",
+        description: "教程示例不调用分镜 AI。请打开「查看已保存示例」浏览静态分镜。",
+      })
+      return null
+    }
     const err = validateDhVideoV2Compose({ imageCount: images.length, script })
     if (err) {
       toast({ title: "还差一步", description: err, variant: "destructive" })
@@ -645,6 +609,9 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
     setPlanErr("")
     setComposePhase("正在准备分镜环境…")
     try {
+      const businessTaskId =
+        opts?.businessTaskId || businessTaskIdRef.current || `dhv2_${uid()}`
+      businessTaskIdRef.current = businessTaskId
       await ensureDhVideoV2PlanScriptReady({
         onStatus: (msg) => setComposePhase(msg),
       })
@@ -657,6 +624,7 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
       const { plan } = await requestDhVideoV2ScriptPlan(
         {
           script: script.trim(),
+          business_task_id: businessTaskId,
           creative_idea: creativeIdea.trim() || "专业数字人口播，竖屏 9:16，自然表情",
           image_count: images.length,
           images_base64: imagesBase64,
@@ -777,12 +745,21 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   }
 
   const submitVideoWithPlan = async (plan: DhV2ScriptPlan) => {
+    if (!guardDemoAction("dh-video-v2 submit")) {
+      toast({
+        title: "演示模式已拦截",
+        description: "教程示例不提交视频任务、不扣积分。",
+      })
+      return
+    }
     const err = validateDhVideoV2ScriptPlan(plan)
     if (err) {
       toast({ title: "无法提交", description: err, variant: "destructive" })
       return
     }
 
+    const businessTaskId = businessTaskIdRef.current || `dhv2_${uid()}`
+    businessTaskIdRef.current = businessTaskId
     const payload = buildSubmitPayload({
       provider: "seedance",
       mode,
@@ -793,7 +770,7 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
       resolution: "720p",
       xingheModel: "xinghe-2.0",
       segments: plan.segments,
-      clientTaskId: `dhv2_${uid()}`,
+      clientTaskId: businessTaskId,
     })
 
     setSubmitting(true)
@@ -865,7 +842,9 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
     setStep("scriptPlan")
     setComposePhase("正在生成分镜脚本，预计 2–3 分钟…")
     setPlanning(true)
-    const plan = await generateScriptPlan()
+    const businessTaskId = `dhv2_${uid()}`
+    businessTaskIdRef.current = businessTaskId
+    const plan = await generateScriptPlan({ businessTaskId })
     if (!plan) {
       setPlanning(false)
       setComposePhase("")
@@ -894,29 +873,6 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
     const shouldAbandon = options?.abandonRuntime === true || genStatus === "fail"
     const targetStep = scriptPlan ? "scriptPlan" : "compose"
     const hasRuntime = !!runtimeApi.getTask("dh-video-v2")
-
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "aa17e1" },
-      body: JSON.stringify({
-        sessionId: "aa17e1",
-        location: "dh-video-v2-workflow.tsx:goBackFromGenerating",
-        message: "user clicked back from generating",
-        data: {
-          currentStep: stepRef.current,
-          targetStep,
-          shouldAbandon,
-          genStatus,
-          dhRuntimeStatus: dhRuntime?.status ?? null,
-          hasRuntime,
-          abandonRuntimeOption: options?.abandonRuntime ?? false,
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H5",
-      }),
-    }).catch(() => {})
-    // #endregion
 
     if (shouldAbandon && hasRuntime) {
       runtimeApi.abandon("dh-video-v2")
@@ -954,26 +910,6 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   const abandonTaskAndReturnToCompose = () => {
     if (mockTimerRef.current) clearInterval(mockTimerRef.current)
     userLeftGeneratingRef.current = true
-
-    // #region agent log
-    fetch("http://127.0.0.1:7359/ingest/9b53aa58-6ae0-40b5-94f4-2d3a818cb581", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "aa17e1" },
-      body: JSON.stringify({
-        sessionId: "aa17e1",
-        location: "dh-video-v2-workflow.tsx:abandonTaskAndReturnToCompose",
-        message: "user abandoned task",
-        data: {
-          currentStep: stepRef.current,
-          taskId: taskId || null,
-          hadRuntime: !!runtimeApi.getTask("dh-video-v2"),
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H1",
-        runId: "post-fix",
-      }),
-    }).catch(() => {})
-    // #endregion
 
     if (runtimeApi.getTask("dh-video-v2")) {
       runtimeApi.abandon("dh-video-v2")
@@ -1027,7 +963,10 @@ export default function DhVideoV2Workflow({ initialScript = "" }: { initialScrip
   const fieldLabel = cn("mb-1 block text-[11px] font-medium", tokens.fieldLabel)
 
   return (
-    <div className={cn("dh-v2-workflow relative h-full overflow-y-auto", tokens.page)}>
+    <div
+      className={cn("dh-v2-workflow relative h-full overflow-y-auto", tokens.page)}
+      data-tutorial-id="dh-v2-compose"
+    >
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.35]"
         style={{ background: tokens.pageGlow }}

@@ -841,7 +841,7 @@ export function ChatWorkspace({
       if (timeoutId != null) window.clearTimeout(timeoutId)
 
       if (!response.ok) {
-        let detail = `HTTP ${response.status}`
+        let detail = "请求暂时未完成，请稍后重试。"
         try {
           const j = (await response.json()) as { detail?: unknown }
           detail = parseApiErrorResponse(response.status, j, detail)

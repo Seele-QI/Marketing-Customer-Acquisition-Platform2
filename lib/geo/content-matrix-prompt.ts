@@ -9,6 +9,7 @@ import {
   resolveViralSkillIds,
 } from "@/lib/geo/matrix-platforms"
 import { skillSummary } from "@/lib/geo/skill-summary"
+import { buildEnterpriseContext } from "@/lib/geo/enterprise-context"
 import type { ThemeArcSeed } from "@/lib/geo/matrix-json"
 
 export type { ThemeArcSeed } from "@/lib/geo/matrix-json"
@@ -48,7 +49,10 @@ export type BuildMatrixPromptInput = {
 
 function enterpriseBlock(snapshot?: string | null): string {
   const ent = (snapshot ?? "").trim()
-  return ent ? `## 企业知识库（C 层）\n${ent.slice(0, 6000)}` : ""
+  return ent ? `## 企业知识库（C 层）\n${buildEnterpriseContext(ent, {
+    maxChars: 6_000,
+    includeContact: false,
+  })}` : ""
 }
 
 function modelBlock(modelSkillId?: string | null): string {

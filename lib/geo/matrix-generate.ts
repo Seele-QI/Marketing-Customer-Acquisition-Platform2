@@ -12,11 +12,6 @@ import {
   type ThemeArcSeed,
 } from "@/lib/geo/content-matrix-prompt"
 import {
-  completeText,
-  type CompleteTextBilling,
-  type LlmProviderId,
-} from "@/lib/geo/llm/router"
-import {
   MATRIX_DAYS,
   matrixDateRange,
   matrixStartDateIso,
@@ -24,24 +19,20 @@ import {
 import type { MatrixCell, MatrixData, PlatformMatrix } from "@/lib/geo/matrix-types"
 
 export type GenerateMatrixParams = {
-  provider: LlmProviderId
   projectName: string
   platforms: string[]
   modelSkillId?: string | null
   viralSkillIds?: string[]
   enterpriseSnapshot?: string | null
-  /** Sonetto（gpt/claude）计量扣费 */
-  userId?: number
-  cookieHeader?: string
+  complete: MatrixTextCompletion
 }
 
-function billingFor(
-  _params: GenerateMatrixParams,
-  _prefix: string,
-): CompleteTextBilling | undefined {
-  // 矩阵整批扣费在 API 路由层（geo_matrix_gen），此处不再按 LLM 次扣费
-  return undefined
-}
+export type MatrixTextCompletion = (input: {
+  system: string
+  user: string
+  maxTokens: number
+  validateText: (text: string) => boolean
+}) => Promise<string>
 
 const MAX_TOKENS_SEED = 2048
 const MAX_TOKENS_PLATFORM = 8192
@@ -66,8 +57,7 @@ async function generateThemeSeed(
   startIso: string,
 ): Promise<ThemeArcSeed> {
   try {
-    const raw = await completeText({
-      provider: params.provider,
+    const raw = await params.complete({
       system: buildThemeArcSeedSystemPrompt(),
       user: buildThemeArcSeedUserPrompt({
         projectName: params.projectName,
@@ -78,7 +68,14 @@ async function generateThemeSeed(
         startIso,
       }),
       maxTokens: MAX_TOKENS_SEED,
-      billing: billingFor(params, "geo-matrix-seed"),
+      validateText: (text) => {
+        try {
+          parseThemeArcSeed(text)
+          return true
+        } catch {
+          return false
+        }
+      },
     })
     const seed = parseThemeArcSeed(raw)
     // 强制日期对齐到 startIso
@@ -103,12 +100,29 @@ async function generateThemeSeed(
   }
 }
 
+const REQUIRED_CELL_TEXT_FIELDS = [
+  "themeArc",
+  "title",
+  "contentDirection",
+  "format",
+  "geoIntent",
+  "platformNative",
+] as const
+
+function isUsableMatrixCell(cell: MatrixCell): boolean {
+  if (!cell || typeof cell.date !== "string" || !cell.date.trim()) return false
+  return REQUIRED_CELL_TEXT_FIELDS.every((field) => {
+    const value = cell[field]
+    return typeof value === "string" && Boolean(value.trim())
+  })
+}
+
 function missingDatesForPlatform(
   cells: MatrixCell[],
   startIso: string,
 ): string[] {
   const dates = matrixDateRange(startIso, MATRIX_DAYS)
-  const have = new Set(cells.map((c) => c.date).filter(Boolean))
+  const have = new Set(cells.filter(isUsableMatrixCell).map((cell) => cell.date))
   return dates.filter((d) => !have.has(d))
 }
 
@@ -131,28 +145,38 @@ async function generateOnePlatform(
   })
 
   let cells: MatrixCell[] = []
+  let lastError: unknown
   try {
-    const raw = await completeText({
-      provider: params.provider,
+    const raw = await params.complete({
       system,
       user,
       maxTokens: MAX_TOKENS_PLATFORM,
-      billing: billingFor(params, "geo-matrix-plat"),
+      validateText: (text) => {
+        try {
+          const parsed = parseMatrixJson(text)
+          const platform =
+            parsed.platforms.find((item) => item.platformId === platformId) ??
+            parsed.platforms[0]
+          return Boolean(platform?.cells?.some(isUsableMatrixCell))
+        } catch {
+          return false
+        }
+      },
     })
     const parsed = parseMatrixJson(raw)
     const pm =
       parsed.platforms.find((p) => p.platformId === platformId) ??
       parsed.platforms[0]
-    cells = pm?.cells ?? []
-  } catch {
+    cells = (pm?.cells ?? []).filter(isUsableMatrixCell)
+  } catch (error) {
+    lastError = error
     cells = []
   }
 
   let missing = missingDatesForPlatform(cells, startIso)
   if (missing.length > 0) {
     try {
-      const fillRaw = await completeText({
-        provider: params.provider,
+      const fillRaw = await params.complete({
         system: "你只输出合法 JSON，不要 Markdown 或解释。",
         user: buildPlatformFillUserPrompt({
           platformId,
@@ -166,21 +190,40 @@ async function generateOnePlatform(
           enterpriseSnapshot: params.enterpriseSnapshot,
         }),
         maxTokens: MAX_TOKENS_PLATFORM,
-        billing: billingFor(params, "geo-matrix-fill"),
+        validateText: (text) => {
+          try {
+            const parsed = parseMatrixJson(text)
+            const platform =
+              parsed.platforms.find((item) => item.platformId === platformId) ??
+              parsed.platforms[0]
+            return Boolean(platform?.cells?.some(isUsableMatrixCell))
+          } catch {
+            return false
+          }
+        },
       })
       const fillParsed = parseMatrixJson(fillRaw)
       const fillPm =
         fillParsed.platforms.find((p) => p.platformId === platformId) ??
         fillParsed.platforms[0]
-      const filled = fillPm?.cells ?? []
+      const filled = (fillPm?.cells ?? []).filter(isUsableMatrixCell)
       const byDate = new Map(cells.map((c) => [c.date, c]))
       for (const c of filled) {
         if (c?.date) byDate.set(c.date, c)
       }
       cells = [...byDate.values()]
-    } catch {
-      // fall through to align placeholder
+    } catch (error) {
+      lastError = error
     }
+  }
+
+  missing = missingDatesForPlatform(cells, startIso)
+  if (missing.length > 0) {
+    if (lastError instanceof Error) throw lastError
+    throw Object.assign(
+      new Error(`MATRIX_PLATFORM_INCOMPLETE: ${platformId} 缺少 ${missing.length} 天内容`),
+      { statusCode: 502, code: "MATRIX_PLATFORM_INCOMPLETE" },
+    )
   }
 
   const fallbackArc = themeSeed.themeArcs[0] || params.projectName

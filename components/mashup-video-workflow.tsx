@@ -804,6 +804,7 @@ export function MashupVideoWorkflow() {
 
   return (
     <VideoWorkflowPage>
+      <div data-tutorial-id="mashup-workflow">
       <WorkflowHero
         accentColor="violet"
         title="AI"
@@ -871,6 +872,7 @@ export function MashupVideoWorkflow() {
           )}
         </>
       )}
+      </div>
     </VideoWorkflowPage>
   )
 }

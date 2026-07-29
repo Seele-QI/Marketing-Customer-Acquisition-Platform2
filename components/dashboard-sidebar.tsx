@@ -25,11 +25,15 @@ import {
   Grid3x3,
   FileEdit,
   Settings,
+  Send,
+  Newspaper,
+  Palette,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserMenu } from "@/components/user-menu"
 import { VIDEO_VIEWS } from "@/lib/video/workspace"
 import { GEO_VIEWS } from "@/lib/geo/workspace"
+import { DISTRIBUTION_VIEWS } from "@/lib/distribution/workspace"
 import { useRuntimeTasks, VIEW_TO_TASK_KIND } from "@/lib/task-runtime"
 
 type NavItem = {
@@ -62,6 +66,7 @@ const mainNav: NavItem[] = [
   { label: "视频创作", icon: Clapperboard, badge: "NEW", iconColor: "text-rose-500", iconBg: "bg-rose-500/10",
     children: [
       { label: "数字人口播视频（新）", view: VIDEO_VIEWS.DH_VIDEO_V2, icon: Sparkles, iconColor: "text-amber-500" },
+      { label: "数字人视频创作（经济版）", view: VIDEO_VIEWS.DH_VIDEO_ECONOMY, icon: Video, iconColor: "text-emerald-500" },
       { label: "图文视频", view: VIDEO_VIEWS.IMAGE_VIDEO, icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", view: VIDEO_VIEWS.MASHUP, icon: Scissors, iconColor: "text-violet-500" },
       { label: "宣传视频", view: VIDEO_VIEWS.PROMO, icon: Video, iconColor: "text-sky-500" },
@@ -73,6 +78,13 @@ const mainNav: NavItem[] = [
       { label: "企业知识库搭建", view: GEO_VIEWS.KNOWLEDGE_BASE, icon: Database, iconColor: "text-cyan-500" },
       { label: "内容矩阵规划", view: GEO_VIEWS.CONTENT_MATRIX, icon: Grid3x3, iconColor: "text-cyan-600" },
       { label: "深度优化文章创作", view: GEO_VIEWS.ARTICLE_EDITOR, icon: FileEdit, iconColor: "text-teal-500" },
+    ],
+  },
+  { label: "图片工作台", icon: Palette, badge: "NEW", iconColor: "text-violet-500", iconBg: "bg-violet-500/10" },
+  { label: "一键分发", icon: Send, badge: "NEW", iconColor: "text-orange-500", iconBg: "bg-orange-500/10",
+    children: [
+      { label: "视频一键分发", view: DISTRIBUTION_VIEWS.VIDEO, icon: Video, iconColor: "text-orange-500" },
+      { label: "GEO文章一键分发", view: DISTRIBUTION_VIEWS.GEO_ARTICLE, icon: Newspaper, iconColor: "text-cyan-600", badge: "即将开放" },
     ],
   },
   { label: "充值兑换", icon: TicketPercent, iconColor: "text-amber-500", iconBg: "bg-amber-500/10" },
@@ -159,6 +171,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
               <li key={item.label}>
                 <button
                   type="button"
+                  data-tutorial-id={`nav-${item.label}`}
                   onClick={() => {
                     if (hasChildren) {
                       toggleExpand(item.label)
@@ -225,6 +238,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
                         <li key={child.label}>
                           <button
                             type="button"
+                            data-tutorial-id={`nav-${child.label}`}
                             onClick={() => onSelect(childView as MainView)}
                             className={cn(
                               "group flex w-full items-center gap-2.5 rounded-full px-3 py-1.5 text-left text-[13px] transition-colors",
@@ -274,6 +288,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
               <li key={item.label}>
                 <button
                   type="button"
+                  data-tutorial-id={`nav-${item.label}`}
                   onClick={() => onSelect(item.label as MainView)}
                   className={cn(
                     "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors",

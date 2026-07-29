@@ -43,7 +43,7 @@ export async function startBatchGenerate(
     try {
       data = (await resp.json()) as { detail?: unknown; error?: string }
     } catch {
-      throw new Error(`批量生成失败（HTTP ${resp.status}）`)
+      throw new Error(parseApiErrorResponse(resp.status, {}, "批量生成失败"))
     }
     throw new Error(parseApiErrorResponse(resp.status, data, "批量生成失败"))
   }
@@ -57,6 +57,8 @@ export async function startBatchGenerate(
   let buffer = ""
   let successCount = 0
   let failCount = 0
+  let sawBatchComplete = false
+  let batchError: string | null = null
 
   while (true) {
     const { done, value } = await reader.read()
@@ -74,14 +76,23 @@ export async function startBatchGenerate(
         if (event.type === "job_done") {
           successCount += 1
           handlers.onArticle?.(event.article)
-        } else if (event.type === "job_error" && event.jobId !== "batch") {
-          failCount += 1
+        } else if (event.type === "job_error") {
+          if (event.jobId === "batch") batchError = event.error
+          else failCount += 1
         } else if (event.type === "batch_complete") {
+          sawBatchComplete = true
           successCount = event.successCount
           failCount = event.failCount
         }
       }
     }
+  }
+
+  if (!sawBatchComplete) {
+    throw new Error("批量生成连接提前结束，请重试")
+  }
+  if (batchError) {
+    throw new Error(batchError)
   }
 
   return { successCount, failCount }

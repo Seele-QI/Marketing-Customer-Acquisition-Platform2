@@ -38,6 +38,10 @@ def test_classify_geo_provider():
     assert classify_geo_provider("doubao") == "economy"
     assert classify_geo_provider("gpt") == "premium"
     assert classify_geo_provider("claude") == "premium"
+    assert classify_geo_provider("gpt-5.5") == "premium"
+    assert classify_geo_provider("claude-opus-4-8") == "premium"
+    assert classify_geo_provider("openai/gpt-5.5") == "premium"
+    assert classify_geo_provider("anthropic/claude-opus-4") == "premium"
 
 
 def test_copywriting_llm_billing():
@@ -72,6 +76,31 @@ def test_dh_v2_retry_billing():
     r = resolve_billing_cost("video.dh_v2_retry", {"provider": "seedance"})
     assert r.scene == "dh_v2_video_retry"
     assert r.cost == 450
+
+
+def test_dh_economy_segment_and_retry_billing():
+    two_segments = resolve_billing_cost(
+        "video.dh_economy_segment",
+        {"duration_seconds": 36.0, "segment_count": 2},
+    )
+    assert two_segments.scene == "dh_economy_video_segment"
+    assert two_segments.cost == 500
+
+    three_segments = resolve_billing_cost(
+        "video.dh_economy_segment",
+        {"duration_seconds": 60.0, "segment_count": 3},
+    )
+    assert three_segments.cost == 750
+
+    four_segments = resolve_billing_cost(
+        "video.dh_economy_segment",
+        {"duration_seconds": 60.001, "segment_count": 4},
+    )
+    assert four_segments.cost == 1000
+
+    retry = resolve_billing_cost("video.dh_economy_retry", {})
+    assert retry.scene == "dh_economy_video_retry"
+    assert retry.cost == 250
 
 
 def test_promo_segment_billing():

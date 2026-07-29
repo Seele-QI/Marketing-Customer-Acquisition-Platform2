@@ -16,14 +16,10 @@ import {
   Trash2,
   User,
   Bot,
-  Brain,
   X,
-  Pencil,
   Clapperboard,
   Paperclip,
 } from "lucide-react"
-import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
-import { isSonettoModelId } from "@/lib/llm/model-registry"
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -32,18 +28,16 @@ import {
   splitCopywritingScriptVersions,
   type CopywritingScriptVersion,
 } from "@/lib/copywriting-script-format"
-import {
-  readUserMemory,
-  updateUserMemory,
-  hasUserMemory,
-  getMemorySummary,
-  clearUserMemory,
-  buildMemoryContext,
-} from "@/lib/user-memory"
 import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { isLoginRequiredError } from "@/lib/auth/prompt-login"
-import { consumeBillingAwareSseStream } from "@/lib/credit/balance-sync"
+import {
+  consumeBillingAwareSseStream,
+  type MemorySseMetadata,
+} from "@/lib/credit/balance-sync"
+import { MemoryIndicator } from "@/components/memory/memory-indicator"
+import { MemoryCenterDialog } from "@/components/memory/memory-center-dialog"
+import { useUserMemory } from "@/hooks/use-user-memory"
 import {
   type PendingImage,
   MAX_PENDING_IMAGES,
@@ -331,39 +325,6 @@ function PresetQuestions({
   )
 }
 
-function MemoryIndicator({
-  onEdit,
-}: {
-  onEdit: () => void
-}) {
-  const [dismissed, setDismissed] = React.useState(false)
-
-  if (!hasUserMemory() || dismissed) return null
-
-  return (
-    <div className="flex items-center gap-2 rounded-xl border border-purple-200/60 bg-purple-50/50 px-3 py-2 dark:border-purple-500/20 dark:bg-purple-500/5">
-      <Brain className="h-3.5 w-3.5 shrink-0 text-purple-500" />
-      <span className="min-w-0 flex-1 truncate text-[12px] text-purple-700 dark:text-purple-300">
-        AI 已记住：{getMemorySummary()}
-      </span>
-      <button
-        type="button"
-        onClick={onEdit}
-        className="shrink-0 rounded-md p-0.5 text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-500/10"
-      >
-        <Pencil className="h-3 w-3" />
-      </button>
-      <button
-        type="button"
-        onClick={() => setDismissed(true)}
-        className="shrink-0 rounded-md p-0.5 text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-500/10"
-      >
-        <X className="h-3 w-3" />
-      </button>
-    </div>
-  )
-}
-
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
@@ -380,16 +341,15 @@ export function CopywritingChatWorkspace({
   initialUserMessage,
 }: Props) {
   const { requireLogin, promptLogin } = useLoginRequired()
+  const memory = useUserMemory()
   const [sessions, setSessions] = React.useState<HistorySession[]>(() => loadSessions(agentName))
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null)
   const [messages, setMessages] = React.useState<Message[]>([])
   const [inputValue, setInputValue] = React.useState("")
   const [isSending, setIsSending] = React.useState(false)
   const [sidebarSearch, setSidebarSearch] = React.useState("")
-  const [memoryEditing, setMemoryEditing] = React.useState(false)
-  const { models: aiModels, modelId, setModelId } = useAiModels()
-  const modelIdRef = React.useRef(modelId)
-  modelIdRef.current = modelId
+  const [memoryCenterOpen, setMemoryCenterOpen] = React.useState(false)
+  const [lastUsedMemory, setLastUsedMemory] = React.useState<Array<Record<string, unknown>>>([])
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const scrollAnchorRef = React.useRef<HTMLDivElement>(null)
   const inputValueRef = React.useRef(inputValue)
@@ -432,38 +392,6 @@ export function CopywritingChatWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUserMessage, agentName])
 
-  /** Run memory extraction on recent messages */
-  const extractMemory = React.useCallback(async (msgs: Message[]) => {
-    const recent = msgs.slice(-6)
-    const userMessages = recent.filter((m) => m.role === "user")
-    if (userMessages.length < 2) return // Need at least 2 user messages
-
-    try {
-      const res = await fetch("/api/ai/memory-extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: recent }),
-      })
-      if (!res.ok) return
-      const data = await res.json()
-
-      // Only update if meaningful info was extracted
-      const hasInfo =
-        data.industry || data.role || (data.goals?.length > 0) || (data.preferences?.length > 0)
-      if (!hasInfo) return
-
-      updateUserMemory({
-        industry: data.industry || undefined,
-        role: data.role || undefined,
-        goals: data.goals ?? [],
-        preferences: data.preferences ?? [],
-        facts: data.facts ?? [],
-      })
-    } catch {
-      /* silent fail — memory is non-critical */
-    }
-  }, [])
-
   const removePendingImage = React.useCallback((id: string) => {
     setPendingImages((prev) => {
       const target = prev.find((p) => p.id === id)
@@ -484,15 +412,6 @@ export function CopywritingChatWorkspace({
     const imgs = pendingImagesRef.current
     if ((!content && imgs.length === 0) || isSendingRef.current) return
 
-    if (imgs.length > 0 && isSonettoModelId(modelIdRef.current)) {
-      toast({
-        title: "当前模型不支持识图",
-        description: "请切换为 DeepSeek 或豆包后再发送图片。",
-        variant: "destructive",
-      })
-      return
-    }
-
     isSendingRef.current = true
     setInputValue("")
     setIsSending(true)
@@ -512,6 +431,7 @@ export function CopywritingChatWorkspace({
 
     const userBubbleContent =
       content || (imagePayload?.length ? `已上传${imagePayload.length}张图片` : "")
+    const requestSessionId = activeSessionId ?? crypto.randomUUID()
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
@@ -544,6 +464,17 @@ export function CopywritingChatWorkspace({
         return
       }
 
+      setLastUsedMemory([])
+      void memory
+        .observeUserTurn({
+          scope: "copywriting",
+          sessionId: requestSessionId,
+          messageId: userMsg.id,
+          userMessage: userBubbleContent,
+        })
+        .then(() => memory.refresh())
+        .catch(() => undefined)
+
       const res = await fetch("/api/ai/chat-stream", {
         method: "POST",
         credentials: "include",
@@ -551,9 +482,7 @@ export function CopywritingChatWorkspace({
         body: JSON.stringify({
           userMessage: content,
           agentName,
-          modelId: modelIdRef.current,
           conversationHistory: history,
-          memoryContext: buildMemoryContext(),
           ...(imagePayload && imagePayload.length > 0 ? { images: imagePayload } : {}),
         }),
       })
@@ -566,6 +495,9 @@ export function CopywritingChatWorkspace({
       }
 
       let fullResponse = ""
+      const onMemory = (metadata: MemorySseMetadata) => {
+        setLastUsedMemory(metadata.items)
+      }
       await consumeBillingAwareSseStream(
         res,
         (delta) => {
@@ -576,13 +508,15 @@ export function CopywritingChatWorkspace({
             ),
           )
         },
+        undefined,
+        onMemory,
       )
 
       // Save to sessions
       const finalMessages = [...messages, userMsg, { ...assistantMsg, content: fullResponse }]
       const title = userBubbleContent.slice(0, 40) + (userBubbleContent.length > 40 ? "…" : "")
       const newSession: HistorySession = {
-        id: activeSessionId ?? crypto.randomUUID(),
+        id: requestSessionId,
         title,
         date: todayStr(),
         messages: finalMessages,
@@ -597,9 +531,6 @@ export function CopywritingChatWorkspace({
       }
       setSessions(updated)
       saveSessions(agentName, updated)
-
-      // Trigger memory extraction
-      extractMemory(finalMessages)
     } catch (e) {
       const errorText = e instanceof Error ? e.message : "发送失败"
       if (isLoginRequiredError(errorText)) {
@@ -608,7 +539,7 @@ export function CopywritingChatWorkspace({
       const suffix =
         errorText.includes("请先登录") || errorText.includes("积分不足")
           ? ""
-          : "\n\n若持续失败，请确认已运行 pnpm dev:all 且配置 DEEPSEEK_API_KEY。"
+          : "\n\n若持续失败，请保持客户端登录并等待云端模型配置同步完成后重试。"
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantMsg.id
@@ -620,7 +551,7 @@ export function CopywritingChatWorkspace({
       setIsSending(false)
       isSendingRef.current = false
     }
-  }, [messages, agentName, activeSessionId, sessions, extractMemory, requireLogin, promptLogin])
+  }, [messages, agentName, activeSessionId, sessions, memory, requireLogin, promptLogin])
 
   const handleNewChat = React.useCallback(() => {
     setActiveSessionId(null)
@@ -663,11 +594,17 @@ export function CopywritingChatWorkspace({
   const grouped = groupSessionsByDate(filteredSessions)
 
   return (
-    <div className="flex min-h-0 flex-1 bg-background">
+    <div
+      className="flex h-full min-h-0 flex-1 overflow-hidden bg-background"
+      data-tutorial-id="copywriting-workspace"
+    >
       {/* ================================================================ */}
       {/*  Left Sidebar (260px) — hidden on narrow screens                 */}
       {/* ================================================================ */}
-      <aside className="hidden w-[260px] shrink-0 flex-col border-r border-border/60 bg-slate-50/50 lg:flex dark:bg-slate-950/50">
+      <aside
+        className="hidden min-h-0 w-[260px] shrink-0 flex-col overflow-hidden border-r border-border/60 bg-slate-50/50 lg:flex dark:bg-slate-950/50"
+        data-copywriting-fixed-sidebar
+      >
         {/* Back + Agent list (browse, not menu) */}
         <div className="border-b border-border/40 p-3">
           {onBack && (
@@ -760,7 +697,10 @@ export function CopywritingChatWorkspace({
         </div>
 
         {/* History List */}
-        <div className="flex-1 overflow-y-auto px-3 py-2">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2"
+          data-copywriting-history-scroll
+        >
           {Object.keys(grouped).length === 0 && (
             <p className="py-8 text-center text-[12px] text-slate-400">暂无对话记录</p>
           )}
@@ -807,7 +747,7 @@ export function CopywritingChatWorkspace({
       {/* ================================================================ */}
       {/*  Main Chat Area                                                   */}
       {/* ================================================================ */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top bar */}
         <div className="shrink-0 flex items-center justify-between border-b border-border/40 px-5 py-3">
           <div>
@@ -821,7 +761,10 @@ export function CopywritingChatWorkspace({
         </div>
 
         {/* Messages */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          data-copywriting-message-scroll
+        >
           <div className="mx-auto max-w-[720px] px-5 py-6">
             {messages.length === 0 ? (
               /* Welcome State */
@@ -933,43 +876,18 @@ export function CopywritingChatWorkspace({
         </div>
 
         {/* Input Area — always sticky at bottom */}
-        <div className="shrink-0 border-t border-border/40 bg-gradient-to-t from-white via-white to-transparent px-4 pb-3 pt-1 dark:from-background dark:via-background sm:px-5 sm:pb-4 sm:pt-2">
-          <div className="mx-auto max-w-[720px] space-y-2">
-            {/* Memory Indicator */}
-            <MemoryIndicator onEdit={() => setMemoryEditing(!memoryEditing)} />
-
-            {/* Memory Edit Panel */}
-            {memoryEditing && (
-              <div className="rounded-xl border border-purple-200/60 bg-purple-50/50 p-3 dark:border-purple-500/20 dark:bg-purple-500/5">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[12px] font-medium text-purple-700 dark:text-purple-300">
-                    编辑 AI 记忆
-                  </span>
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearUserMemory()
-                        setMemoryEditing(false)
-                      }}
-                      className="rounded-md px-2 py-0.5 text-[11px] text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-500/10"
-                    >
-                      清除记忆
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMemoryEditing(false)}
-                      className="rounded-md px-2 py-0.5 text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10"
-                    >
-                      完成
-                    </button>
-                  </div>
-                </div>
-                <p className="text-[12px] text-slate-500 dark:text-slate-400">
-                  {getMemorySummary() || "暂无记忆。继续对话，AI 会自动学习你的信息。"}
-                </p>
-              </div>
-            )}
+        <div
+          className="shrink-0 border-t border-border/40 bg-gradient-to-t from-white via-white to-transparent px-4 pb-3 pt-1 dark:from-background dark:via-background sm:px-5 sm:pb-4 sm:pt-2"
+          data-copywriting-composer
+        >
+          <div className="mx-auto flex max-h-[55dvh] max-w-[720px] flex-col gap-2">
+            <div className="min-h-0 space-y-2 overflow-y-auto overscroll-contain pr-1">
+            <MemoryIndicator
+              syncStatus={memory.syncStatus}
+              summary={memory.summary}
+              usedCount={lastUsedMemory.length}
+              onOpen={() => setMemoryCenterOpen(true)}
+            />
 
             {/* Preset Questions (show after each AI response, Doubao-style) */}
             {messages.length > 0 && !isSending && (
@@ -981,17 +899,10 @@ export function CopywritingChatWorkspace({
                 }}
               />
             )}
-
-            <AiModelPicker
-              modelId={modelId}
-              onChange={setModelId}
-              models={aiModels}
-              disabled={isSending}
-              className="mb-1"
-            />
+            </div>
 
             {/* Input Row */}
-            <div className="flex items-end gap-2">
+            <div className="flex shrink-0 items-end gap-2">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -1089,12 +1000,17 @@ export function CopywritingChatWorkspace({
                 )}
               </button>
             </div>
-            <p className="text-center text-[11px] text-slate-400">
+            <p className="shrink-0 text-center text-[11px] text-slate-400">
               AI 生成内容仅供参考 · Enter 发送，Shift+Enter 换行
             </p>
           </div>
         </div>
       </div>
+      <MemoryCenterDialog
+        open={memoryCenterOpen}
+        onOpenChange={setMemoryCenterOpen}
+        lastUsedItems={lastUsedMemory}
+      />
     </div>
   )
 }

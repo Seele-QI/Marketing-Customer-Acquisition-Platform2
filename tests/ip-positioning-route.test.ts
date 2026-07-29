@@ -7,6 +7,8 @@ import {
   validateIntake,
   validateIpPositioningReport,
 } from "@/lib/ip-positioning-schema"
+import { runIpPositioningAnalysis } from "@/lib/ip-positioning-analyze"
+import type { CopywritingProviderCandidate } from "@/lib/llm/copywriting-router"
 
 const SAMPLE_REPORT = {
   oneLiner: "帮助焦虑家长做理性升学决策",
@@ -78,18 +80,56 @@ describe("ip-positioning schema", () => {
   })
 })
 
-describe("ip-positioning analyze helpers", () => {
-  it("resolveIpPositioningModel returns configured model when env set", async () => {
-    const { resolveIpPositioningModel } = await import("@/lib/ip-positioning-schema")
-    const prevKey = process.env.NEWAPI_KEY
-    process.env.NEWAPI_KEY = "test-key"
-    try {
-      const { modelId, error } = resolveIpPositioningModel("gpt-5.5")
-      assert.equal(modelId, "gpt-5.5")
-      assert.equal(error, undefined)
-    } finally {
-      if (prevKey === undefined) delete process.env.NEWAPI_KEY
-      else process.env.NEWAPI_KEY = prevKey
+function cloudCandidate(name: string, model: string): CopywritingProviderCandidate {
+  return {
+    source: "cloud",
+    name,
+    adapter: "openai_chat",
+    url: `https://${name}.example/v1/chat/completions`,
+    apiKey: `${name}-key`,
+    model,
+    timeoutMs: 5_000,
+  }
+}
+
+describe("ip-positioning cloud routing", () => {
+  it("returns CLOUD_MODEL_NOT_READY instead of using a local model", async () => {
+    const result = await runIpPositioningAnalysis({
+      providers: [],
+      intake: normalizeIntake({}),
+      documents: [],
+    })
+
+    assert.equal(result.ok, false)
+    if (!result.ok) {
+      assert.equal(result.status, 503)
+      assert.equal(result.code, "CLOUD_MODEL_NOT_READY")
     }
+  })
+
+  it("uses cloud order and accepts the first valid positioning report", async () => {
+    const calls: string[] = []
+    const providers = [
+      cloudCandidate("first", "cloud-first"),
+      cloudCandidate("second", "cloud-second"),
+    ]
+    const result = await runIpPositioningAnalysis({
+      providers,
+      intake: normalizeIntake({}),
+      documents: [],
+      fetchImpl: async (input) => {
+        const url = String(input)
+        calls.push(url)
+        const content = url.includes("first") ? "not-json" : JSON.stringify(SAMPLE_REPORT)
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      },
+    })
+
+    assert.deepEqual(calls, providers.map((provider) => provider.url))
+    assert.equal(result.ok, true)
+    if (result.ok) assert.equal(result.meta.model, "cloud-second")
   })
 })

@@ -1,5 +1,9 @@
 import { getCloudApiBase } from "@/lib/fastapi-base"
 import {
+  businessTaskPayload,
+  type BusinessTaskBilling,
+} from "@/lib/credit/business-task"
+import {
   resolveBillingCost,
   type BillingKey,
   type BillingParams,
@@ -10,6 +14,7 @@ export async function chargeBillingEvent(opts: {
   billingKey: BillingKey
   params?: BillingParams
   refId: string
+  businessTask?: BusinessTaskBilling
 }): Promise<{ balance: number; cost: number; scene: string }> {
   const base = getCloudApiBase()
   if (!base) throw new Error("FASTAPI_UNAVAILABLE")
@@ -24,6 +29,7 @@ export async function chargeBillingEvent(opts: {
       billing_key: opts.billingKey,
       params: opts.params ?? {},
       ref_id: opts.refId,
+      ...businessTaskPayload(opts.businessTask),
     }),
   })
 

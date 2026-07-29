@@ -1,5 +1,6 @@
 /**
- * 数字人视频创作（新）— 大模型分镜规划（GPT-5.5 优先，DeepSeek 兜底）
+ * 数字人视频创作（新）— 大模型分镜规划
+ * 顺序：ChatGPT → Claude → DeepSeek → 豆包（DeepSeek 失败才用豆包）
  */
 
 import {
@@ -8,8 +9,13 @@ import {
 } from "@/lib/deepseek-chat"
 import { getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
 import {
+  arkChatCompletionNonStream,
+  isArkChatConfigured,
+} from "@/lib/llm/ark-client"
+import {
   DEFAULT_NEWAPI_CLAUDE_MODEL,
   DEFAULT_NEWAPI_GPT_MODEL,
+  DOUBAO_SEED_21_MODEL_ID,
 } from "@/lib/llm/model-registry"
 import {
   isSonettoProviderConfigured,
@@ -25,17 +31,26 @@ import {
   type DhV2ScriptPlan,
 } from "./script-plan"
 import { extractPlanJsonBlock, mergeAiPlanFromResponse } from "./plan-script-parse"
+import {
+  calculateDhV2PlanMaxTokens,
+  runDhV2PlanProviderChain,
+} from "./plan-provider-chain"
+import { resolvePlanScriptProviderOrderFromFeatures } from "@/lib/llm/feature-catalog-sync"
 
 const DEFAULT_SONETTO_GPT_MODEL = DEFAULT_NEWAPI_GPT_MODEL
 const DEFAULT_SONETTO_CLAUDE_MODEL = DEFAULT_NEWAPI_CLAUDE_MODEL
 const PLAN_LLM_TEMPERATURE = 0.85
+const DEFAULT_PLAN_PROVIDER_TIMEOUT_MS = 60_000
+const DEFAULT_PLAN_TOTAL_TIMEOUT_MS = 150_000
 
-export type DhV2PlanLlmProvider = "sonetto_gpt" | "sonetto_claude" | "deepseek"
+export type DhV2PlanLlmProvider = "sonetto_gpt" | "sonetto_claude" | "deepseek" | "doubao"
 
-/** 分镜脚本：GPT-5.5 优先，DeepSeek 兜底；不使用 Claude */
+/** ChatGPT → Claude → DeepSeek → 豆包 */
 export const DH_V2_PLAN_LLM_PROVIDER_ORDER: DhV2PlanLlmProvider[] = [
   "sonetto_gpt",
+  "sonetto_claude",
   "deepseek",
+  "doubao",
 ]
 
 const SYSTEM_PROMPT = `你是一位精通 Seedance 2.0 的数字人视频导演。
@@ -102,11 +117,17 @@ function sonettoModelIdForProvider(provider: "sonetto_gpt" | "sonetto_claude"): 
 
 function isProviderConfigured(provider: DhV2PlanLlmProvider): boolean {
   if (provider === "deepseek") return Boolean(getDeepseekApiKey())
+  if (provider === "doubao") return isArkChatConfigured()
   return isSonettoProviderConfigured(provider)
 }
 
+export function getPlanLlmProviderOrder(): DhV2PlanLlmProvider[] {
+  const fromFeatures = resolvePlanScriptProviderOrderFromFeatures(DH_V2_PLAN_LLM_PROVIDER_ORDER)
+  return (fromFeatures as DhV2PlanLlmProvider[] | null) ?? DH_V2_PLAN_LLM_PROVIDER_ORDER
+}
+
 export function getAvailablePlanLlmProviders(): DhV2PlanLlmProvider[] {
-  return DH_V2_PLAN_LLM_PROVIDER_ORDER.filter(isProviderConfigured)
+  return getPlanLlmProviderOrder().filter(isProviderConfigured)
 }
 
 export function isLlmPlanAvailable(): boolean {
@@ -159,6 +180,29 @@ function buildSonettoUserContent(input: DhV2PlanScriptAiInput): SonettoContentPa
   return parts
 }
 
+function readBoundedTimeout(name: string, fallback: number, max: number): number {
+  const raw = readServerEnv(name)
+  const parsed = Number(raw)
+  if (!raw || !Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.min(max, Math.max(5_000, Math.floor(parsed)))
+}
+
+export function readDhV2PlanProviderTimeoutMs(): number {
+  return readBoundedTimeout(
+    "DH_V2_PLAN_PROVIDER_TIMEOUT_MS",
+    DEFAULT_PLAN_PROVIDER_TIMEOUT_MS,
+    120_000,
+  )
+}
+
+export function readDhV2PlanTotalTimeoutMs(): number {
+  return readBoundedTimeout(
+    "DH_V2_PLAN_TOTAL_TIMEOUT_MS",
+    DEFAULT_PLAN_TOTAL_TIMEOUT_MS,
+    300_000,
+  )
+}
+
 function parsePlanFromLlmText(
   script: string,
   text: string,
@@ -190,6 +234,8 @@ function parsePlanFromLlmText(
 async function callSonettoPlan(
   provider: "sonetto_gpt" | "sonetto_claude",
   input: DhV2PlanScriptAiInput,
+  timeoutMs: number,
+  maxTokens: number,
 ): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
   const modelId = sonettoModelIdForProvider(provider)
   const messages: SonettoMessage[] = [
@@ -199,7 +245,8 @@ async function callSonettoPlan(
   const result = await sonettoChatCompletion({
     modelId,
     messages,
-    maxTokens: 8192,
+    maxTokens,
+    timeoutMs,
     temperature: PLAN_LLM_TEMPERATURE,
   })
   if (!result.ok) return result
@@ -208,12 +255,11 @@ async function callSonettoPlan(
 
 async function callDeepseekPlan(
   input: DhV2PlanScriptAiInput,
+  timeoutMs: number,
 ): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
   const userText = buildUserText(input)
   const firstImg = (input.images_base64 || [])[0]
   const parsed = firstImg ? parseDataUrl(firstImg) : null
-  const timeoutMs = 280_000
-
   if (parsed) {
     const result = await deepseekChatVisionCompletion(
       SYSTEM_PROMPT,
@@ -236,12 +282,42 @@ async function callDeepseekPlan(
   return { ok: true, text: result.text }
 }
 
+async function callDoubaoPlan(
+  input: DhV2PlanScriptAiInput,
+  timeoutMs: number,
+  maxTokens: number,
+): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
+  const userText = buildUserText(input)
+  const firstImg = (input.images_base64 || [])[0]
+  const dataUrl = firstImg ? toImageUrl(firstImg) : null
+  const userParts = dataUrl
+    ? [
+        { type: "image_url" as const, image_url: { url: dataUrl } },
+        { type: "text" as const, text: userText },
+      ]
+    : userText
+
+  const result = await arkChatCompletionNonStream({
+    system: SYSTEM_PROMPT,
+    userParts,
+    timeoutMs,
+    modelId: DOUBAO_SEED_21_MODEL_ID,
+    maxTokens,
+    temperature: PLAN_LLM_TEMPERATURE,
+  })
+  if (!result.ok) return result
+  return { ok: true, text: result.text }
+}
+
 async function callPlanProvider(
   provider: DhV2PlanLlmProvider,
   input: DhV2PlanScriptAiInput,
+  timeoutMs: number,
+  maxTokens: number,
 ): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
-  if (provider === "deepseek") return callDeepseekPlan(input)
-  return callSonettoPlan(provider, input)
+  if (provider === "deepseek") return callDeepseekPlan(input, timeoutMs)
+  if (provider === "doubao") return callDoubaoPlan(input, timeoutMs, maxTokens)
+  return callSonettoPlan(provider, input, timeoutMs, maxTokens)
 }
 
 /** 从 AI 文本中提取 JSON — 再导出供测试 */
@@ -260,30 +336,35 @@ export async function generateDhV2PlanWithLlm(
       ok: false,
       status: 503,
       detail:
-        "未配置分镜大模型 API Key，请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY 中的至少一项",
+        "未配置分镜大模型：请配置 NEWAPI 三要素（GPT/Claude）、DEEPSEEK_API_KEY 或豆包 ARK_*。" +
+        "桌面端由云端 CONFIG_KEY_POOL 统一下发",
     }
   }
 
-  const errors: string[] = []
-  for (const provider of providers) {
-    const llm = await callPlanProvider(provider, input)
-    if (!llm.ok) {
-      errors.push(`${provider}: ${llm.detail}`)
-      continue
-    }
-    const parsed = parsePlanFromLlmText(input.script, llm.text)
-    if (!parsed.ok) {
-      errors.push(`${provider}: ${parsed.detail}`)
-      continue
-    }
-    return { ok: true, plan: parsed.plan, plan_source: provider }
-  }
+  const assessment = assessScriptDuration(input.script)
+  const maxTokens = calculateDhV2PlanMaxTokens(assessment.segment_count)
+  const chain = await runDhV2PlanProviderChain({
+    providers,
+    providerTimeoutMs: readDhV2PlanProviderTimeoutMs(),
+    totalTimeoutMs: readDhV2PlanTotalTimeoutMs(),
+    call: async (provider, timeoutMs) => {
+      const startedAt = Date.now()
+      const llm = await callPlanProvider(provider, input, timeoutMs, maxTokens)
+      const durationMs = Date.now() - startedAt
+      console.info(
+        `[dh-v2-plan] provider=${provider} duration_ms=${durationMs} timeout_ms=${timeoutMs} ok=${llm.ok}`,
+      )
+      if (!llm.ok) return llm
+      const parsed = parsePlanFromLlmText(input.script, llm.text)
+      if (!parsed.ok) return { ok: false as const, status: 502, detail: parsed.detail }
+      return { ok: true as const, value: parsed.plan }
+    },
+  })
 
-  return {
-    ok: false,
-    status: 502,
-    detail: errors.join("；") || "所有大模型均未能生成分镜",
+  if (chain.ok) {
+    return { ok: true, plan: chain.value, plan_source: chain.provider }
   }
+  return { ok: false, status: chain.status, detail: chain.detail }
 }
 
 /** @deprecated 使用 generateDhV2PlanWithLlm */

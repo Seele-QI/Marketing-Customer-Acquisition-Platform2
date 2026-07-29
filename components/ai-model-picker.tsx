@@ -30,7 +30,7 @@ export type AiModelOption = {
 
 function envHint(m: AiModelOption): string {
   if (m.provider === "sonetto_gpt" || m.provider === "sonetto_claude") {
-    return "需配置 NEWAPI_KEY"
+    return "需配置 NEWAPI_BASE_URL + NEWAPI_KEY + MODEL（可由云端下发）"
   }
   if (m.provider === "deepseek") return "需配置 DEEPSEEK_API_KEY"
   if (m.provider === "ark") return "需配置 ARK_API_KEY（可选 ARK_CHAT_MODEL）"

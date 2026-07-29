@@ -93,6 +93,12 @@ export function getShareVideos(): ShareVideo[] {
   return loadShareVideos()
 }
 
+export function removeShareVideo(videoId: string): ShareVideo[] {
+  const videos = loadShareVideos().filter((video) => video.id !== videoId)
+  saveShareVideos(videos)
+  return videos
+}
+
 export function clearShareVideos() {
   saveShareVideos([])
 }

@@ -200,6 +200,38 @@ function buildItems(): GlobalSearchItem[] {
 
   const shortcuts: GlobalSearchItem[] = [
     {
+      id: "nav-video-creation",
+      kind: "导航",
+      title: "视频创作",
+      subtitle: "从脚本到成片的完整创作流程",
+      searchBlob: "视频创作 视频助理 数字人 图文视频 混剪 宣传视频",
+      action: { type: "goView", view: "数字人视频创作（新）" },
+    },
+    {
+      id: "nav-geo-creation",
+      kind: "导航",
+      title: "GEO创作",
+      subtitle: "企业知识、内容矩阵与深度文章",
+      searchBlob: "GEO创作 GEO助理 企业知识 内容矩阵 深度文章",
+      action: { type: "goView", view: "企业知识库搭建" },
+    },
+    {
+      id: "nav-poster-creation",
+      kind: "导航",
+      title: "图片工作台",
+      subtitle: "海报与通用图片创作",
+      searchBlob: "图片工作台 海报图创作 图片创作 海报 生图 营销图片",
+      action: { type: "goView", view: "图片工作台" },
+    },
+    {
+      id: "nav-positioning",
+      kind: "导航",
+      title: "身份定位",
+      subtitle: "视频与GEO助理共享的品牌基础档案",
+      searchBlob: "身份定位 品牌定位 受众 人设 共享记忆",
+      action: { type: "goView", view: "身份定位" },
+    },
+    {
       id: "nav-agent-center",
       kind: "智能体",
       title: "智能体中心",

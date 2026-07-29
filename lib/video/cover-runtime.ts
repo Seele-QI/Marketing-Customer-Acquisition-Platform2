@@ -15,6 +15,8 @@ import { resolveMediaUrl } from "@/lib/video/utils"
 
 const COVER_POLL_MS = 5000
 const COVER_MAX_WAIT_MS = 10 * 60 * 1000
+const COVER_SUBMIT_MAX_ATTEMPTS = 3
+const COVER_SUBMIT_RETRY_DELAY_MS = 750
 
 export type CoverReferenceImage = {
   base64?: string
@@ -35,6 +37,33 @@ export type StartCoverGenerationParams = {
 }
 
 const activeCoverPolls = new Map<string, ReturnType<typeof setInterval>>()
+
+function isTransientCoverSubmitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /客户端服务暂时无法连接|无法连接|网络|network|failed to fetch|fetch failed|load failed|超时|timeout/i.test(
+    message,
+  )
+}
+
+export async function retryTransientCoverSubmit<T>(
+  operation: () => Promise<T>,
+  options: { delayMs?: number } = {},
+): Promise<T> {
+  const delayMs = options.delayMs ?? COVER_SUBMIT_RETRY_DELAY_MS
+  for (let attempt = 1; attempt <= COVER_SUBMIT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!isTransientCoverSubmitError(error) || attempt === COVER_SUBMIT_MAX_ATTEMPTS) {
+        throw error
+      }
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt))
+      }
+    }
+  }
+  throw new Error("封面提交失败")
+}
 
 function coverPollKey(kind: TaskKind, linkedTaskId: string): string {
   return `${kind}:${linkedTaskId}`
@@ -80,7 +109,7 @@ async function refreshHistoryCover(kind: TaskKind, linkedTaskId: string, coverUr
   if (task?.taskId === linkedTaskId) {
     rt.patchTask(kind, {
       result: { ...task.result, coverUrl },
-      meta: { ...task.meta, coverStatus: "success" },
+      meta: { ...task.meta, coverStatus: "success", coverError: "" },
     })
     const updated = rt.getTask(kind)
     if (updated?.status === "success") {
@@ -136,21 +165,29 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
   if (linkedTaskId) {
     const task = rt.getTask(kind)
     if (task?.taskId === linkedTaskId) {
-      rt.patchTask(kind, { meta: { ...task.meta, coverStatus: "running" } })
+      rt.patchTask(kind, {
+        meta: { ...task.meta, coverStatus: "running", coverError: "" },
+      })
     }
   }
 
   void (async () => {
     try {
-      const { cover_task_id: coverTaskId } = await submitVideoCover({
-        script: trimmedScript,
-        referenceImageBase64: refPayload.referenceImageBase64,
-        referenceImageUrl: refPayload.referenceImageUrl,
-        aspectRatio,
-        resolution,
-        linkedTaskId,
-        source: kind,
-      })
+      const requestRef =
+        globalThis.crypto?.randomUUID?.() ??
+        `cover-${linkedTaskId || kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const { cover_task_id: coverTaskId } = await retryTransientCoverSubmit(() =>
+        submitVideoCover({
+          script: trimmedScript,
+          referenceImageBase64: refPayload.referenceImageBase64,
+          referenceImageUrl: refPayload.referenceImageUrl,
+          aspectRatio,
+          resolution,
+          linkedTaskId,
+          source: kind,
+          requestRef,
+        }),
+      )
 
       const startedAt = Date.now()
       const poll = async () => {
