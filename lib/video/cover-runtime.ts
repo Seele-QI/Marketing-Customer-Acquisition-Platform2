@@ -36,7 +36,12 @@ export type StartCoverGenerationParams = {
   skipIfNoReference?: boolean
 }
 
-const activeCoverPolls = new Map<string, ReturnType<typeof setInterval>>()
+type ActiveCoverPoll = {
+  cancelled: boolean
+  timer?: ReturnType<typeof setTimeout>
+}
+
+const activeCoverPolls = new Map<string, ActiveCoverPoll>()
 
 function isTransientCoverSubmitError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
@@ -128,11 +133,11 @@ async function refreshHistoryCover(kind: TaskKind, linkedTaskId: string, coverUr
 }
 
 function stopCoverPoll(key: string): void {
-  const timer = activeCoverPolls.get(key)
-  if (timer) {
-    clearInterval(timer)
-    activeCoverPolls.delete(key)
-  }
+  const poll = activeCoverPolls.get(key)
+  if (!poll) return
+  poll.cancelled = true
+  if (poll.timer) clearTimeout(poll.timer)
+  activeCoverPolls.delete(key)
 }
 
 /**
@@ -160,6 +165,15 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
 
   const pollKey = coverPollKey(kind, linkedTaskId || `pending-${Date.now()}`)
   stopCoverPoll(pollKey)
+  const pollState: ActiveCoverPoll = { cancelled: false }
+  activeCoverPolls.set(pollKey, pollState)
+  const finishPoll = () => {
+    pollState.cancelled = true
+    if (pollState.timer) clearTimeout(pollState.timer)
+    if (activeCoverPolls.get(pollKey) === pollState) {
+      activeCoverPolls.delete(pollKey)
+    }
+  }
 
   const rt = getTaskRuntime()
   if (linkedTaskId) {
@@ -190,9 +204,12 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
       )
 
       const startedAt = Date.now()
-      const poll = async () => {
+      const poll = async (): Promise<boolean> => {
+        if (pollState.cancelled || activeCoverPolls.get(pollKey) !== pollState) {
+          return false
+        }
         if (Date.now() - startedAt > COVER_MAX_WAIT_MS) {
-          stopCoverPoll(pollKey)
+          finishPoll()
           if (linkedTaskId) {
             const task = rt.getTask(kind)
             if (task?.taskId === linkedTaskId) {
@@ -201,21 +218,24 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
               })
             }
           }
-          return
+          return false
         }
 
         try {
           const status = await queryVideoCoverStatus(coverTaskId)
+          if (pollState.cancelled || activeCoverPolls.get(pollKey) !== pollState) {
+            return false
+          }
           if (status.status === "success" && status.cover_url) {
-            stopCoverPoll(pollKey)
+            finishPoll()
             const coverUrl = resolveMediaUrl(status.cover_url)
             if (linkedTaskId) {
               await refreshHistoryCover(kind, linkedTaskId, coverUrl)
             }
-            return
+            return false
           }
           if (status.status === "failed") {
-            stopCoverPoll(pollKey)
+            finishPoll()
             if (linkedTaskId) {
               const task = rt.getTask(kind)
               if (task?.taskId === linkedTaskId) {
@@ -228,18 +248,32 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
                 })
               }
             }
+            return false
           }
         } catch {
           /* 轮询网络抖动时继续 */
         }
+        return true
       }
 
-      await poll()
-      const timer = setInterval(() => {
-        void poll()
-      }, COVER_POLL_MS)
-      activeCoverPolls.set(pollKey, timer)
+      const pollUntilTerminal = async () => {
+        const shouldContinue = await poll()
+        if (
+          !shouldContinue ||
+          pollState.cancelled ||
+          activeCoverPolls.get(pollKey) !== pollState
+        ) {
+          return
+        }
+        pollState.timer = setTimeout(() => {
+          pollState.timer = undefined
+          void pollUntilTerminal()
+        }, COVER_POLL_MS)
+      }
+
+      await pollUntilTerminal()
     } catch (e) {
+      finishPoll()
       if (linkedTaskId) {
         const task = rt.getTask(kind)
         if (task?.taskId === linkedTaskId) {

@@ -51,3 +51,10 @@ test("cover submit retries a transient client connection failure", async () => {
   assert.deepEqual(result, { cover_task_id: "cover_retry_ok" })
   assert.equal(attempts, 2)
 })
+
+test("cover polling is serialized and does not recreate a timer after terminal status", () => {
+  assert.doesNotMatch(source, /setInterval\(/)
+  assert.match(source, /const shouldContinue = await poll\(\)/)
+  assert.match(source, /!shouldContinue \|\|[\s\S]*activeCoverPolls\.get\(pollKey\) !== pollState/)
+  assert.match(source, /pollState\.timer = setTimeout\(/)
+})

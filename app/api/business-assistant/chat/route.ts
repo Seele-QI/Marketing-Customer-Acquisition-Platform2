@@ -170,7 +170,7 @@ export const POST = withAuth(async (request, { cookieHeader }) => {
     }
   }
 
-  await appendBusinessAssistantMessageServer({
+  const storedUserMessage = await appendBusinessAssistantMessageServer({
     cookieHeader,
     projectId,
     assistantId: assistant.id as EnabledBusinessAssistantId,
@@ -178,7 +178,7 @@ export const POST = withAuth(async (request, { cookieHeader }) => {
     content: message,
     metadata: { pageContext },
   })
-  await appendBusinessAssistantMessageServer({
+  const storedAssistantMessage = await appendBusinessAssistantMessageServer({
     cookieHeader,
     projectId,
     assistantId: assistant.id as EnabledBusinessAssistantId,
@@ -196,5 +196,8 @@ export const POST = withAuth(async (request, { cookieHeader }) => {
     ...reply,
     memoryStatus: memory.status,
     billing,
+    ...(!storedUserMessage || !storedAssistantMessage
+      ? { persistenceWarning: "本轮回复已完成，但会话记录保存失败；请先复制结果，稍后重新打开项目再试。" }
+      : {}),
   })
 })

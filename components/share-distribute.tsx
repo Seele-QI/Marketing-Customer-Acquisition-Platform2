@@ -55,6 +55,34 @@ type PublishResultItem = {
 
 type SubmitMode = "manual_confirm" | "auto_submit"
 
+const SHARE_DRAFT_KEY = "zhongtai.share-distribute.draft.v1"
+
+type ShareDistributeDraft = {
+  selectedId?: string | null
+  title?: string
+  description?: string
+  tagsText?: string
+  manualUrl?: string
+  selectedPlatforms?: string[]
+  submitMode?: SubmitMode
+  publishResults?: PublishResultItem[]
+  publishing?: boolean
+  publishingPlatform?: string | null
+}
+
+function loadShareDraft(): ShareDistributeDraft {
+  if (typeof window === "undefined") return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(SHARE_DRAFT_KEY) || "{}") as ShareDistributeDraft
+  } catch {
+    return {}
+  }
+}
+
+function saveShareDraft(draft: ShareDistributeDraft) {
+  window.localStorage.setItem(SHARE_DRAFT_KEY, JSON.stringify(draft))
+}
+
 const SOURCE_LABELS: Record<ShareVideo["source"], string> = {
   manual: "手动添加",
   "video-creation": "数字人口播",
@@ -119,12 +147,13 @@ function toAbsoluteVideoUrl(url: string): string {
 /* ------------------------------------------------------------------ */
 
 export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?: () => void } = {}) {
+  const initialDraft = React.useMemo(() => loadShareDraft(), [])
   const [videos, setVideos] = React.useState<ShareVideo[]>([])
-  const [selectedId, setSelectedId] = React.useState<string | null>(null)
-  const [title, setTitle] = React.useState("")
-  const [description, setDescription] = React.useState("")
-  const [tagsText, setTagsText] = React.useState("")
-  const [manualUrl, setManualUrl] = React.useState("")
+  const [selectedId, setSelectedId] = React.useState<string | null>(initialDraft.selectedId ?? null)
+  const [title, setTitle] = React.useState(initialDraft.title ?? "")
+  const [description, setDescription] = React.useState(initialDraft.description ?? "")
+  const [tagsText, setTagsText] = React.useState(initialDraft.tagsText ?? "")
+  const [manualUrl, setManualUrl] = React.useState(initialDraft.manualUrl ?? "")
   const [isUploading, setIsUploading] = React.useState(false)
   const [uploadLabel, setUploadLabel] = React.useState("")
   const [uploadError, setUploadError] = React.useState("")
@@ -135,13 +164,14 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
   const [titleSuggestions, setTitleSuggestions] = React.useState<string[]>([])
   const [isPublishing, setIsPublishing] = React.useState(false)
   const [publishingPlatform, setPublishingPlatform] = React.useState<string | null>(null)
+  const [interruptedPublish, setInterruptedPublish] = React.useState(Boolean(initialDraft.publishing))
   const [boundAccounts, setBoundAccounts] = React.useState<BoundAccount[]>([])
-  const [selectedPlatforms, setSelectedPlatforms] = React.useState<string[]>([])
-  const [publishResults, setPublishResults] = React.useState<PublishResultItem[]>([])
-  const [submitMode, setSubmitMode] = React.useState<SubmitMode>("manual_confirm")
+  const [selectedPlatforms, setSelectedPlatforms] = React.useState<string[]>(initialDraft.selectedPlatforms ?? [])
+  const [publishResults, setPublishResults] = React.useState<PublishResultItem[]>(initialDraft.publishResults ?? [])
+  const [submitMode, setSubmitMode] = React.useState<SubmitMode>(initialDraft.submitMode ?? "manual_confirm")
   const [shareUrl, setShareUrl] = React.useState("")
   const [shareToken, setShareToken] = React.useState("")
-  const [userId, setUserId] = React.useState<number | null>(null)
+  const publishingRef = React.useRef(false)
 
   const resetPageState = React.useCallback(() => {
     setVideos([])
@@ -160,7 +190,35 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
     setPublishingPlatform(null)
     setShareUrl("")
     setShareToken("")
+    setInterruptedPublish(false)
+    window.localStorage.removeItem(SHARE_DRAFT_KEY)
   }, [])
+
+  React.useEffect(() => {
+    saveShareDraft({
+      selectedId,
+      title,
+      description,
+      tagsText,
+      manualUrl,
+      selectedPlatforms,
+      submitMode,
+      publishResults,
+      publishing: isPublishing,
+      publishingPlatform,
+    })
+  }, [
+    description,
+    isPublishing,
+    manualUrl,
+    publishResults,
+    publishingPlatform,
+    selectedId,
+    selectedPlatforms,
+    submitMode,
+    tagsText,
+    title,
+  ])
 
   const refreshVideos = React.useCallback(
     () => {
@@ -198,7 +256,11 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
       }
       const accounts: BoundAccount[] = Array.isArray(data.accounts) ? data.accounts : []
       setBoundAccounts(accounts)
-      setSelectedPlatforms(accounts.map((a) => a.platform))
+      setSelectedPlatforms((current) => {
+        const available = accounts.map((account) => account.platform)
+        const retained = current.filter((platform) => available.includes(platform))
+        return retained.length > 0 ? retained : available
+      })
     } catch (e) {
       console.warn("[publish/accounts]", e)
     }
@@ -208,17 +270,12 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
     try {
       const res = await fetch("/api/auth/me", { credentials: "include", cache: "no-store" })
       if (!res.ok) {
-        setUserId(null)
         resetPageState()
         return
       }
-      const data = (await res.json()) as { user?: { id?: number } }
-      const id = data.user?.id ?? null
-      setUserId(id)
       refreshVideos()
       await loadBoundAccounts()
     } catch {
-      setUserId(null)
       resetPageState()
     }
   }, [refreshVideos, resetPageState, loadBoundAccounts])
@@ -474,6 +531,7 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
   }
 
   const handleAutoPublish = async () => {
+    if (publishingRef.current) return
     const videoUrl = activeVideoUrl
     const finalTitle = title.trim()
     if (!videoUrl) {
@@ -494,6 +552,8 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
     }
     if (!confirm(`将按顺序发布到：${selectedPlatforms.map((platform) => PLATFORM_META[platform]?.name || platform).join("、")}。请确认标题、描述和平台账号均正确。`)) return
 
+    publishingRef.current = true
+    setInterruptedPublish(false)
     setIsPublishing(true)
     setPublishResults([])
     setPublishingPlatform(null)
@@ -598,6 +658,7 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
         })
       }
     } finally {
+      publishingRef.current = false
       setPublishingPlatform(null)
       setIsPublishing(false)
     }
@@ -682,6 +743,18 @@ export function ShareDistribute({ onNavigateToBinding }: { onNavigateToBinding?:
             选择视频、填写文案，一键自动发布到已绑定的抖音、小红书等平台（Playwright 浏览器自动化）
           </p>
         </header>
+
+        {interruptedPublish ? (
+          <div className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            <div>
+              <p className="font-semibold">上次发布流程在页面关闭时中断</p>
+              <p className="mt-1 text-xs leading-5">已保留文案、平台选择和完成结果。请先到平台后台确认作品状态，再仅重试未完成的平台，避免重复发布。</p>
+            </div>
+            <button type="button" onClick={() => setInterruptedPublish(false)} className="shrink-0 rounded-lg border border-amber-300 px-2.5 py-1 text-xs">
+              已确认
+            </button>
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
           {/* 左侧：视频库 */}

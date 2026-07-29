@@ -167,7 +167,10 @@ export function BusinessAssistantShell() {
           },
         ],
       })
+      if (reply.persistenceWarning) setError(reply.persistenceWarning)
     } catch (caught) {
+      assistant.updateActiveProject(detail)
+      setInput(message)
       setError(caught instanceof Error ? caught.message : "助理回复失败，请稍后重试")
     } finally {
       setSending(false)

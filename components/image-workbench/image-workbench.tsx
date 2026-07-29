@@ -42,6 +42,31 @@ const INITIAL_DRAFT: ImageWorkbenchPanelDraft = {
   outputLabel: "1:1 · 2K",
 }
 
+const ACTIVE_TASKS_STORAGE_KEY = "zhongtai.image-workbench.active-tasks.v1"
+
+type SavedImageTasks = Partial<Record<ImageWorkbenchMode, {
+  taskId: string
+  aspectRatio: ImageWorkbenchResultState["aspectRatio"]
+}>>
+
+function readSavedTasks(): SavedImageTasks {
+  try {
+    return JSON.parse(window.localStorage.getItem(ACTIVE_TASKS_STORAGE_KEY) || "{}") as SavedImageTasks
+  } catch {
+    return {}
+  }
+}
+
+function saveActiveTask(
+  mode: ImageWorkbenchMode,
+  task: SavedImageTasks[ImageWorkbenchMode] | null,
+) {
+  const current = readSavedTasks()
+  if (task) current[mode] = task
+  else delete current[mode]
+  window.localStorage.setItem(ACTIVE_TASKS_STORAGE_KEY, JSON.stringify(current))
+}
+
 function publicStageLabel(label: string | undefined): string {
   if (!label) return "正在生成候选图"
   const allowed = new Set([
@@ -87,6 +112,67 @@ export function ImageWorkbench() {
 
   useEffect(() => {
     const activeControllers = controllers.current
+    const savedTasks = readSavedTasks()
+    for (const mode of ["poster", "image"] as const) {
+      const saved = savedTasks[mode]
+      if (!saved?.taskId) continue
+      const controller = new AbortController()
+      activeControllers[mode] = controller
+      setResults((current) => ({
+        ...current,
+        [mode]: {
+          ...current[mode],
+          status: "running",
+          taskId: saved.taskId,
+          aspectRatio: saved.aspectRatio,
+          stageLabel: "正在恢复后台创作任务",
+          error: "",
+        },
+      }))
+      void waitForImageWorkbenchResult(saved.taskId, {
+        signal: controller.signal,
+        onRetry: () => {
+          setResults((current) => ({
+            ...current,
+            [mode]: {
+              ...current[mode],
+              stageLabel: "网络波动，正在恢复任务",
+            },
+          }))
+        },
+      })
+        .then((terminal) => {
+          if (controller.signal.aborted) return
+          saveActiveTask(mode, null)
+          setResults((current) => ({
+            ...current,
+            [mode]: {
+              ...current[mode],
+              status: "success",
+              imageUrls: terminal.image_urls.map(resolveMediaUrl),
+              warning: terminal.warning || "",
+              stageLabel: publicStageLabel(terminal.stage_label || "图片生成完成"),
+              error: "",
+            },
+          }))
+        })
+        .catch((caught) => {
+          if (caught instanceof DOMException && caught.name === "AbortError") return
+          saveActiveTask(mode, null)
+          setResults((current) => ({
+            ...current,
+            [mode]: {
+              ...current[mode],
+              status: "failed",
+              error: publicErrorMessage(caught),
+              stageLabel: "图片生成失败",
+            },
+          }))
+        })
+        .finally(() => {
+          if (activeControllers[mode] === controller) activeControllers[mode] = null
+        })
+    }
     return () => {
       activeControllers.poster?.abort()
       activeControllers.image?.abort()
@@ -129,9 +215,17 @@ export function ImageWorkbench() {
           ? "正在处理参考图并生成 2 张候选图"
           : "正在生成 2 张候选图",
       })
+      saveActiveTask(mode, {
+        taskId: submitted.task_id,
+        aspectRatio: input.aspectRatio,
+      })
       const terminal = await waitForImageWorkbenchResult(submitted.task_id, {
         signal: controller.signal,
+        onRetry: () => {
+          updateResult(mode, { stageLabel: "网络波动，正在自动重试" })
+        },
       })
+      saveActiveTask(mode, null)
       updateResult(mode, {
         status: "success",
         imageUrls: terminal.image_urls.map(resolveMediaUrl),
@@ -140,6 +234,7 @@ export function ImageWorkbench() {
       })
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return
+      saveActiveTask(mode, null)
       updateResult(mode, {
         status: "failed",
         error: publicErrorMessage(caught),

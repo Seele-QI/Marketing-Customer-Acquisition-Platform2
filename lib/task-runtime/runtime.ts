@@ -35,7 +35,15 @@ const adapters: Record<TaskKind, TaskAdapter> = {
   "copywriting-extract": extractAdapter,
 }
 
-const POLL_ERROR_LIMIT = 8
+const POLL_RETRY_BACKOFF_CAP_MS = 30_000
+
+export function getPollRetryDelayMs(baseIntervalMs: number, consecutiveErrors: number): number {
+  const exponent = Math.max(0, Math.min(consecutiveErrors - 1, 4))
+  return Math.min(
+    Math.max(baseIntervalMs, 1_000) * 2 ** exponent,
+    POLL_RETRY_BACKOFF_CAP_MS,
+  )
+}
 
 class TaskRuntime {
   private tasks: RuntimeStoreSnapshot = {}
@@ -199,6 +207,7 @@ class TaskRuntime {
 
   private schedulePoll(kind: TaskKind, delayMs: number): void {
     this.clearTimer(kind)
+    if (!this.started) return
     const adapter = adapters[kind]
     const timer = setTimeout(() => {
       void this.pollOnce(kind)
@@ -228,7 +237,7 @@ class TaskRuntime {
           {
             ...task,
             status: "failed",
-            error: "任务超时（已超过 50 分钟）",
+            error: `任务超时（已超过 ${Math.ceil(hardTimeoutMs / 60_000)} 分钟）`,
             stageLabel: "超时",
             updatedAt: Date.now(),
           },
@@ -252,7 +261,12 @@ class TaskRuntime {
           progress: outcome.progress,
           stageLabel: outcome.stageLabel,
           result: outcome.result ? { ...current.result, ...outcome.result } : current.result,
-          meta: outcome.meta ? { ...current.meta, ...outcome.meta } : current.meta,
+          meta: {
+            ...current.meta,
+            ...outcome.meta,
+            pollRetrying: false,
+            pollRetryCount: 0,
+          },
           updatedAt: Date.now(),
         }
         this.tasks[kind] = next
@@ -282,7 +296,12 @@ class TaskRuntime {
           stageLabel: outcome.stageLabel || "完成",
           error: undefined,
           result: outcome.result ? { ...current.result, ...outcome.result } : current.result,
-          meta: outcome.meta ? { ...current.meta, ...outcome.meta } : current.meta,
+          meta: {
+            ...current.meta,
+            ...outcome.meta,
+            pollRetrying: false,
+            pollRetryCount: 0,
+          },
           updatedAt: Date.now(),
         }
         await this.finalize(kind, next, { writeHistory: adapter.writeHistory })
@@ -297,33 +316,38 @@ class TaskRuntime {
           stageLabel: outcome.stageLabel || "失败",
           error: outcome.error,
           result: outcome.result ? { ...current.result, ...outcome.result } : current.result,
-          meta: outcome.meta ? { ...current.meta, ...outcome.meta } : current.meta,
+          meta: {
+            ...current.meta,
+            ...outcome.meta,
+            pollRetrying: false,
+            pollRetryCount: 0,
+          },
           updatedAt: Date.now(),
         }
         await this.finalize(kind, next, { writeHistory: adapter.writeHistory })
       }
-    } catch (err) {
+    } catch {
       const count = (this.pollErrors.get(kind) ?? 0) + 1
       this.pollErrors.set(kind, count)
       const current = this.tasks[kind]
       if (!current || current.status !== "running") return
 
-      if (count >= POLL_ERROR_LIMIT) {
-        const msg = err instanceof Error ? err.message : "轮询失败次数过多"
-        await this.finalize(
-          kind,
-          {
-            ...current,
-            status: "failed",
-            error: msg,
-            stageLabel: "失败",
-            updatedAt: Date.now(),
-          },
-          { writeHistory: adapter.writeHistory },
-        )
-        return
+      const next: RuntimeTask = {
+        ...current,
+        stageLabel: `网络波动，正在重试（${count}）`,
+        meta: {
+          ...current.meta,
+          pollRetrying: true,
+          pollRetryCount: count,
+          lastPollErrorAt: Date.now(),
+        },
+        updatedAt: Date.now(),
       }
-      this.schedulePoll(kind, adapter.pollIntervalMs)
+      this.tasks[kind] = next
+      this.persist()
+      this.emit({ type: "task-updated", task: next })
+      this.emit({ type: "tasks-changed", tasks: { ...this.tasks } })
+      this.schedulePoll(kind, getPollRetryDelayMs(adapter.pollIntervalMs, count))
     } finally {
       this.inflight.delete(kind)
     }

@@ -1,6 +1,7 @@
 "use client"
 
 import { Suspense, useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react"
 
@@ -45,9 +46,9 @@ function VerifyPageInner() {
           <XCircle className="mx-auto mb-4 h-12 w-12 text-destructive" />
           <h1 className="mb-2 text-lg font-semibold">缺少 token</h1>
           <p className="text-sm text-muted-foreground">链接无效，请回到首页重新发起登录。</p>
-          <a href="/" className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground">
+          <Link href="/" className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground">
             返回首页
-          </a>
+          </Link>
         </div>
       </div>
     )
@@ -77,9 +78,9 @@ function VerifyPageInner() {
             <XCircle className="mx-auto mb-4 h-12 w-12 text-destructive" />
             <h1 className="mb-2 text-lg font-semibold">链接无效或已过期</h1>
             <p className="text-sm text-muted-foreground">{result.message}</p>
-            <a href="/" className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground">
+            <Link href="/" className="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground">
               返回首页重新登录
-            </a>
+            </Link>
           </>
         )}
       </div>

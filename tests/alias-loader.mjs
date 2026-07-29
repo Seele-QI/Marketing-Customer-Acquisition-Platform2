@@ -44,6 +44,18 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
 
+  // The npm `electron` package exposes a CommonJS launcher when loaded by
+  // plain Node.js, so named imports such as `import { app } from "electron"`
+  // fail before Electron-focused unit tests can run. Route those imports to
+  // the deterministic test double for the shared Node test command.
+  if (specifier === "electron") {
+    return {
+      shortCircuit: true,
+      url: pathToFileURL(path.join(projectRoot, "tests/mocks/electron.mjs")).href,
+      format: "module",
+    }
+  }
+
   return nextResolve(specifier, context)
 }
 

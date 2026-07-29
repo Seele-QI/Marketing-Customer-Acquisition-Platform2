@@ -135,11 +135,10 @@ export class ChildProcessManager {
     }
     return new Promise<boolean>((resolve) => {
       let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (didExit: boolean) => {
         if (settled) return;
         settled = true;
-        if (timer !== undefined) clearTimeout(timer);
+        clearTimeout(timer);
         proc.off('exit', onExit);
         proc.off('error', onError);
         resolve(didExit);
@@ -148,7 +147,7 @@ export class ChildProcessManager {
       const onError = () => finish(true);
       proc.once('exit', onExit);
       proc.once('error', onError);
-      timer = setTimeout(() => {
+      const timer = setTimeout(() => {
         logger.warn(`[${name}] process exit wait timed out after ${this.exitWaitTimeoutMs}ms`);
         finish(false);
       }, this.exitWaitTimeoutMs);

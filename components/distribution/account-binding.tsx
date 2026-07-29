@@ -78,13 +78,15 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
   const [loadError, setLoadError] = React.useState("")
   const [selectedPlatform, setSelectedPlatform] = React.useState<DistributionPlatform | null>(null)
   const [isConnecting, setIsConnecting] = React.useState(false)
-  const [sessionId, setSessionId] = React.useState("")
   const [statusMessage, setStatusMessage] = React.useState("")
   const [loginStage, setLoginStage] = React.useState<"idle" | "opening" | "waiting" | "saving" | "success">("idle")
   const [error, setError] = React.useState("")
   const [manualMode, setManualMode] = React.useState(false)
   const [cookieInput, setCookieInput] = React.useState("")
   const pollingRef = React.useRef<number | null>(null)
+  const pollControllerRef = React.useRef<AbortController | null>(null)
+  const pollGenerationRef = React.useRef(0)
+  const sessionIdRef = React.useRef("")
   // Ignore an old request counter when this rail remounts after switching views.
   const handledOpenRequest = React.useRef(openRequest ?? 0)
 
@@ -92,6 +94,11 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
     setLoading(true)
     try {
       const response = await fetch("/api/connectors/platforms", { credentials: "include", cache: "no-store" })
+      if (response.status === 401) {
+        setPlatforms(mergeDistributionPlatforms([], capability, false))
+        setLoadError("请先登录后绑定和管理发布平台账号")
+        return
+      }
       const result = await readDistributionApiResponse<{ platforms?: DistributionPlatform[] }>(response, "加载平台失败")
       if (!result.ok) throw new Error(result.message)
       setPlatforms(mergeDistributionPlatforms(result.data?.platforms ?? [], capability, false))
@@ -108,7 +115,10 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
 
   React.useEffect(() => {
     void loadPlatforms()
-    return () => { if (pollingRef.current) clearTimeout(pollingRef.current) }
+    return () => {
+      if (pollingRef.current) clearTimeout(pollingRef.current)
+      pollControllerRef.current?.abort()
+    }
   }, [loadPlatforms])
 
   React.useEffect(() => {
@@ -118,17 +128,21 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
   }, [openRequest, platforms])
 
   const stopPolling = () => {
+    pollGenerationRef.current += 1
     if (pollingRef.current) clearTimeout(pollingRef.current)
     pollingRef.current = null
+    pollControllerRef.current?.abort()
+    pollControllerRef.current = null
   }
 
   const closeModal = () => {
     stopPolling()
-    if (sessionId) void fetch("/api/connectors/browser/cancel", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) })
+    const activeSessionId = sessionIdRef.current
+    if (activeSessionId) void fetch("/api/connectors/browser/cancel", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: activeSessionId }) })
     setSelectedPlatform(null)
     setManualMode(false)
     setCookieInput("")
-    setSessionId("")
+    sessionIdRef.current = ""
     setStatusMessage("")
     setLoginStage("idle")
     setError("")
@@ -142,15 +156,20 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
 
   const pollLoginStatus = (sid: string, platformId: string) => {
     stopPolling()
+    const generation = pollGenerationRef.current
     let finished = false
+    let consecutiveFailures = 0
     const startedAt = Date.now()
     const poll = async () => {
+      if (generation !== pollGenerationRef.current) return
       const controller = new AbortController()
+      pollControllerRef.current = controller
       const requestTimeout = window.setTimeout(() => controller.abort(), 12000)
       try {
         const response = await fetch("/api/connectors/browser/status", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sid, platform: platformId }), signal: controller.signal })
         const result = await readDistributionApiResponse<Record<string, unknown>>(response, "登录状态读取失败")
         if (!result.ok || !result.data) throw new Error(result.message)
+        consecutiveFailures = 0
         const data = result.data
         if (data.status === "success") {
           finished = true
@@ -184,21 +203,32 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
           setLoginStage("waiting")
           setStatusMessage(`请在弹出的浏览器中完成登录（${Number(data.elapsed || 0)}s）`)
         }
-      } catch (reason) {
-        finished = true
-        stopPolling()
-        setError(reason instanceof DOMException && reason.name === "AbortError" ? "账号验证响应超时，请重新打开登录窗口" : reason instanceof Error ? reason.message : "连接断开，请重试")
-        setIsConnecting(false)
+      } catch {
+        if (generation !== pollGenerationRef.current) return
+        consecutiveFailures += 1
+        if (Date.now() - startedAt >= 120000) {
+          finished = true
+          stopPolling()
+          setError("账号验证等待超时，请重新打开登录窗口")
+          setIsConnecting(false)
+        } else {
+          setLoginStage("waiting")
+          setStatusMessage(`连接波动，正在自动重试（${consecutiveFailures}）`)
+        }
       } finally {
         window.clearTimeout(requestTimeout)
-        if (!finished) pollingRef.current = window.setTimeout(() => { void poll() }, 2000)
+        if (pollControllerRef.current === controller) pollControllerRef.current = null
+        if (!finished && generation === pollGenerationRef.current) {
+          const delay = Math.min(10_000, 2_000 * (2 ** Math.min(consecutiveFailures, 2)))
+          pollingRef.current = window.setTimeout(() => { void poll() }, delay)
+        }
       }
     }
     void poll()
   }
 
-  const handleBrowserLogin = async () => {
-    if (!selectedPlatform) return
+  const handleBrowserLogin = async (): Promise<boolean> => {
+    if (!selectedPlatform) return false
     setIsConnecting(true)
     setError("")
     setLoginStage("opening")
@@ -208,14 +238,16 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
       const result = await readDistributionApiResponse<{ success?: boolean; session_id?: string; message?: string }>(response, "启动浏览器失败")
       const backendError = result.data && "error" in result.data ? String(result.data.error || "") : ""
       if (!result.ok || !result.data?.success || !result.data.session_id) throw new Error(backendError || result.message || "启动浏览器失败")
-      setSessionId(result.data.session_id)
+      sessionIdRef.current = result.data.session_id
       setLoginStage("waiting")
       setStatusMessage(result.data.message || "请在弹出的浏览器窗口中完成登录")
       pollLoginStatus(result.data.session_id, selectedPlatform.platform_id)
+      return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "启动失败")
       setLoginStage("idle")
       setIsConnecting(false)
+      return false
     }
   }
 
@@ -223,6 +255,7 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
     if (!selectedPlatform || !cookieInput.trim()) return setError("请输入 Cookie")
     setIsConnecting(true)
     setError("")
+    let browserPollingStarted = false
     try {
       const raw = cookieInput.trim()
       const body: Record<string, unknown> = { platform: selectedPlatform.platform_id }
@@ -239,11 +272,11 @@ export function AccountBinding({ variant = "page", capability = "video", openReq
       setCookieInput("")
       setStatusMessage("Cookie 已导入，正在打开浏览器验证账号身份")
       toast({ title: "Cookie 已导入", description: "请在登录窗口完成账号身份验证" })
-      await handleBrowserLogin()
+      browserPollingStarted = await handleBrowserLogin()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存失败")
     } finally {
-      setIsConnecting(false)
+      if (!browserPollingStarted) setIsConnecting(false)
     }
   }
 

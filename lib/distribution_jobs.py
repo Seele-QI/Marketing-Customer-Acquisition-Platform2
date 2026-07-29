@@ -149,24 +149,50 @@ async def run_job(user_id: int, job_id: str):
     if job_id in _running:
         return
     _running.add(job_id)
-    store.set_job_status(job_id,"running")
     try:
+        store.set_job_status(job_id,"running")
         job, source = store.get_job(user_id,job_id), store.source_for_job(job_id)
         for item in store.queued_items(job_id):
+            if store.get_job(user_id, job_id)["status"] == "cancelled":
+                break
             store.set_item(item["id"],"running")
-            adaptation = json.loads(item["adaptation_json"])
-            if job["contentType"] == "video":
-                from lib.publisher.manager import publish_to_platform
-                with submit_mode_scope(job["submitMode"]):
-                    result = await publish_to_platform(user_id=user_id,platform=item["platform"],video_url=str(source.get("videoUrl") or ""),title=adaptation["title"],description="\n\n".join(filter(None,[adaptation["body"]," ".join(f"#{tag}" for tag in adaptation["tags"])])))
-            else:
-                from lib.publisher.article import publish_geo_article
-                result = await publish_geo_article(platform=item["platform"],user_id=user_id,adaptation=adaptation,project_root=str(Path(__file__).resolve().parent.parent),submit_mode=job["submitMode"])
-            data, state = result.to_dict(), (result.metadata or {}).get("state")
-            status = "success" if result.success else ("waiting_user" if state == "waiting_user" else "failed")
-            store.set_item(item["id"],status,result=data,error=result.error)
-        statuses = {item["status"] for item in store.get_job(user_id,job_id)["items"]}
-        store.set_job_status(job_id,"success" if statuses == {"success"} else ("waiting_user" if "waiting_user" in statuses else "failed"))
+            try:
+                adaptation = json.loads(item["adaptation_json"])
+                if job["contentType"] == "video":
+                    from lib.publisher.manager import publish_to_platform
+                    with submit_mode_scope(job["submitMode"]):
+                        result = await publish_to_platform(user_id=user_id,platform=item["platform"],video_url=str(source.get("videoUrl") or ""),title=adaptation["title"],description="\n\n".join(filter(None,[adaptation["body"]," ".join(f"#{tag}" for tag in adaptation["tags"])])))
+                else:
+                    from lib.publisher.article import publish_geo_article
+                    result = await publish_geo_article(platform=item["platform"],user_id=user_id,adaptation=adaptation,project_root=str(Path(__file__).resolve().parent.parent),submit_mode=job["submitMode"])
+                data, state = result.to_dict(), (result.metadata or {}).get("state")
+                status = "success" if result.success else ("waiting_user" if state == "waiting_user" else "failed")
+                store.set_item(item["id"],status,result=data,error=result.error)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                store.set_item(item["id"], "failed", error=f"发布执行异常：{exc}")
+
+        latest = store.get_job(user_id,job_id)
+        if latest["status"] != "cancelled":
+            statuses = {item["status"] for item in latest["items"]}
+            final_status = (
+                "success"
+                if statuses == {"success"}
+                else ("waiting_user" if "waiting_user" in statuses else "failed")
+            )
+            store.set_job_status(job_id, final_status)
+    except asyncio.CancelledError:
+        # Process shutdown may cancel the coroutine. The store initialization
+        # converts any leftover running state to a retryable failure on restart.
+        raise
+    except Exception:
+        # Never leave a persisted job in an endless running state when setup,
+        # database access, or an unexpected orchestration step fails.
+        try:
+            store.set_job_status(job_id, "failed")
+        except Exception:
+            pass
     finally:
         _running.discard(job_id)
 

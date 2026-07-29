@@ -56,15 +56,48 @@ export function createBusinessAssistantClient(options: ClientOptions = {}) {
   const fetchImpl = options.fetchImpl ?? fetch
 
   const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
-    const response = await fetchImpl(url, {
-      credentials: "include",
-      cache: "no-store",
-      ...init,
-      headers: init?.body
-        ? { "Content-Type": "application/json", ...init.headers }
-        : init?.headers,
-    })
-    return parseJson<T>(response)
+    const method = (init?.method || "GET").toUpperCase()
+    const retryable = method === "GET"
+    const maxAttempts = retryable ? 3 : 1
+    const timeoutMs = url.endsWith("/chat") ? 130_000 : 15_000
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), timeoutMs)
+      const forwardAbort = () => controller.abort()
+      init?.signal?.addEventListener("abort", forwardAbort, { once: true })
+      try {
+        const response = await fetchImpl(url, {
+          credentials: "include",
+          cache: "no-store",
+          ...init,
+          signal: controller.signal,
+          headers: init?.body
+            ? { "Content-Type": "application/json", ...init.headers }
+            : init?.headers,
+        })
+        if (retryable && attempt < maxAttempts && [502, 503, 504].includes(response.status)) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+          continue
+        }
+        return await parseJson<T>(response)
+      } catch (caught) {
+        lastError = caught
+        if (
+          !retryable
+          || attempt >= maxAttempts
+          || (caught instanceof BusinessAssistantApiError && caught.status < 500)
+        ) {
+          throw caught
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+      } finally {
+        clearTimeout(timeout)
+        init?.signal?.removeEventListener("abort", forwardAbort)
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("业务项目请求失败")
   }
 
   return {

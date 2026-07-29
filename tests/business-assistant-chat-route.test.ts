@@ -18,3 +18,9 @@ test("reserved assistants and direct execution actions are rejected", () => {
   assert.match(route, /禁止返回 generate、publish、charge、delete/)
   assert.match(route, /parseAssistantCompletion/)
 })
+
+test("assistant chat reports when durable message persistence is unavailable", () => {
+  assert.match(route, /storedUserMessage/)
+  assert.match(route, /storedAssistantMessage/)
+  assert.match(route, /persistenceWarning/)
+})

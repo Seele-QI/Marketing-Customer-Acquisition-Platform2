@@ -33,6 +33,9 @@ type Adaptation = { platform: string; title: string; body: string; tags: string[
 type JobItem = { platform: string; status: string; error?: string; result?: { url?: string } }
 type Job = { jobId: string; status: string; items: JobItem[] }
 
+const ACTIVE_JOB_STORAGE_KEY = "zhongtai.geo-distribution.active-job.v1"
+const TERMINAL_JOB_STATUSES = new Set(["success", "failed", "cancelled", "waiting_user"])
+
 function platformName(platformId: string) {
   return getDistributionPlatformBrand(platformId)?.name || platformId
 }
@@ -54,9 +57,12 @@ export function GeoArticleDistribute({
   const [previewToken, setPreviewToken] = React.useState("")
   const [adaptations, setAdaptations] = React.useState<Adaptation[]>([])
   const [job, setJob] = React.useState<Job | null>(null)
+  const [pollError, setPollError] = React.useState("")
+  const [retryingPlatform, setRetryingPlatform] = React.useState("")
   const [busy, setBusy] = React.useState(false)
   const [accountsLoading, setAccountsLoading] = React.useState(false)
   const [submitMode, setSubmitMode] = React.useState<"manual_confirm" | "auto_submit">("manual_confirm")
+  const publishInFlightRef = React.useRef(false)
 
   const loadAccounts = React.useCallback(async () => {
     setAccountsLoading(true)
@@ -65,6 +71,11 @@ export function GeoArticleDistribute({
         credentials: "include",
         cache: "no-store",
       })
+      if (response.status === 401) {
+        setAccountPlatforms(mergeDistributionPlatforms([], "geo_article", false))
+        setPlatforms([])
+        return
+      }
       const result = await readDistributionApiResponse<{ platforms?: DistributionPlatform[] }>(
         response,
         "加载 GEO 平台账号失败",
@@ -105,16 +116,73 @@ export function GeoArticleDistribute({
   }, [loadAccounts])
 
   React.useEffect(() => {
-    if (!job || ["success", "failed", "cancelled", "waiting_user"].includes(job.status)) return
-    const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/distribution/jobs/${job.jobId}`, {
-        credentials: "include",
-        cache: "no-store",
+    const savedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY)
+    if (!savedJobId) return
+    const controller = new AbortController()
+    void fetch(`/api/distribution/jobs/${encodeURIComponent(savedJobId)}`, {
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("saved job is unavailable")
+        setJob(await response.json() as Job)
       })
-      if (response.ok) setJob(await response.json())
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [job])
+      .catch((reason) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return
+        window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY)
+      })
+    return () => controller.abort()
+  }, [])
+
+  React.useEffect(() => {
+    if (!job?.jobId) return
+    window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.jobId)
+  }, [job?.jobId])
+
+  React.useEffect(() => {
+    const jobId = job?.jobId
+    if (!jobId || TERMINAL_JOB_STATUSES.has(job.status)) return
+
+    let disposed = false
+    let timer: number | undefined
+    let consecutiveFailures = 0
+    let activeController: AbortController | null = null
+
+    const schedule = (delayMs: number) => {
+      if (disposed) return
+      timer = window.setTimeout(() => void poll(), delayMs)
+    }
+    const poll = async () => {
+      activeController = new AbortController()
+      try {
+        const response = await fetch(`/api/distribution/jobs/${encodeURIComponent(jobId)}`, {
+          credentials: "include",
+          cache: "no-store",
+          signal: activeController.signal,
+        })
+        if (!response.ok) throw new Error(`任务状态读取失败（${response.status}）`)
+        const next = await response.json() as Job
+        if (disposed) return
+        consecutiveFailures = 0
+        setPollError("")
+        setJob(next)
+        if (!TERMINAL_JOB_STATUSES.has(next.status)) schedule(2000)
+      } catch (reason) {
+        if (disposed || (reason instanceof DOMException && reason.name === "AbortError")) return
+        consecutiveFailures += 1
+        setPollError(reason instanceof Error ? reason.message : "任务状态读取失败")
+        schedule(Math.min(30_000, 2_000 * (2 ** Math.min(consecutiveFailures - 1, 4))))
+      }
+    }
+
+    schedule(500)
+    return () => {
+      disposed = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      activeController?.abort()
+    }
+  }, [job?.jobId, job?.status])
 
   const selected = articles.find((article) => article.id === articleId)
   const needsPoi = platforms.some((platform) => platform === "dianping" || platform === "ctrip")
@@ -179,7 +247,8 @@ export function GeoArticleDistribute({
   }
 
   const publish = async () => {
-    if (!previewToken || !confirm("已检查各平台适配内容，确认开始顺序发布？")) return
+    if (publishInFlightRef.current || !previewToken || !confirm("已检查各平台适配内容，确认开始顺序发布？")) return
+    publishInFlightRef.current = true
     setBusy(true)
     try {
       const response = await fetch("/api/distribution/jobs", {
@@ -188,13 +257,14 @@ export function GeoArticleDistribute({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           previewToken,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: `geo:${previewToken}:${submitMode}`,
           confirmed: true,
           submitMode,
         }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(String(data.detail?.message || data.detail || "创建发布任务失败"))
+      setPollError("")
       setJob(data)
     } catch (reason) {
       toast({
@@ -203,17 +273,51 @@ export function GeoArticleDistribute({
         variant: "destructive",
       })
     } finally {
+      publishInFlightRef.current = false
       setBusy(false)
     }
   }
 
   const retry = async (platform: string) => {
-    if (!job) return
-    const response = await fetch(`/api/distribution/jobs/${job.jobId}/items/${platform}/retry`, {
-      method: "POST",
-      credentials: "include",
-    })
-    if (response.ok) setJob(await response.json())
+    if (!job || retryingPlatform) return
+    setRetryingPlatform(platform)
+    try {
+      const response = await fetch(`/api/distribution/jobs/${encodeURIComponent(job.jobId)}/items/${encodeURIComponent(platform)}/retry`, {
+        method: "POST",
+        credentials: "include",
+      })
+      const data = await response.json().catch(() => null) as Job | { detail?: { message?: string } } | null
+      if (!response.ok) throw new Error((data as { detail?: { message?: string } } | null)?.detail?.message || "重试任务提交失败")
+      setPollError("")
+      setJob(data as Job)
+    } catch (reason) {
+      toast({
+        title: `${platformName(platform)}重试失败`,
+        description: reason instanceof Error ? reason.message : "请稍后重试",
+        variant: "destructive",
+      })
+    } finally {
+      setRetryingPlatform("")
+    }
+  }
+
+  const cancelJob = async () => {
+    if (!job || TERMINAL_JOB_STATUSES.has(job.status) || !confirm("确认停止尚未开始的平台发布？当前正在提交的平台可能仍会完成。")) return
+    try {
+      const response = await fetch(`/api/distribution/jobs/${encodeURIComponent(job.jobId)}/cancel`, {
+        method: "POST",
+        credentials: "include",
+      })
+      const data = await response.json().catch(() => null) as Job | { detail?: { message?: string } } | null
+      if (!response.ok) throw new Error((data as { detail?: { message?: string } } | null)?.detail?.message || "取消任务失败")
+      setJob(data as Job)
+    } catch (reason) {
+      toast({
+        title: "取消任务失败",
+        description: reason instanceof Error ? reason.message : "请稍后重试",
+        variant: "destructive",
+      })
+    }
   }
 
   return (
@@ -390,7 +494,15 @@ export function GeoArticleDistribute({
           <section className="mt-5 rounded-3xl border border-slate-200/70 bg-white p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">发布任务</h2>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs">{job.status}</span>
+              <div className="flex items-center gap-2">
+                {pollError ? <span className="text-xs text-amber-600">网络波动，自动重试中</span> : null}
+                {!TERMINAL_JOB_STATUSES.has(job.status) ? (
+                  <button type="button" onClick={cancelJob} className="rounded-lg border border-red-200 px-2.5 py-1 text-xs text-red-600">
+                    停止后续发布
+                  </button>
+                ) : null}
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs">{job.status}</span>
+              </div>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {job.items.map((item) => (
@@ -402,7 +514,9 @@ export function GeoArticleDistribute({
                   </div>
                   {item.error ? <p className="mt-2 text-xs text-red-600">{item.error}</p> : null}
                   {["failed", "waiting_user"].includes(item.status) ? (
-                    <button onClick={() => retry(item.platform)} className="mt-3 rounded-lg border px-3 py-1.5 text-xs">处理后重试</button>
+                    <button disabled={Boolean(retryingPlatform)} onClick={() => retry(item.platform)} className="mt-3 rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50">
+                      {retryingPlatform === item.platform ? "提交中…" : "处理后重试"}
+                    </button>
                   ) : null}
                 </div>
               ))}

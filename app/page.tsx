@@ -1,6 +1,6 @@
 ﻿"use client"
 
-import { useRef, useState } from "react"
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { DashboardSidebar, type MainView } from "@/components/dashboard-sidebar"
 import { TopHeader } from "@/components/top-header"
@@ -36,13 +36,12 @@ import { LoginRequiredProvider } from "@/components/auth/login-required-provider
 import { TutorialProvider } from "@/components/tutorial/tutorial-provider"
 import { TutorialDemoHost } from "@/components/tutorial/demo-host"
 import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
-import { TEAM_AGENTS, getTeamAgentByName } from "@/lib/team-agents"
+import { getTeamAgentByName } from "@/lib/team-agents"
 import {
   Store,
   Share2,
   Mic,
   RefreshCw,
-  FileText,
 } from "lucide-react"
 import type { ComponentType } from "react"
 
@@ -121,14 +120,6 @@ function buildCopywritingAgentList(): {
     quickPrompts: agentQuickPromptsMap[name] || [],
   }))
 }
-
-const teamAgentOptions = TEAM_AGENTS.map((agent) => ({
-  name: agent.name,
-  role: agent.role,
-  avatar: agent.avatar,
-  themeColor: agent.themeColor,
-  quickPrompts: agent.quickPrompts,
-}))
 
 /* ------------------------------------------------------------------ */
 /*  Breadcrumb logic                                                   */
@@ -297,8 +288,12 @@ function ContentArea({
 
 export default function Page() {
   const [activeView, setActiveView] = useState<MainView>("工作台")
-  const videoWorkspaceVisitedRef = useRef(false)
-  if (isVideoView(activeView)) videoWorkspaceVisitedRef.current = true
+  const [videoWorkspaceVisited, setVideoWorkspaceVisited] = useState(false)
+  const shouldMountVideoWorkspace = videoWorkspaceVisited || isVideoView(activeView)
+  const navigateToView = (view: MainView) => {
+    if (isVideoView(view)) setVideoWorkspaceVisited(true)
+    setActiveView(view)
+  }
 
   const [activeAgent, setActiveAgent] = useState<ActiveAgent | null>(null)
   /** Distinguish: copywriting agents (no avatar) vs team agents (with avatar) */
@@ -322,7 +317,7 @@ export default function Page() {
     meta?: { avatarUrl?: string; role?: string },
   ) => {
     const teamAgent = meta?.avatarUrl ? getTeamAgentByName(agentName) : undefined
-    if (teamAgent) setActiveView("智能体中心")
+    if (teamAgent) navigateToView("智能体中心")
     setAgentChatEntryNonce((n) => n + 1)
     setActiveAgent({
       name: agentName,
@@ -342,17 +337,17 @@ export default function Page() {
 
   const handleNavigate = (view: MainView) => {
     if (agentChatOpen && !isCopywritingMode) setAgentChatOpen(false)
-    setActiveView(view)
+    navigateToView(view)
   }
 
   return (
     <LoginRequiredProvider>
     <TutorialProvider
-      onNavigate={setActiveView}
+      onNavigate={navigateToView}
       onOpenAgent={(name, meta) => {
         if (meta?.copywriting) {
           setInlineCopywritingAgent(name)
-          setActiveView("文案创作")
+          navigateToView("文案创作")
           return
         }
         handleOpenAgent(name, meta)
@@ -393,16 +388,16 @@ export default function Page() {
             onJumpToVideo={(script) => {
               setInitialVideoScript(script)
               setAgentChatOpen(false)
-              setActiveView(getVideoRouteForAgent(activeAgent.name))
+              navigateToView(getVideoRouteForAgent(activeAgent.name))
             }}
           />
         </div>
       ) : null}
 
-      <TaskRuntimeProvider activeView={activeView} onNavigate={setActiveView}>
+      <TaskRuntimeProvider activeView={activeView} onNavigate={navigateToView}>
         <BusinessAssistantProvider
           activeView={activeView}
-          onNavigate={setActiveView}
+          onNavigate={navigateToView}
         >
         <div
           className={cn(
@@ -425,7 +420,7 @@ export default function Page() {
             <TutorialDemoHost activeView={activeView} />
 
             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden animate-in fade-in duration-200">
-              {videoWorkspaceVisitedRef.current ? (
+              {shouldMountVideoWorkspace ? (
                 <div
                   className={cn(
                     "min-h-0 flex-1 flex-col",

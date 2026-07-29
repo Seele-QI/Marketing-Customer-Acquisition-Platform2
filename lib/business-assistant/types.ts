@@ -103,6 +103,7 @@ export type BusinessAssistantReply = {
   suggestedActions: BusinessAssistantSuggestedAction[]
   memoryStatus?: "loaded" | "unavailable"
   billing?: { chargedCredits: number; balance?: number }
+  persistenceWarning?: string
 }
 
 export type OperationGuideStep = {

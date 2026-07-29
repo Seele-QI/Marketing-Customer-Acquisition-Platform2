@@ -95,3 +95,34 @@ test("project client surfaces revision conflict without hiding the message", asy
     },
   )
 })
+
+test("project client retries transient GET failures but never replays a chat POST", async () => {
+  let listCalls = 0
+  const listClient = createBusinessAssistantClient({
+    fetchImpl: async () => {
+      listCalls += 1
+      return listCalls < 3
+        ? json({ detail: "busy" }, 503)
+        : json({ projects: [] })
+    },
+  })
+  await listClient.listProjects()
+  assert.equal(listCalls, 3)
+
+  let chatCalls = 0
+  const chatClient = createBusinessAssistantClient({
+    fetchImpl: async () => {
+      chatCalls += 1
+      return json({ detail: "busy" }, 503)
+    },
+  })
+  await assert.rejects(
+    chatClient.sendMessage({
+      projectId: "p1",
+      assistantId: "video-creation",
+      message: "继续",
+    }),
+    /busy/,
+  )
+  assert.equal(chatCalls, 1)
+})

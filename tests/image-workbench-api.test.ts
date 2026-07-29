@@ -107,3 +107,45 @@ test("image workbench polling times out without mutating backend state", async (
     /生成等待超时/,
   )
 })
+
+test("image workbench polling retries transient status failures", async () => {
+  let calls = 0
+  const retries: number[] = []
+  const fetcher: typeof fetch = async () => {
+    calls += 1
+    if (calls === 1) throw new TypeError("fetch failed")
+    if (calls === 2) return Response.json({ detail: "busy" }, { status: 503 })
+    return Response.json({
+      task_id: "image_1",
+      mode: "image",
+      status: "success",
+      image_urls: ["/done.png"],
+    })
+  }
+  const result = await waitForImageWorkbenchResult("image_1", {
+    fetcher,
+    intervalMs: 10,
+    timeoutMs: 1_000,
+    sleep: async () => undefined,
+    onRetry: (_error, attempt) => retries.push(attempt),
+  })
+  assert.equal(result.status, "success")
+  assert.deepEqual(retries, [1, 2])
+})
+
+test("image workbench polling does not retry a missing task", async () => {
+  let calls = 0
+  const fetcher: typeof fetch = async () => {
+    calls += 1
+    return Response.json({ detail: "图片任务不存在" }, { status: 404 })
+  }
+  await assert.rejects(
+    () => waitForImageWorkbenchResult("missing", {
+      fetcher,
+      intervalMs: 0,
+      sleep: async () => undefined,
+    }),
+    /图片任务不存在/,
+  )
+  assert.equal(calls, 1)
+})

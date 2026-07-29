@@ -4,6 +4,9 @@ import test from "node:test"
 import {
   DH_VIDEO_TASK_TIMEOUT_MS,
   DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS,
+  CLIP_TASK_TIMEOUT_MS,
+  PROMO_VIDEO_TASK_TIMEOUT_MS,
+  COPYWRITING_EXTRACT_TASK_TIMEOUT_MS,
   getTaskHardTimeoutMs,
 } from "../lib/task-runtime/constants.ts"
 import {
@@ -12,7 +15,11 @@ import {
   loadRuntimeStore,
   saveRuntimeStore,
 } from "../lib/task-runtime/store.ts"
-import { getTaskRuntime, resetTaskRuntimeForTests } from "../lib/task-runtime/runtime.ts"
+import {
+  getPollRetryDelayMs,
+  getTaskRuntime,
+  resetTaskRuntimeForTests,
+} from "../lib/task-runtime/runtime.ts"
 import { queryDhVideoV2Status } from "../lib/dh-video-v2/api.ts"
 import { dhVideoEconomyAdapter } from "../lib/task-runtime/adapters/dh-video-economy.ts"
 import type { RuntimeTask } from "../lib/task-runtime/types.ts"
@@ -120,7 +127,22 @@ test("dh-video-v2 hard timeout is 50 minutes", () => {
   assert.equal(getTaskHardTimeoutMs("dh-video-v2"), DH_VIDEO_TASK_TIMEOUT_MS)
   assert.equal(DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS, 65 * 60 * 1000)
   assert.equal(getTaskHardTimeoutMs("dh-video-economy"), DH_VIDEO_ECONOMY_TASK_TIMEOUT_MS)
-  assert.equal(getTaskHardTimeoutMs("image-video"), null)
+  assert.equal(getTaskHardTimeoutMs("image-video"), CLIP_TASK_TIMEOUT_MS)
+  assert.equal(getTaskHardTimeoutMs("mashup"), CLIP_TASK_TIMEOUT_MS)
+  assert.equal(getTaskHardTimeoutMs("promo-video"), PROMO_VIDEO_TASK_TIMEOUT_MS)
+  assert.equal(
+    getTaskHardTimeoutMs("copywriting-extract"),
+    COPYWRITING_EXTRACT_TASK_TIMEOUT_MS,
+  )
+  assert.equal(getTaskHardTimeoutMs("unknown"), null)
+})
+
+test("poll retry backoff grows and stays capped", () => {
+  assert.equal(getPollRetryDelayMs(5_000, 1), 5_000)
+  assert.equal(getPollRetryDelayMs(5_000, 2), 10_000)
+  assert.equal(getPollRetryDelayMs(5_000, 3), 20_000)
+  assert.equal(getPollRetryDelayMs(5_000, 4), 30_000)
+  assert.equal(getPollRetryDelayMs(5_000, 20), 30_000)
 })
 
 test("starting an already-started runtime repairs a lost poll timer", async () => {
