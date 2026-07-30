@@ -14,6 +14,7 @@ import {
 import {
   assessScriptDuration,
   countScriptChars,
+  buildLocalScriptPlan,
   DH_V2_DIALOGUE_CHARS_MAX,
   DH_V2_DIALOGUE_CHARS_MIN,
   type DhV2ScriptPlan,
@@ -23,7 +24,7 @@ import {
   calculateDhV2PlanMaxTokens,
   runDhV2PlanProviderChain,
 } from "./plan-provider-chain"
-const PLAN_LLM_TEMPERATURE = 0.85
+const PLAN_LLM_TEMPERATURE = 0.2
 const DEFAULT_PLAN_PROVIDER_TIMEOUT_MS = 60_000
 const DEFAULT_PLAN_TOTAL_TIMEOUT_MS = 150_000
 const PLAN_SCRIPT_FEATURE_ID = "video.dh.plan_script"
@@ -191,6 +192,8 @@ async function callPlanProvider(
     maxTokens,
     timeoutMs,
     temperature: PLAN_LLM_TEMPERATURE,
+    structuredJson: true,
+    disableReasoning: true,
   })
   if (!result.ok) return result
   return { ok: true, text: result.text }
@@ -248,7 +251,16 @@ export async function generateDhV2PlanWithLlm(
       plan_source: provider ? `${provider.name} / ${provider.model}` : chain.provider,
     }
   }
-  return { ok: false, status: chain.status, detail: chain.detail }
+  console.warn(`[dh-v2-plan] all cloud providers failed; using deterministic local plan: ${chain.detail}`)
+  return {
+    ok: true,
+    plan: buildLocalScriptPlan(
+      input.script,
+      input.creative_idea,
+      Boolean(input.has_audio_ref),
+    ),
+    plan_source: "本地可靠分镜（云模型暂不可用）",
+  }
 }
 
 /** @deprecated 使用 generateDhV2PlanWithLlm */

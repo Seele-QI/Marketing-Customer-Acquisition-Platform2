@@ -18,10 +18,45 @@ export function extractPlanJsonBlock(text: string): { segments?: unknown[] } {
   if (raw.startsWith("```")) {
     raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "")
   }
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start < 0 || end <= start) throw new Error("AI 未返回有效 JSON")
-  return JSON.parse(raw.slice(start, end + 1)) as { segments?: unknown[] }
+  const candidates: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === "\\") escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i
+      depth += 1
+    } else if (ch === "}" && depth > 0) {
+      depth -= 1
+      if (depth === 0 && start >= 0) {
+        candidates.push(raw.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { segments?: unknown[] }
+      if (Array.isArray(parsed.segments)) return parsed
+    } catch {
+      // Keep scanning: reasoning text may contain an earlier JSON-like example.
+    }
+  }
+  throw new Error("AI 未返回有效 JSON")
 }
 
 /** 将 AI segments 转为 DhV2ScriptPlan */

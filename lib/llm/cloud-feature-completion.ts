@@ -1,4 +1,5 @@
 import { normalizeArkBaseUrl } from "@/lib/ark-images-api"
+import { fetchWithChinaDirectFallback } from "@/lib/llm/china-direct-fetch"
 import { getSyncedFeature } from "@/lib/llm/feature-catalog-sync"
 import { loadSyncedProviders, type SyncedProvider } from "@/lib/llm/synced-providers"
 
@@ -162,6 +163,8 @@ export async function completeCloudFeatureChat(input: {
   maxTokens: number
   timeoutMs: number
   temperature?: number
+  structuredJson?: boolean
+  disableReasoning?: boolean
   fetchImpl?: typeof fetch
 }): Promise<CloudFeatureCompletionResult> {
   const fetchImpl = input.fetchImpl ?? fetch
@@ -171,23 +174,38 @@ export async function completeCloudFeatureChat(input: {
     const messages = provider.supportsImages
       ? input.messages
       : withoutUnsupportedImages(input.messages)
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      messages,
+      stream: false,
+      max_tokens: input.maxTokens,
+      temperature: input.temperature,
+    }
+    if (input.structuredJson) {
+      body.response_format = { type: "json_object" }
+    }
+    // GLM thinking models can spend the whole output budget on reasoning and
+    // leave message.content empty/truncated. Structured planning does not need it.
+    if (input.disableReasoning && /^glm(?:[-_.]|$)/i.test(provider.model)) {
+      body.thinking = { type: "disabled" }
+    }
     let response: Response
     try {
-      response = await fetchImpl(provider.url, {
+      const requestInit: RequestInit = {
         method: "POST",
         headers: {
           Authorization: `Bearer ${provider.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: provider.model,
-          messages,
-          stream: false,
-          max_tokens: input.maxTokens,
-          temperature: input.temperature,
-        }),
-        signal: AbortSignal.timeout(input.timeoutMs),
-      })
+        body: JSON.stringify(body),
+      }
+      response =
+        provider.adapter === "ark_chat" && input.fetchImpl === undefined
+          ? await fetchWithChinaDirectFallback(provider.url, requestInit, input.timeoutMs)
+          : await fetchImpl(provider.url, {
+              ...requestInit,
+              signal: AbortSignal.timeout(input.timeoutMs),
+            })
     } catch (error) {
       failures.push({
         id: provider.id,

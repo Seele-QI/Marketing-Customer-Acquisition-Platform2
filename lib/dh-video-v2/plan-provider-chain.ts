@@ -54,6 +54,5 @@ export async function runDhV2PlanProviderChain<P extends string, T>(
 /** 分镜 JSON 的输出上限随段数增长，避免单段任务仍请求 8192 tokens。 */
 export function calculateDhV2PlanMaxTokens(segmentCount: number): number {
   const count = Number.isFinite(segmentCount) ? Math.max(1, Math.floor(segmentCount)) : 1
-  return Math.min(6_144, Math.max(2_048, count * 1_200))
+  return Math.min(8_192, Math.max(4_096, count * 1_400))
 }
-

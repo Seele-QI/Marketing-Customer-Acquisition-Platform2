@@ -146,4 +146,36 @@ describe("cloud feature completion", () => {
     assert.deepEqual(calledModels, ["broken-model", "cloud-model"])
     assert.match(result.failures[0].detail, /400.*bad model/)
   })
+
+  it("requests strict JSON and disables GLM reasoning for structured tasks", async () => {
+    let captured: Record<string, unknown> = {}
+    const result = await completeCloudFeatureChat({
+      providers: [
+        {
+          id: 10,
+          name: "glm",
+          adapter: "openai_chat",
+          url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+          apiKey: "sk-test",
+          model: "glm-5.2",
+          supportsImages: false,
+        },
+      ],
+      messages: [{ role: "user", content: "return JSON" }],
+      maxTokens: 2_048,
+      timeoutMs: 1_000,
+      structuredJson: true,
+      disableReasoning: true,
+      fetchImpl: async (_url, init) => {
+        captured = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return Response.json({
+          choices: [{ message: { content: "{\"segments\":[]}" } }],
+        })
+      },
+    })
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(captured.response_format, { type: "json_object" })
+    assert.deepEqual(captured.thinking, { type: "disabled" })
+  })
 })

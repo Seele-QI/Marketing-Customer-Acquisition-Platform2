@@ -34,9 +34,8 @@ test("plan provider chain caps each attempt by both provider and total budgets",
   })
 })
 
-test("plan max tokens scales with requested segments instead of always asking for 8192", () => {
-  assert.equal(calculateDhV2PlanMaxTokens(1), 2_048)
-  assert.equal(calculateDhV2PlanMaxTokens(3), 3_600)
-  assert.equal(calculateDhV2PlanMaxTokens(20), 6_144)
+test("plan max tokens leaves room for structured output and still scales by segment count", () => {
+  assert.equal(calculateDhV2PlanMaxTokens(1), 4_096)
+  assert.equal(calculateDhV2PlanMaxTokens(3), 4_200)
+  assert.equal(calculateDhV2PlanMaxTokens(20), 8_192)
 })
-

@@ -23,6 +23,24 @@ describe("dh-v2 plan-script-ai", () => {
     assert.equal((data.segments as unknown[]).length, 1)
   })
 
+  it("extractPlanJsonBlock selects the balanced object containing segments", () => {
+    const raw =
+      '先给一个格式示例：{"example":true}\n最终结果：{"segments":[{"dialogue":"有效台词","shot_details":"画面","video_prompt":"提示词"}]}\n完成'
+    const data = extractPlanJsonBlock(raw)
+    assert.equal((data.segments as Array<{ dialogue: string }>)[0].dialogue, "有效台词")
+  })
+
+  it("plan requests structured JSON with reasoning disabled", () => {
+    const source = readFileSync(
+      new URL("../lib/dh-video-v2/plan-script-ai.ts", import.meta.url),
+      "utf8",
+    )
+    assert.match(source, /structuredJson:\s*true/)
+    assert.match(source, /disableReasoning:\s*true/)
+    assert.match(source, /buildLocalScriptPlan/)
+    assert.match(source, /本地可靠分镜/)
+  })
+
   it("mergeAiPlanFromResponse filters empty dialogue", () => {
     const script = "测试口播文案内容。".repeat(30)
     const line = "字".repeat(50)
