@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
+import { readFileSync } from "node:fs"
 
 import {
   buildPromoAutoPromptRequest,
@@ -22,6 +23,18 @@ function setEnv(name: string, value: string | undefined): () => void {
 }
 
 describe("promo auto-prompt", () => {
+  it("does not contain local model constants that override cloud configuration", () => {
+    const source = readFileSync(
+      new URL("../lib/promo-video/auto-prompt-ai.ts", import.meta.url),
+      "utf8",
+    )
+    assert.doesNotMatch(
+      source,
+      /DOUBAO_SEED_21_MODEL_ID|DEFAULT_NEWAPI_GPT_MODEL|DEFAULT_NEWAPI_CLAUDE_MODEL/,
+    )
+    assert.match(source, /listCloudFeatureProviderCandidates/)
+  })
+
   it("buildPromoAutoPromptRequest maps storyboard count and script", () => {
     const req = buildPromoAutoPromptRequest({
       promo_script: "  宣传口播  ",
@@ -99,12 +112,26 @@ describe("promo auto-prompt", () => {
     }
   })
 
-  it("calls NewAPI GPT first when triad configured", async () => {
+  it("sends the promo prompt through the cloud-delivered provider", async () => {
+    const syncedProviders = Buffer.from(
+      JSON.stringify({
+        providers: [
+          {
+            id: 7,
+            kind: "llm",
+            name: "cloud-gpt",
+            adapter: "openai_chat",
+            base_url: "https://newapi.example",
+            api_key: "sk-test",
+            model: "gpt-5.5",
+            priority: 1,
+          },
+        ],
+      }),
+      "utf8",
+    ).toString("base64")
     const restores = [
-      setEnv("NEWAPI_BASE_URL", "https://newapi.example"),
-      setEnv("NEWAPI_KEY", "sk-test"),
-      setEnv("NEWAPI_GPT_MODEL", "gpt-5.5"),
-      setEnv("DEEPSEEK_API_KEY", undefined),
+      setEnv("MODEL_PROVIDERS_JSON_B64", syncedProviders),
     ]
     const originalFetch = globalThis.fetch
     let capturedBody: {
@@ -151,7 +178,7 @@ describe("promo auto-prompt", () => {
     }
   })
 
-  it("does not treat a synced DeepSeek primary model as the logical GPT model", async () => {
+  it("uses the exact first cloud-delivered provider model", async () => {
     const syncedProviders = Buffer.from(
       JSON.stringify({
         providers: [
@@ -188,8 +215,10 @@ describe("promo auto-prompt", () => {
     ]
     const originalFetch = globalThis.fetch
     let callCount = 0
-    globalThis.fetch = (async () => {
+    let capturedModel = ""
+    globalThis.fetch = (async (_input, init) => {
       callCount += 1
+      capturedModel = (JSON.parse(String(init?.body)) as { model: string }).model
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: "generated promo prompt" } }],
@@ -207,6 +236,7 @@ describe("promo auto-prompt", () => {
 
       assert.equal(result.ok, true)
       assert.equal(callCount, 1)
+      assert.equal(capturedModel, "deepseek-v4-flash")
     } finally {
       globalThis.fetch = originalFetch
       for (const r of restores.reverse()) r()
