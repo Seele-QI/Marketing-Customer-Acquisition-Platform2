@@ -4,21 +4,16 @@ import {
   extractPlanJsonBlock,
   mergeAiPlanFromResponse,
 } from "../lib/dh-video-v2/plan-script-parse.ts"
-import { DH_V2_PLAN_LLM_PROVIDER_ORDER } from "../lib/dh-video-v2/plan-script-ai.ts"
-import { DEFAULT_NEWAPI_GPT_MODEL } from "../lib/llm/model-registry.ts"
+import { readFileSync } from "node:fs"
 
 describe("dh-v2 plan-script-ai", () => {
-  it("default plan GPT model is gpt-5.5", () => {
-    assert.equal(DEFAULT_NEWAPI_GPT_MODEL, "gpt-5.5")
-  })
-
-  it("plan LLM order is gpt then claude then deepseek then doubao", () => {
-    assert.deepEqual(DH_V2_PLAN_LLM_PROVIDER_ORDER, [
-      "sonetto_gpt",
-      "sonetto_claude",
-      "deepseek",
-      "doubao",
-    ])
+  it("does not override cloud model configuration with local model constants", () => {
+    const source = readFileSync(
+      new URL("../lib/dh-video-v2/plan-script-ai.ts", import.meta.url),
+      "utf8",
+    )
+    assert.doesNotMatch(source, /DOUBAO_SEED_21_MODEL_ID|DEFAULT_NEWAPI_GPT_MODEL/)
+    assert.match(source, /listCloudFeatureProviderCandidates/)
   })
 
   it("extractPlanJsonBlock parses fenced JSON", () => {

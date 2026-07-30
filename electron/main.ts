@@ -340,13 +340,21 @@ async function restartChildrenWithFreshKeys(configVersion?: string) {
   const waitStartedAt = Date.now();
   const guardResult = await waitForVideoTasksIdle({
     probeActive: async () => {
-      const response = await fetch(
-        `http://127.0.0.1:${actualUvicornPort}/api/dh-video-v2/runtime-state`,
-        { signal: AbortSignal.timeout(2_000) },
-      );
-      if (!response.ok) throw new Error(`runtime state HTTP ${response.status}`);
-      const body = await response.json() as { active?: boolean };
-      return body.active === true;
+      const [videoResponse, planResponse] = await Promise.all([
+        fetch(
+          `http://127.0.0.1:${actualUvicornPort}/api/dh-video-v2/runtime-state`,
+          { signal: AbortSignal.timeout(2_000) },
+        ),
+        fetch(
+          `http://127.0.0.1:${actualNextPort}/api/dh-video-v2/plan-script/ready`,
+          { signal: AbortSignal.timeout(2_000) },
+        ),
+      ]);
+      if (!videoResponse.ok) throw new Error(`video runtime state HTTP ${videoResponse.status}`);
+      if (!planResponse.ok) throw new Error(`plan runtime state HTTP ${planResponse.status}`);
+      const video = await videoResponse.json() as { active?: boolean };
+      const plan = await planResponse.json() as { active?: boolean };
+      return video.active === true || plan.active === true;
     },
   });
   const waitedMs = Date.now() - waitStartedAt;

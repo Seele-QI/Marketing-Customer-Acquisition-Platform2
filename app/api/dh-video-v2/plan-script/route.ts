@@ -14,6 +14,7 @@ import {
   isLlmPlanAvailable,
 } from "@/lib/dh-video-v2/plan-script-ai"
 import type { DhV2PlanScriptRequest } from "@/lib/dh-video-v2/types"
+import { withActivePlanRequest } from "@/lib/dh-video-v2/plan-runtime-state"
 
 export const runtime = "nodejs"
 
@@ -35,8 +36,7 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
       {
         detail: {
           code: "PLAN_LLM_NOT_CONFIGURED",
-          message:
-            "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步完成；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。",
+          message: "云端未给分镜功能下发可用模型，请在模型配置中心绑定并启用模型。",
         },
       },
       { status: 503 },
@@ -56,12 +56,14 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
     // 余额查询失败不阻断（扣费时仍会校验）
   }
 
-  const ai = await generateDhV2PlanWithLlm({
-    script,
-    creative_idea: body.creative_idea || "",
-    images_base64: body.images_base64,
-    has_audio_ref: body.has_audio_ref,
-  })
+  const ai = await withActivePlanRequest(() =>
+    generateDhV2PlanWithLlm({
+      script,
+      creative_idea: body.creative_idea || "",
+      images_base64: body.images_base64,
+      has_audio_ref: body.has_audio_ref,
+    }),
+  )
 
   if (!ai.ok) {
     if (ai.status === 503) {
@@ -75,7 +77,7 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
         { status: 503 },
       )
     }
-    if (ai.status === 502) {
+    if (ai.status >= 500) {
       return NextResponse.json(
         {
           detail: {
@@ -83,7 +85,7 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
             message: ai.detail,
           },
         },
-        { status: 502 },
+        { status: ai.status },
       )
     }
     return NextResponse.json({ detail: ai.detail }, { status: ai.status })
