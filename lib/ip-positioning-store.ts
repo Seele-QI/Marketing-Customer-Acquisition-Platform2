@@ -21,7 +21,6 @@ export type IpPositioningFileRef = {
 export type IpPositioningSession = {
   wizardStep: number
   intake: IpPositioningIntake
-  modelId: string
   fileRefs: IpPositioningFileRef[]
   report: IpPositioningReport | null
   stage: StageId | null
@@ -32,7 +31,6 @@ export function defaultIpPositioningSession(): IpPositioningSession {
   return {
     wizardStep: 0,
     intake: { ...EMPTY_INTAKE },
-    modelId: "",
     fileRefs: [],
     report: null,
     stage: null,
@@ -45,12 +43,14 @@ export function loadIpPositioningSession(): IpPositioningSession | null {
   try {
     const raw = localStorage.getItem(IP_POSITIONING_SESSION_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<IpPositioningSession>
+    const parsed = JSON.parse(raw) as Partial<IpPositioningSession> & { modelId?: unknown }
+    const { modelId: legacyModelId, ...current } = parsed
+    void legacyModelId
     return {
       ...defaultIpPositioningSession(),
-      ...parsed,
-      intake: { ...EMPTY_INTAKE, ...parsed.intake },
-      fileRefs: Array.isArray(parsed.fileRefs) ? parsed.fileRefs : [],
+      ...current,
+      intake: { ...EMPTY_INTAKE, ...current.intake },
+      fileRefs: Array.isArray(current.fileRefs) ? current.fileRefs : [],
     }
   } catch {
     return null

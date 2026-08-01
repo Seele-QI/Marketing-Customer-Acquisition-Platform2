@@ -1,0 +1,46 @@
+---
+description: Zeabur 版本更新必须保 Volume 数据；禁止删服重建
+alwaysApply: true
+---
+
+# Zeabur 服务版本更新规范（数据零丢失）
+
+> 云端推送 / 换版本时：**确保用户数据（挂载磁盘 / Volume）绝不丢失。**
+
+## 核心原则
+
+1. **版本升级 / 降级的唯一正确方式是「更新映像标签（image tag）」**，而非删除重建或用模板 redeploy 换版本。
+2. 更新 tag 只替换容器镜像，**已挂载的磁盘（Volume/PVC）保持挂载不变**。
+3. 任何可能孤立或清空磁盘的操作都必须**先获得用户明确确认**，并**提醒先备份**。
+
+## 允许（Safe）
+
+| 操作 | 说明 |
+|------|------|
+| 更新 image tag | 切换版本标准做法；磁盘保持挂载 |
+| 更新环境变量 | 不影响磁盘（禁止用整表 Map 覆盖清空其它变量） |
+| 重启服务 | 不影响磁盘 |
+| Git/源码服务常规重新部署 | 正常更新 |
+
+## 禁止（Dangerous）— 不得作为「换版本」手段
+
+| 禁止操作 | 风险 |
+|----------|------|
+| 删除服务后重新创建 | 新服务挂空盘，原数据丢失 |
+| deployTemplate 换版本 | 可能孤立/覆盖原磁盘 |
+| 对持久化目录 `rm -rf` | 永久数据丢失 |
+| AI 代为卸载/删除/调整磁盘 | 引导用户在 Dashboard 操作，并提醒先备份 |
+
+## 标准流程（Docker 服务）
+
+1. 确认是 **Docker** 服务（Git/Once 无 image tag）。
+2. 提醒：更新前建议备份重要数据。
+3. **CLI**：`npx zeabur@latest service update tag --id <service-id> -t <new-tag> -y -i=false`
+4. 或 Dashboard：设置 → 服务映像 → 改 tag → 保存。
+
+## 与本项目相关的额外约束
+
+- **北京云端** `zhongtai-cloud-api` / `zhongtai-cloud-web`：有账户 DB Volume，换版只用 tag；改 Key 用逐项环境变量 + Restart，递增 `CONFIG_VERSION`。
+- **禁止**对 cloud 服务 ID 执行 full-site Dockerfile 覆盖或删服重建。
+- 改环境变量时**禁止** `updateEnvironmentVariable(Map)` 整表覆盖（会清空其它变量导致崩溃）。
+---

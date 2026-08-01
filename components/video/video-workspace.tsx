@@ -8,7 +8,9 @@ import { ImageVideoWorkflow } from "@/components/image-video-workflow"
 import { MashupVideoWorkflow } from "@/components/mashup-video-workflow"
 import PromoVideoWorkflow from "@/components/promo-video-workflow"
 import DhVideoV2Workflow from "@/components/dh-video-v2-workflow"
+import DhVideoEconomyWorkflow from "@/components/dh-video-economy-workflow"
 import { VideoHistory } from "@/components/video-history"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
 import { VIDEO_VIEWS, type VideoView } from "@/lib/video/workspace"
 
 type Props = {
@@ -25,6 +27,9 @@ function panelClass(visible: boolean): string {
 export function VideoWorkspace({ activeView, initialScript = "" }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-workspace="video">
+      <div className="flex shrink-0 items-center justify-end border-b border-border/40 px-4 py-2">
+        <ModuleTutorialButton view={activeView} />
+      </div>
       <div
         className={panelClass(activeView === VIDEO_VIEWS.IMAGE_VIDEO)}
         aria-hidden={activeView !== VIDEO_VIEWS.IMAGE_VIDEO}
@@ -51,6 +56,13 @@ export function VideoWorkspace({ activeView, initialScript = "" }: Props) {
         aria-hidden={activeView !== VIDEO_VIEWS.DH_VIDEO_V2}
       >
         <DhVideoV2Workflow initialScript={initialScript} />
+      </div>
+
+      <div
+        className={panelClass(activeView === VIDEO_VIEWS.DH_VIDEO_ECONOMY)}
+        aria-hidden={activeView !== VIDEO_VIEWS.DH_VIDEO_ECONOMY}
+      >
+        <DhVideoEconomyWorkflow initialScript={initialScript} />
       </div>
 
       <div

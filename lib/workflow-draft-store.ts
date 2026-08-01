@@ -74,6 +74,15 @@ export type DhVideoV2Draft = CoverDraftFields & {
   audioRefs: AssetRef[]
 }
 
+export type DhVideoEconomyDraft = CoverDraftFields & {
+  script: string
+  motionPreset: "natural" | "friendly" | "professional" | "relaxed" | "custom"
+  customMotionPrompt: string
+  taskId: string
+  imageRefs: AssetRef[]
+  audioRef: AssetRef | null
+}
+
 export type PromoVideoDraft = CoverDraftFields & {
   step: "form" | "storyboard" | "prompt" | "video"
   formData: {
@@ -109,6 +118,7 @@ export type WorkflowDraftMap = {
   "image-video": ImageVideoDraft
   mashup: MashupDraft
   "dh-video-v2": DhVideoV2Draft
+  "dh-video-economy": DhVideoEconomyDraft
   "promo-video": PromoVideoDraft
   "copywriting-extract": CopywritingExtractDraft
 }
@@ -217,6 +227,19 @@ export function defaultDhVideoV2Draft(): DhVideoV2Draft {
     videoUrl: "",
     imageRefs: [],
     audioRefs: [],
+  }
+}
+
+export function defaultDhVideoEconomyDraft(): DhVideoEconomyDraft {
+  return {
+    coverAspectRatio: DEFAULT_COVER_ASPECT_RATIO,
+    coverResolution: DEFAULT_COVER_RESOLUTION,
+    script: "",
+    motionPreset: "natural",
+    customMotionPrompt: "",
+    taskId: "",
+    imageRefs: [],
+    audioRef: null,
   }
 }
 

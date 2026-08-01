@@ -92,6 +92,9 @@ def consume_remote(
     ref_id: str,
     note: str = "",
     cost: int | None = None,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
 ) -> int:
     """通过云端 /api/credit/consume 扣费（携带 session cookie）。"""
     base = cloud_api_base()
@@ -101,6 +104,12 @@ def consume_remote(
     if not sid:
         raise RuntimeError("missing session cookie")
     payload: dict = {"scene": scene, "ref_id": ref_id, "note": note}
+    if business_task_id:
+        payload.update(
+            business_task_id=business_task_id,
+            business_type=business_type,
+            billing_stage=billing_stage,
+        )
     if cost is not None:
         payload["cost"] = cost
     with httpx.Client(timeout=30.0, follow_redirects=False, trust_env=False) as client:
@@ -127,3 +136,67 @@ def consume_remote(
         if not isinstance(balance, int):
             raise RuntimeError("invalid cloud consume response")
         return balance
+
+
+def consume_billing_remote(
+    request,
+    *,
+    billing_key: str,
+    params: dict | None,
+    ref_id: str,
+    business_task_id: str = "",
+    business_type: str = "",
+    billing_stage: str = "",
+) -> tuple[int, int, str]:
+    """Delegate registry-based billing to the cloud without trusting a client cost."""
+    base = cloud_api_base()
+    if not base:
+        raise RuntimeError("CLOUD_API_URL not configured")
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        raise RuntimeError("missing session cookie")
+
+    payload = {
+        "billing_key": billing_key,
+        "params": params or {},
+        "ref_id": ref_id,
+        "business_task_id": business_task_id,
+        "business_type": business_type,
+        "billing_stage": billing_stage,
+    }
+    with httpx.Client(timeout=30.0, follow_redirects=False, trust_env=False) as client:
+        resp = client.post(
+            f"{base}/api/credit/consume-billing",
+            json=payload,
+            cookies={SESSION_COOKIE: sid},
+        )
+        if resp.status_code == 402:
+            from lib.credit import CreditError
+
+            raise CreditError("INSUFFICIENT_CREDIT", "积分不足", status=402)
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", {})
+                msg = detail.get("message") if isinstance(detail, dict) else str(detail)
+            except Exception:
+                msg = resp.text[:200]
+            from lib.credit import CreditError
+
+            raise CreditError(
+                "CLOUD_CONSUME_FAILED",
+                msg or f"HTTP {resp.status_code}",
+                status=resp.status_code,
+            )
+
+        data = resp.json()
+        balance = data.get("balance")
+        cost = data.get("cost")
+        scene = data.get("scene")
+        if (
+            not isinstance(balance, int)
+            or not isinstance(cost, int)
+            or not isinstance(scene, str)
+            or not scene
+        ):
+            raise RuntimeError("invalid cloud billing response")
+        return balance, cost, scene

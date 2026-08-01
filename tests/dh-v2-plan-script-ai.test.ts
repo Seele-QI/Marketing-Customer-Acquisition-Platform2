@@ -4,17 +4,16 @@ import {
   extractPlanJsonBlock,
   mergeAiPlanFromResponse,
 } from "../lib/dh-video-v2/plan-script-parse.ts"
-import { DH_V2_PLAN_LLM_PROVIDER_ORDER } from "../lib/dh-video-v2/plan-script-ai.ts"
-import { DEFAULT_NEWAPI_GPT_MODEL } from "../lib/llm/model-registry.ts"
+import { readFileSync } from "node:fs"
 
 describe("dh-v2 plan-script-ai", () => {
-  it("default plan GPT model is gpt-5.5", () => {
-    assert.equal(DEFAULT_NEWAPI_GPT_MODEL, "gpt-5.5")
-  })
-
-  it("plan LLM order is gpt then deepseek without claude", () => {
-    assert.deepEqual(DH_V2_PLAN_LLM_PROVIDER_ORDER, ["sonetto_gpt", "deepseek"])
-    assert.equal(DH_V2_PLAN_LLM_PROVIDER_ORDER.includes("sonetto_claude"), false)
+  it("does not override cloud model configuration with local model constants", () => {
+    const source = readFileSync(
+      new URL("../lib/dh-video-v2/plan-script-ai.ts", import.meta.url),
+      "utf8",
+    )
+    assert.doesNotMatch(source, /DOUBAO_SEED_21_MODEL_ID|DEFAULT_NEWAPI_GPT_MODEL/)
+    assert.match(source, /listCloudFeatureProviderCandidates/)
   })
 
   it("extractPlanJsonBlock parses fenced JSON", () => {
@@ -22,6 +21,24 @@ describe("dh-v2 plan-script-ai", () => {
     const data = extractPlanJsonBlock(raw)
     assert.ok(Array.isArray(data.segments))
     assert.equal((data.segments as unknown[]).length, 1)
+  })
+
+  it("extractPlanJsonBlock selects the balanced object containing segments", () => {
+    const raw =
+      '先给一个格式示例：{"example":true}\n最终结果：{"segments":[{"dialogue":"有效台词","shot_details":"画面","video_prompt":"提示词"}]}\n完成'
+    const data = extractPlanJsonBlock(raw)
+    assert.equal((data.segments as Array<{ dialogue: string }>)[0].dialogue, "有效台词")
+  })
+
+  it("plan requests structured JSON with reasoning disabled", () => {
+    const source = readFileSync(
+      new URL("../lib/dh-video-v2/plan-script-ai.ts", import.meta.url),
+      "utf8",
+    )
+    assert.match(source, /structuredJson:\s*true/)
+    assert.match(source, /disableReasoning:\s*true/)
+    assert.match(source, /buildLocalScriptPlan/)
+    assert.match(source, /本地可靠分镜/)
   })
 
   it("mergeAiPlanFromResponse filters empty dialogue", () => {

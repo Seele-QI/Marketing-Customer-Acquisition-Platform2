@@ -2,11 +2,6 @@
  * 个人 IP 定位 Skill 内核：方法论常量、诊断维度、输出章节约束、平台策略映射
  */
 
-import {
-  DEFAULT_NEWAPI_CLAUDE_MODEL,
-  DEFAULT_NEWAPI_GPT_MODEL,
-} from "@/lib/llm/model-registry"
-
 export const IP_POSITIONING_FORMULA = {
   template:
     "我帮助 [特定人群] 获得 [明确结果]，通过 [独特方法]，基于 [可信证据]",
@@ -254,14 +249,6 @@ export const STAGE_OPTIONS = [
 ] as const
 
 export type StageId = (typeof STAGE_OPTIONS)[number]["id"]
-
-export const DEFAULT_IP_POSITIONING_MODEL = DEFAULT_NEWAPI_GPT_MODEL
-export const FALLBACK_IP_POSITIONING_MODEL = DEFAULT_NEWAPI_CLAUDE_MODEL
-
-export const IP_POSITIONING_ALLOWED_MODELS = [
-  DEFAULT_IP_POSITIONING_MODEL,
-  FALLBACK_IP_POSITIONING_MODEL,
-] as const
 
 export function getStageHint(stageId: StageId | null | undefined): string {
   if (!stageId) return ""

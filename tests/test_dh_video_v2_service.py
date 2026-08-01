@@ -133,6 +133,66 @@ def test_list_seedance_endpoints_three_tiers(monkeypatch):
     assert eps[2].base_url == "https://tertiary.example"
 
 
+def test_list_seedance_endpoints_from_synced_providers(monkeypatch):
+    import base64
+    import json
+
+    monkeypatch.delenv("SEEDANCE_PRIMARY_BASE_URL", raising=False)
+    monkeypatch.delenv("SEEDANCE_PRIMARY_API_KEY", raising=False)
+    monkeypatch.delenv("SEEDANCE_API_KEY", raising=False)
+    payload = {
+        "providers": [
+            {
+                "id": 1,
+                "name": "v1",
+                "adapter": "seedance_video",
+                "base_url": "https://v1.example",
+                "api_key": "sk-1",
+                "model": "sd2-a",
+                "priority": 10,
+                "extra": {"media_mode": "url"},
+            },
+            {
+                "id": 2,
+                "name": "v2",
+                "adapter": "seedance_video",
+                "base_url": "https://v2.example",
+                "api_key": "sk-2",
+                "model": "sd2-b",
+                "priority": 20,
+                "extra": {"media_mode": "base64"},
+            },
+            {
+                "id": 3,
+                "name": "v3",
+                "adapter": "xinghe_video",
+                "base_url": "https://v3.example",
+                "api_key": "sk-3",
+                "model": "xh-1",
+                "priority": 30,
+            },
+            {
+                "id": 4,
+                "name": "v4",
+                "adapter": "seedance_video",
+                "base_url": "https://v4.example",
+                "api_key": "sk-4",
+                "model": "sd2-d",
+                "priority": 40,
+            },
+        ]
+    }
+    monkeypatch.setenv(
+        "MODEL_PROVIDERS_JSON_B64",
+        base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii"),
+    )
+    eps = list_seedance_endpoints()
+    assert len(eps) == 4
+    assert [e.name for e in eps] == ["v1", "v2", "v3", "v4"]
+    assert eps[0].media_mode == "url"
+    assert eps[3].base_url == "https://v4.example"
+
+
 def test_submit_aicost_seedance_falls_back_on_primary_error(monkeypatch):
     monkeypatch.setenv("SEEDANCE_PRIMARY_BASE_URL", "https://api.7tai.cc")
     monkeypatch.setenv("SEEDANCE_PRIMARY_API_KEY", "sk-primary")

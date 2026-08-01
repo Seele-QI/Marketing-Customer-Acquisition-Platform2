@@ -6,6 +6,7 @@ import { Loader2, Target } from "lucide-react"
 import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { PositioningIntakeWizard } from "@/components/ip-positioning/positioning-intake-wizard"
 import { PositioningReportView } from "@/components/ip-positioning/positioning-report-view"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { toast } from "@/hooks/use-toast"
 import type { IpPositioningIntake, IpPositioningReport } from "@/lib/ip-positioning-schema"
@@ -15,6 +16,8 @@ import {
   saveIpPositioningSession,
 } from "@/lib/ip-positioning-store"
 import { clearWorkflowAssets } from "@/lib/workflow-asset-store"
+import { guardDemoAction } from "@/lib/tutorial/demo-mode"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 
 export function AccountPositioning() {
   const { requireLogin } = useLoginRequired()
@@ -34,8 +37,15 @@ export function AccountPositioning() {
     async (payload: {
       intake: IpPositioningIntake
       files: Array<{ name: string; size: number; type: string; base64?: string }>
-      modelId: string
     }) => {
+      if (!guardDemoAction("ip-positioning submit")) {
+        toast({
+          title: "演示模式已拦截",
+          description: "教程示例不调用 AI。请先退出引导，或在教程中心查看已保存报告。",
+        })
+        return
+      }
+
       const loggedIn = await requireLogin("登录后可生成 IP 定位报告并扣减积分")
       if (!loggedIn) return
 
@@ -47,7 +57,6 @@ export function AccountPositioning() {
         report: null,
         stage: payload.intake.stage,
         intake: payload.intake,
-        modelId: payload.modelId,
       })
 
       try {
@@ -56,7 +65,6 @@ export function AccountPositioning() {
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            modelId: payload.modelId,
             intake: payload.intake,
             files: payload.files,
           }),
@@ -67,22 +75,11 @@ export function AccountPositioning() {
         try {
           data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
         } catch {
-          throw new Error(
-            raw.trim().slice(0, 120) || `服务异常 (HTTP ${res.status})`,
-          )
+          throw new Error(parseApiErrorResponse(res.status, {}, "服务返回内容异常，请稍后重试。"))
         }
 
         if (!res.ok) {
-          const detail = data.detail
-          const message =
-            typeof detail === "string"
-              ? detail
-              : typeof detail === "object" &&
-                  detail !== null &&
-                  typeof (detail as { message?: string }).message === "string"
-                ? (detail as { message: string }).message
-                : "分析失败"
-          throw new Error(message)
+          throw new Error(parseApiErrorResponse(res.status, { detail: data.detail }, "分析失败"))
         }
 
         if (!data.report) {
@@ -95,7 +92,6 @@ export function AccountPositioning() {
           report: nextReport,
           stage: payload.intake.stage,
           intake: payload.intake,
-          modelId: payload.modelId,
         })
 
         if (data._meta && typeof data._meta === "object") {
@@ -134,7 +130,10 @@ export function AccountPositioning() {
     <div className="h-full overflow-y-auto bg-[#fafaf8] dark:bg-slate-950">
       <div className="mx-auto max-w-4xl px-5 py-8 sm:px-8 sm:py-12">
         <header className="mb-10">
-          <div className="mb-4 h-1 w-12 rounded-full bg-amber-500/60" />
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="h-1 w-12 rounded-full bg-amber-500/60" />
+            <ModuleTutorialButton view="身份定位" />
+          </div>
           <h1 className="text-[28px] font-bold leading-tight tracking-tight text-slate-900 sm:text-[34px] dark:text-slate-50">
             发现你的
             <span className="text-amber-600 dark:text-amber-400"> IP 定位</span>

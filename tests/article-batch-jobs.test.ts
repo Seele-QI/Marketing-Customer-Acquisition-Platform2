@@ -8,6 +8,7 @@ import {
   clampCopiesPerSlot,
   expandDirectionJobs,
   expandMatrixJobs,
+  normalizeSelectedMatrixDates,
 } from "../lib/geo/article-batch-jobs.ts"
 import type { MatrixProject } from "../lib/geo/matrix-types.ts"
 
@@ -85,9 +86,9 @@ test("矩阵模式 2 日期 × 2 平台 → 有效格子 jobs + skipped", () => 
     mode: "matrix",
     project: SAMPLE_PROJECT,
     dates: ["2026-07-01", "2026-07-02"],
-    platformIds: ["zhihu", "xiaohongshu"],
   })
   assert.equal(jobs.length, 3)
+  assert.ok(jobs.every((job) => job.projectId === SAMPLE_PROJECT.id))
   assert.equal(skipped.length, 1)
   assert.ok(skipped.some((s) => s.date === "2026-07-02" && s.platformId === "xiaohongshu"))
 })
@@ -107,7 +108,6 @@ test("缺 cell 的 date+platform 计入 skipped", () => {
     mode: "matrix",
     project: SAMPLE_PROJECT,
     dates: ["2026-07-02"],
-    platformIds: ["zhihu", "xiaohongshu"],
   })
   assert.equal(jobs.length, 1)
   assert.equal(skipped.length, 1)
@@ -140,9 +140,16 @@ test("方向模式 copiesPerSlot=3 → 平台数 × 3", () => {
 test("矩阵模式 copiesPerSlot=3 → 同日同渠道 3 jobs", () => {
   const { jobs, skipped } = expandMatrixJobs({
     mode: "matrix",
-    project: SAMPLE_PROJECT,
+    project: {
+      ...SAMPLE_PROJECT,
+      matrix: {
+        ...SAMPLE_PROJECT.matrix,
+        platforms: SAMPLE_PROJECT.matrix.platforms.filter(
+          (platform) => platform.platformId === "zhihu",
+        ),
+      },
+    },
     dates: ["2026-07-01"],
-    platformIds: ["zhihu"],
     copiesPerSlot: 3,
   })
   assert.equal(jobs.length, 3)
@@ -180,5 +187,23 @@ test("buildRetryJob 可从矩阵格重建任务", () => {
     project: SAMPLE_PROJECT,
   })
   assert.equal(job.brief, "方向A")
+  assert.equal(job.projectId, SAMPLE_PROJECT.id)
   assert.equal(job.matrixMeta?.format, "长文")
+})
+
+test("切换矩阵项目时剔除旧日期并回退新项目首日", () => {
+  assert.deepEqual(
+    normalizeSelectedMatrixDates(
+      ["2026-08-01", "2026-08-02"],
+      ["2026-07-01"],
+    ),
+    ["2026-08-01"],
+  )
+  assert.deepEqual(
+    normalizeSelectedMatrixDates(
+      ["2026-08-01", "2026-08-02"],
+      ["2026-08-02", "2026-08-02"],
+    ),
+    ["2026-08-02"],
+  )
 })

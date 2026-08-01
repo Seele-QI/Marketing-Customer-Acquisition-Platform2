@@ -10,10 +10,13 @@
   !define MUI_WELCOMEPAGE_TEXT "欢迎安装招财猫$\r$\n$\r$\n安装路径请保持默认（英文路径），否则程序可能无法启动。"
 !macroend
 
-!macro customInit
+; 在真正写入文件前关闭进程树，避免用户停留在安装向导期间应用再次启动。
+; 覆盖 electron-builder 的默认检查：默认 taskkill 不带 /T，容易遗留本地 Node/Python 子进程。
+!macro customCheckAppRunning
   DetailPrint "正在关闭正在运行的招财猫..."
-  nsExec::ExecToLog 'taskkill /F /IM 招财猫.exe /T'
-  Sleep 2000
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "${APP_EXECUTABLE_FILENAME}"'
+  Pop $R0
+  Sleep 1000
 !macroend
 
 !macro customInstall

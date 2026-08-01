@@ -1,5 +1,4 @@
 import type { Metadata } from "next"
-import { Inter } from "next/font/google"
 import Script from "next/script"
 import { Analytics } from "@vercel/analytics/next"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -8,12 +7,8 @@ import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
 import { GeoSwitchFlash } from "@/components/geo/geo-switch-flash"
 import { THEME_INIT_SCRIPT } from "@/lib/theme-init-script"
+import { ServiceRecoveryProvider } from "@/components/service-recovery-provider"
 import "./globals.css"
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-})
 
 export const metadata: Metadata = {
   title: "招财猫",
@@ -31,17 +26,23 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="zh-CN" suppressHydrationWarning className={`${inter.variable} bg-background`}>
+    <html lang="zh-CN" suppressHydrationWarning className="bg-background">
+      <head>
+        <Script
+          id="theme-init"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }}
+        />
+      </head>
       <body className="font-sans antialiased" suppressHydrationWarning>
-        <Script id="theme-init" strategy="beforeInteractive">
-          {THEME_INIT_SCRIPT}
-        </Script>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
-          {children}
-          <EditableContextMenu />
-          <GeoSwitchFlash />
-          <Toaster />
-          <SonnerToaster />
+          <ServiceRecoveryProvider>
+            {children}
+            <EditableContextMenu />
+            <GeoSwitchFlash />
+            <Toaster />
+            <SonnerToaster />
+          </ServiceRecoveryProvider>
         </ThemeProvider>
         {process.env.NODE_ENV === "production" && <Analytics />}
       </body>

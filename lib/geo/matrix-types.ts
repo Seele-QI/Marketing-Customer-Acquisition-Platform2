@@ -38,7 +38,6 @@ export type MatrixProject = {
 }
 
 export type GenerateMatrixRequest = {
-  provider: string
   platforms: string[]
   modelSkillId?: string | null
   viralSkillIds?: string[]

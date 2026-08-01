@@ -11,6 +11,7 @@ export const VIDEO_WORKSPACE_LABEL = "视频创作"
 /** 内部 view key → 侧边栏展示名 */
 export const VIDEO_VIEWS = {
   DH_VIDEO_V2: "数字人视频创作（新）",
+  DH_VIDEO_ECONOMY: "数字人视频创作（经济版）",
   IMAGE_VIDEO: "图文视频",
   MASHUP: "视频混剪",
   PROMO: "宣传视频",
@@ -21,6 +22,7 @@ export type VideoView = (typeof VIDEO_VIEWS)[keyof typeof VIDEO_VIEWS]
 
 export const VIDEO_VIEW_LABELS: Record<VideoView, string> = {
   [VIDEO_VIEWS.DH_VIDEO_V2]: "数字人口播视频（新）",
+  [VIDEO_VIEWS.DH_VIDEO_ECONOMY]: "数字人视频创作（经济版）",
   [VIDEO_VIEWS.IMAGE_VIDEO]: "图文视频",
   [VIDEO_VIEWS.MASHUP]: "视频混剪",
   [VIDEO_VIEWS.PROMO]: "宣传视频",

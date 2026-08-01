@@ -23,7 +23,9 @@ RUN apt-get update -qq \
 
 # ── 2) Python 依赖 ──
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -m playwright install --with-deps chromium
 
 # ── 3) 项目代码 ──
 COPY main.py            ./
@@ -45,6 +47,8 @@ ENV VIDEO_POSTPROCESS_DIR=/data/video-postprocess
 # ── 5) AI 服务密钥（生产环境必须通过 -e 或 docker-compose 覆盖）──
 ENV DEEPSEEK_API_KEY=""
 ENV RUNNINGHUB_API_KEY=""
+ENV RUNNINGHUB_IMAGE_API_KEY=""
+ENV RUNNINGHUB_IMAGE_BASE_URL="https://www.runninghub.ai/openapi/v2"
 
 # ── 6) DeepSeek 模型（可选，默认 deepseek-v4-pro）──
 ENV DEEPSEEK_CHAT_MODEL="deepseek-v4-pro"

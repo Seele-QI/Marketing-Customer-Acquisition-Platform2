@@ -22,7 +22,8 @@ export type ExpandMatrixInput = {
   mode: "matrix"
   project: MatrixProject
   dates: string[]
-  platformIds: string[]
+  /** @deprecated 平台只能来自 project.matrix，保留字段仅兼容旧调用方且会被忽略。 */
+  platformIds?: string[]
   copiesPerSlot?: number
 }
 
@@ -89,10 +90,7 @@ export function expandDirectionJobs(input: ExpandDirectionInput): BatchJobPrevie
 }
 
 export function expandMatrixJobs(input: ExpandMatrixInput): BatchJobPreview {
-  const { project, dates, platformIds } = input
-  if (platformIds.length < 1) {
-    throw new Error("请至少选择一个平台")
-  }
+  const { project, dates } = input
   if (dates.length < 1) {
     throw new Error("请至少选择一个日期")
   }
@@ -101,6 +99,7 @@ export function expandMatrixJobs(input: ExpandMatrixInput): BatchJobPreview {
   if (matrixPlatforms.length < 1) {
     throw new Error("该项目尚未生成内容矩阵，请先在「内容矩阵规划」中生成矩阵")
   }
+  const platformIds = [...new Set(matrixPlatforms.map((platform) => platform.platformId).filter(Boolean))]
 
   const copies = clampCopiesPerSlot(input.copiesPerSlot)
   const jobs: ArticleJob[] = []
@@ -128,6 +127,7 @@ export function expandMatrixJobs(input: ExpandMatrixInput): BatchJobPreview {
         const { title, brief } = withVariant(cell.title, cell.contentDirection, i, copies)
         jobs.push({
           jobId: newJobId(),
+          projectId: project.id,
           mode: "matrix",
           platformId,
           date,
@@ -170,6 +170,17 @@ export function listMatrixDates(project: MatrixProject | null): string[] {
   return [...dates].sort()
 }
 
+/** 保留仍存在于新矩阵的日期；全部失效时自动选择新矩阵首日。 */
+export function normalizeSelectedMatrixDates(
+  availableDates: string[],
+  selectedDates: string[],
+): string[] {
+  const available = new Set(availableDates)
+  const valid = [...new Set(selectedDates)].filter((date) => available.has(date))
+  if (valid.length > 0) return valid
+  return availableDates[0] ? [availableDates[0]] : []
+}
+
 /** 重建单篇重试任务（无快照时从矩阵格/方向配置还原） */
 export function buildRetryJob(input: {
   jobId: string
@@ -210,6 +221,7 @@ export function buildRetryJob(input: {
 
   return {
     jobId: input.jobId,
+    projectId: input.project.id,
     mode: "matrix",
     platformId: input.platformId,
     date,

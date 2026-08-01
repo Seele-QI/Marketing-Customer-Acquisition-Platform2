@@ -4,21 +4,17 @@ import { NextResponse } from "next/server"
 
 import { withAuth, chargeCredit, chargeErrorResponse } from "@/lib/api/with-auth"
 import { getServerFastapiBase } from "@/lib/fastapi-base"
+import { completeCloudCopywritingText } from "@/lib/geo/cloud-copywriting-completion"
 import { generateMatrixConcurrent } from "@/lib/geo/matrix-generate"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
+import { sanitizeMatrixPlatformIds } from "@/lib/geo/matrix-platforms"
 import type { GenerateMatrixRequest, MatrixProject } from "@/lib/geo/matrix-types"
+import {
+  listCopywritingProviderCandidates,
+  type CopywritingProviderFailure,
+} from "@/lib/llm/copywriting-router"
 
 export const runtime = "nodejs"
 export const maxDuration = 180
-
-const VALID_PROVIDERS = new Set<LlmProviderId>([
-  "deepseek",
-  "doubao",
-  "kimi",
-  "gpt",
-  "claude",
-  "gemini",
-])
 
 type RouteContext = { params: Promise<{ id: string }> }
 
@@ -61,7 +57,6 @@ async function handleGenerate(
   req: Request,
   cookieHeader: string,
   projectId: string,
-  userId: number,
 ): Promise<Response> {
   try {
     const body = (await req.json()) as GenerateMatrixRequest
@@ -71,22 +66,36 @@ async function handleGenerate(
       return NextResponse.json({ error: "项目不存在" }, { status: 404 })
     }
 
-    const provider = String(body.provider ?? project.provider ?? "deepseek") as LlmProviderId
-    const platforms = Array.isArray(body.platforms) ? body.platforms.filter(Boolean) : []
+    const platforms = sanitizeMatrixPlatformIds(body.platforms)
 
-    if (!VALID_PROVIDERS.has(provider)) {
-      return NextResponse.json({ error: "不支持的模型 provider" }, { status: 400 })
-    }
     if (platforms.length < 1) {
       return NextResponse.json({ error: "请至少选择一个平台" }, { status: 400 })
     }
 
-    const refId = `geo-matrix:${projectId}:${crypto.randomUUID()}`
+    // 旧客户端提交的 provider 不参与路由决策，矩阵只使用云端下发模型。
+    const cloudProviders = listCopywritingProviderCandidates({ hasImages: false }).filter(
+      (candidate) => candidate.source === "cloud",
+    )
+    if (cloudProviders.length === 0) {
+      const message = "云端模型配置尚未同步，请稍后重试"
+      return NextResponse.json(
+        { error: message, detail: { code: "CLOUD_MODEL_NOT_READY", message } },
+        { status: 503 },
+      )
+    }
+
+    const businessTaskId = crypto.randomUUID()
+    const refId = `geo-matrix:${projectId}:${businessTaskId}`
     try {
       await chargeCredit({
         cookieHeader,
         scene: "geo_matrix_gen",
         refId,
+        businessTask: {
+          businessTaskId,
+          businessType: "geo_matrix",
+          billingStage: "llm_generation",
+        },
       })
     } catch (e) {
       return chargeErrorResponse(e)
@@ -95,14 +104,33 @@ async function handleGenerate(
     let matrix
     try {
       matrix = await generateMatrixConcurrent({
-        provider,
         projectName: project.name,
         platforms,
         modelSkillId: body.modelSkillId ?? project.modelSkillId,
         viralSkillIds: body.viralSkillIds ?? project.viralSkillIds,
         enterpriseSnapshot: body.enterpriseSnapshot ?? project.enterpriseSnapshot,
-        userId,
-        cookieHeader,
+        complete: async (input) => {
+          const completion = await completeCloudCopywritingText({
+            providers: cloudProviders,
+            messages: [
+              { role: "system", content: input.system },
+              { role: "user", content: input.user },
+            ],
+            maxTokens: input.maxTokens,
+            validateText: input.validateText,
+          })
+          if (!completion.ok) {
+            throw Object.assign(
+              new Error("云端生成服务繁忙，系统已尝试备用渠道，请稍后重试"),
+              {
+                statusCode: 502,
+                code: "CLOUD_MODEL_UNAVAILABLE",
+                failures: completion.failures,
+              },
+            )
+          }
+          return completion.text
+        },
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : "生成失败"
@@ -110,13 +138,28 @@ async function handleGenerate(
         err && typeof err === "object" && "statusCode" in err
           ? (err as { statusCode: number }).statusCode
           : 502
-      return NextResponse.json({ error: message }, { status: statusCode })
+      const code =
+        err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string"
+          ? (err as { code: string }).code
+          : "CLOUD_MODEL_UNAVAILABLE"
+      const attempts =
+        err && typeof err === "object" && "failures" in err && Array.isArray((err as { failures: unknown }).failures)
+          ? (err as { failures: CopywritingProviderFailure[] }).failures
+          : undefined
+      return NextResponse.json(
+        { error: message, detail: { code, message, ...(attempts ? { attempts } : {}) } },
+        { status: statusCode },
+      )
     }
 
+    const completedMatrix = {
+      ...matrix,
+      generatedAt: new Date().toISOString(),
+    }
     const updated = await saveProjectMatrix(projectId, cookieHeader, {
-      matrix,
+      matrix: completedMatrix,
       platforms,
-      provider,
+      provider: "cloud-managed",
       modelSkillId: body.modelSkillId ?? project.modelSkillId,
       viralSkillIds: body.viralSkillIds ?? project.viralSkillIds,
       enterpriseSkillId: body.enterpriseSkillId ?? project.enterpriseSkillId,
@@ -132,7 +175,7 @@ async function handleGenerate(
 
 export async function POST(req: Request, context: RouteContext) {
   const { id } = await context.params
-  return withAuth(async (innerReq, { userId, cookieHeader }) =>
-    handleGenerate(innerReq, cookieHeader, id, userId),
+  return withAuth(async (innerReq, { cookieHeader }) =>
+    handleGenerate(innerReq, cookieHeader, id),
   )(req)
 }

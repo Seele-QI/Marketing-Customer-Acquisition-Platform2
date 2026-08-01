@@ -15,6 +15,8 @@ import { resolveMediaUrl } from "@/lib/video/utils"
 
 const COVER_POLL_MS = 5000
 const COVER_MAX_WAIT_MS = 10 * 60 * 1000
+const COVER_SUBMIT_MAX_ATTEMPTS = 3
+const COVER_SUBMIT_RETRY_DELAY_MS = 750
 
 export type CoverReferenceImage = {
   base64?: string
@@ -34,7 +36,39 @@ export type StartCoverGenerationParams = {
   skipIfNoReference?: boolean
 }
 
-const activeCoverPolls = new Map<string, ReturnType<typeof setInterval>>()
+type ActiveCoverPoll = {
+  cancelled: boolean
+  timer?: ReturnType<typeof setTimeout>
+}
+
+const activeCoverPolls = new Map<string, ActiveCoverPoll>()
+
+function isTransientCoverSubmitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /客户端服务暂时无法连接|无法连接|网络|network|failed to fetch|fetch failed|load failed|超时|timeout/i.test(
+    message,
+  )
+}
+
+export async function retryTransientCoverSubmit<T>(
+  operation: () => Promise<T>,
+  options: { delayMs?: number } = {},
+): Promise<T> {
+  const delayMs = options.delayMs ?? COVER_SUBMIT_RETRY_DELAY_MS
+  for (let attempt = 1; attempt <= COVER_SUBMIT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!isTransientCoverSubmitError(error) || attempt === COVER_SUBMIT_MAX_ATTEMPTS) {
+        throw error
+      }
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt))
+      }
+    }
+  }
+  throw new Error("封面提交失败")
+}
 
 function coverPollKey(kind: TaskKind, linkedTaskId: string): string {
   return `${kind}:${linkedTaskId}`
@@ -80,7 +114,7 @@ async function refreshHistoryCover(kind: TaskKind, linkedTaskId: string, coverUr
   if (task?.taskId === linkedTaskId) {
     rt.patchTask(kind, {
       result: { ...task.result, coverUrl },
-      meta: { ...task.meta, coverStatus: "success" },
+      meta: { ...task.meta, coverStatus: "success", coverError: "" },
     })
     const updated = rt.getTask(kind)
     if (updated?.status === "success") {
@@ -99,11 +133,11 @@ async function refreshHistoryCover(kind: TaskKind, linkedTaskId: string, coverUr
 }
 
 function stopCoverPoll(key: string): void {
-  const timer = activeCoverPolls.get(key)
-  if (timer) {
-    clearInterval(timer)
-    activeCoverPolls.delete(key)
-  }
+  const poll = activeCoverPolls.get(key)
+  if (!poll) return
+  poll.cancelled = true
+  if (poll.timer) clearTimeout(poll.timer)
+  activeCoverPolls.delete(key)
 }
 
 /**
@@ -131,31 +165,51 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
 
   const pollKey = coverPollKey(kind, linkedTaskId || `pending-${Date.now()}`)
   stopCoverPoll(pollKey)
+  const pollState: ActiveCoverPoll = { cancelled: false }
+  activeCoverPolls.set(pollKey, pollState)
+  const finishPoll = () => {
+    pollState.cancelled = true
+    if (pollState.timer) clearTimeout(pollState.timer)
+    if (activeCoverPolls.get(pollKey) === pollState) {
+      activeCoverPolls.delete(pollKey)
+    }
+  }
 
   const rt = getTaskRuntime()
   if (linkedTaskId) {
     const task = rt.getTask(kind)
     if (task?.taskId === linkedTaskId) {
-      rt.patchTask(kind, { meta: { ...task.meta, coverStatus: "running" } })
+      rt.patchTask(kind, {
+        meta: { ...task.meta, coverStatus: "running", coverError: "" },
+      })
     }
   }
 
   void (async () => {
     try {
-      const { cover_task_id: coverTaskId } = await submitVideoCover({
-        script: trimmedScript,
-        referenceImageBase64: refPayload.referenceImageBase64,
-        referenceImageUrl: refPayload.referenceImageUrl,
-        aspectRatio,
-        resolution,
-        linkedTaskId,
-        source: kind,
-      })
+      const requestRef =
+        globalThis.crypto?.randomUUID?.() ??
+        `cover-${linkedTaskId || kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const { cover_task_id: coverTaskId } = await retryTransientCoverSubmit(() =>
+        submitVideoCover({
+          script: trimmedScript,
+          referenceImageBase64: refPayload.referenceImageBase64,
+          referenceImageUrl: refPayload.referenceImageUrl,
+          aspectRatio,
+          resolution,
+          linkedTaskId,
+          source: kind,
+          requestRef,
+        }),
+      )
 
       const startedAt = Date.now()
-      const poll = async () => {
+      const poll = async (): Promise<boolean> => {
+        if (pollState.cancelled || activeCoverPolls.get(pollKey) !== pollState) {
+          return false
+        }
         if (Date.now() - startedAt > COVER_MAX_WAIT_MS) {
-          stopCoverPoll(pollKey)
+          finishPoll()
           if (linkedTaskId) {
             const task = rt.getTask(kind)
             if (task?.taskId === linkedTaskId) {
@@ -164,21 +218,24 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
               })
             }
           }
-          return
+          return false
         }
 
         try {
           const status = await queryVideoCoverStatus(coverTaskId)
+          if (pollState.cancelled || activeCoverPolls.get(pollKey) !== pollState) {
+            return false
+          }
           if (status.status === "success" && status.cover_url) {
-            stopCoverPoll(pollKey)
+            finishPoll()
             const coverUrl = resolveMediaUrl(status.cover_url)
             if (linkedTaskId) {
               await refreshHistoryCover(kind, linkedTaskId, coverUrl)
             }
-            return
+            return false
           }
           if (status.status === "failed") {
-            stopCoverPoll(pollKey)
+            finishPoll()
             if (linkedTaskId) {
               const task = rt.getTask(kind)
               if (task?.taskId === linkedTaskId) {
@@ -191,18 +248,32 @@ export function startCoverGeneration(params: StartCoverGenerationParams): void {
                 })
               }
             }
+            return false
           }
         } catch {
           /* 轮询网络抖动时继续 */
         }
+        return true
       }
 
-      await poll()
-      const timer = setInterval(() => {
-        void poll()
-      }, COVER_POLL_MS)
-      activeCoverPolls.set(pollKey, timer)
+      const pollUntilTerminal = async () => {
+        const shouldContinue = await poll()
+        if (
+          !shouldContinue ||
+          pollState.cancelled ||
+          activeCoverPolls.get(pollKey) !== pollState
+        ) {
+          return
+        }
+        pollState.timer = setTimeout(() => {
+          pollState.timer = undefined
+          void pollUntilTerminal()
+        }, COVER_POLL_MS)
+      }
+
+      await pollUntilTerminal()
     } catch (e) {
+      finishPoll()
       if (linkedTaskId) {
         const task = rt.getTask(kind)
         if (task?.taskId === linkedTaskId) {

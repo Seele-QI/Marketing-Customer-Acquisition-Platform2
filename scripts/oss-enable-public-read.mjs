@@ -114,6 +114,10 @@ async function main() {
   // 4) 对象 ACL
   const objects = [
     "releases/latest.yml",
+    "releases/招财猫-Setup-1.3.8.exe",
+    "releases/招财猫-Setup-1.3.8.exe.blockmap",
+    "releases/招财猫-Setup-1.3.5.exe",
+    "releases/招财猫-Setup-1.3.5.exe.blockmap",
     "releases/招财猫-Setup-0.1.3.exe",
     "releases/招财猫-Setup-0.1.3.exe.blockmap",
     "releases/招财猫-Setup-0.1.2.exe",
@@ -137,7 +141,7 @@ async function main() {
   const body = await fr.text()
   console.log(`[oss-public] GET ${feedUrl} →`, fr.status)
   console.log(body.slice(0, 300))
-  if (!fr.ok || !/version:\s*0\.1\.3/.test(body)) process.exit(1)
+  if (!fr.ok || !/version:\s*1\.3\.8/.test(body)) process.exit(1)
   console.log("[oss-public] OK")
 }
 

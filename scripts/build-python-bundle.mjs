@@ -79,23 +79,9 @@ function copyProjectLib(destDir) {
   }
   console.log('[build-python] copying lib/ -> ' + destDir);
   if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true });
-  if (process.platform === 'win32') {
-    mkdirSync(destDir, { recursive: true });
-    const result = spawnSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        `Copy-Item -Path '${libSrc.replace(/'/g, "''")}' -Destination '${destDir.replace(/'/g, "''")}' -Recurse -Force`,
-      ],
-      { stdio: 'inherit' },
-    );
-    if (result.status !== 0) {
-      throw new Error('Copy-Item lib/ failed: exit ' + result.status);
-    }
-  } else {
-    cpSync(libSrc, destDir, { recursive: true });
-  }
+  // Node cpSync：dest 不存在时把 src 目录内容落到 dest（不会多嵌一层 lib/lib）
+  // 勿先 mkdir 再 Copy-Item 整个 lib 文件夹，否则 Windows 会变成 python/lib/lib/
+  cpSync(libSrc, destDir, { recursive: true });
 }
 
 function walkEntries(dir, out = []) {
@@ -210,6 +196,25 @@ function runPipInstall(pythonExe, pythonRootDir, appLibName) {
   );
   if (result.status !== 0) {
     throw new Error('pip install requirements.txt failed: exit ' + result.status);
+  }
+
+  const playwrightBrowsers = path.join(pythonRootDir, '.browsers');
+  console.log('[build-python] installing Playwright Chromium into', playwrightBrowsers);
+  const playwrightResult = spawnSync(
+    pythonExe,
+    ['-m', 'playwright', 'install', 'chromium'],
+    {
+      cwd: pythonRootDir,
+      env: {
+        ...process.env,
+        PYTHONPATH: sitePackages,
+        PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers,
+      },
+      stdio: 'inherit',
+    },
+  );
+  if (playwrightResult.status !== 0) {
+    throw new Error('playwright install chromium failed: exit ' + playwrightResult.status);
   }
 
   // Windows: pythonRoot/lib 即项目包（from lib.xxx）

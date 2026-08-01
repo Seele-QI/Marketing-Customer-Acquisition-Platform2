@@ -13,6 +13,7 @@ export type SubmitVideoCoverParams = {
   resolution?: CoverResolution
   linkedTaskId?: string
   source?: string
+  requestRef?: string
 }
 
 export type CoverSubmitResponse = {
@@ -39,6 +40,7 @@ export async function submitVideoCover(params: SubmitVideoCoverParams): Promise<
       resolution: params.resolution ?? DEFAULT_COVER_RESOLUTION,
       linked_task_id: params.linkedTaskId ?? "",
       source: params.source ?? "",
+      request_ref: params.requestRef ?? "",
     }),
   })
 

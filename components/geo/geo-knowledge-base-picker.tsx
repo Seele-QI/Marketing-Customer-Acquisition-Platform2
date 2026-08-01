@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useLoginRequired } from "@/components/auth/login-required-provider"
 import { Brain, Layers, Building2, ChevronDown, Check, Info } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { showSwitchNotice } from "@/hooks/use-geo-switch-flash"
@@ -34,6 +35,8 @@ export function GeoSkillToolbar({
   onViralChange,
   onEnterpriseChange,
 }: Props) {
+  const { me } = useLoginRequired()
+  const accountScope = me ? `user-${me.user.id}` : null
   const modelSkills = React.useMemo(() => listModelWeightSkills(), [])
   const viralSkills = React.useMemo(() => listPlatformViralSkills(), [])
   const [enterpriseSkills, setEnterpriseSkills] = React.useState<GeoSkillEntry[]>([])
@@ -43,8 +46,8 @@ export function GeoSkillToolbar({
   const containerRef = React.useRef<HTMLDivElement>(null)
 
   const refreshEnterprise = React.useCallback(() => {
-    setEnterpriseSkills(listEnterpriseSkills())
-  }, [])
+    setEnterpriseSkills(accountScope ? listEnterpriseSkills(accountScope) : [])
+  }, [accountScope])
 
   React.useEffect(() => {
     refreshEnterprise()
@@ -92,9 +95,9 @@ export function GeoSkillToolbar({
       onEnterpriseChange(stored)
       return
     }
-    const def = getDefaultEnterpriseSkillEntry()
+    const def = accountScope ? getDefaultEnterpriseSkillEntry(accountScope) : undefined
     if (def) onEnterpriseChange(def.id)
-  }, [enterpriseSkillId, onEnterpriseChange, enterpriseSkills])
+  }, [accountScope, enterpriseSkillId, onEnterpriseChange, enterpriseSkills])
 
   React.useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {

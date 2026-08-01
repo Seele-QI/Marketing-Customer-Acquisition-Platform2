@@ -7,8 +7,20 @@ import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 const SUMMARY_TTL_MS = 30_000
 /** CRUD / 详情：卡住时必须能结束 spinner */
 const MATRIX_CRUD_TIMEOUT_MS = 20_000
-/** 生成两周矩阵：对齐服务端 maxDuration=180 */
-const MATRIX_GENERATE_TIMEOUT_MS = 180_000
+/** 生成两周矩阵：服务端 maxDuration=180s，额外预留保存与响应传输时间。 */
+const MATRIX_GENERATE_TIMEOUT_MS = 210_000
+/** 上游可能先断开响应，但服务端仍会完成并落库；短轮询用于对账真实结果。 */
+const MATRIX_RECONCILE_DELAYS_MS = [
+  0,
+  2_000,
+  4_000,
+  8_000,
+  12_000,
+  20_000,
+  30_000,
+  30_000,
+  30_000,
+] as const
 
 let summaryCache: { at: number; projects: MatrixProject[] } | null = null
 const detailCache = new Map<string, { at: number; project: MatrixProject }>()
@@ -43,16 +55,78 @@ function mapFetchError(err: unknown, fallback: string): Error {
   return new Error(fallback)
 }
 
+function wait(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function matrixMatchesGeneration(
+  project: MatrixProject | null,
+  body: GenerateMatrixRequest,
+  baselineUpdatedAt: number,
+  generationStartedAtMs: number,
+): project is MatrixProject {
+  if (!project) return false
+  const generatedPlatforms = project.matrix?.platforms ?? []
+  if (generatedPlatforms.length < 1) return false
+  const generatedAtMs = Date.parse(project.matrix.generatedAt ?? "")
+  if (
+    !Number.isFinite(generatedAtMs) ||
+    generatedAtMs < generationStartedAtMs - 10_000
+  ) {
+    return false
+  }
+  if (project.updatedAt < baselineUpdatedAt) return false
+  const requested = new Set(body.platforms.filter(Boolean))
+  return (
+    requested.size > 0 &&
+    generatedPlatforms.every(
+      (platform) =>
+        requested.has(platform.platformId) &&
+        Array.isArray(platform.cells) &&
+        platform.cells.length > 0,
+    ) &&
+    [...requested].every((platformId) =>
+      generatedPlatforms.some((platform) => platform.platformId === platformId),
+    )
+  )
+}
+
+async function reconcileGeneratedMatrix(
+  id: string,
+  body: GenerateMatrixRequest,
+  baselineUpdatedAt: number,
+  generationStartedAtMs: number,
+): Promise<MatrixProject | null> {
+  for (const delayMs of MATRIX_RECONCILE_DELAYS_MS) {
+    await wait(delayMs)
+    try {
+      const project = await getMatrixProject(id, { force: true })
+      if (
+        matrixMatchesGeneration(
+          project,
+          body,
+          baselineUpdatedAt,
+          generationStartedAtMs,
+        )
+      ) {
+        invalidateMatrixCaches(id)
+        detailCache.set(id, { at: Date.now(), project })
+        return project
+      }
+    } catch {
+      // 对账查询也可能短暂失败，继续下一轮；最终仍抛出原始生成错误。
+    }
+  }
+  return null
+}
+
 async function parseJson<T>(resp: Response, fallback = "请求失败"): Promise<T> {
   let data: { detail?: unknown; error?: string }
   try {
     data = (await resp.json()) as { detail?: unknown; error?: string }
   } catch {
-    throw new Error(
-      resp.status === 503
-        ? "后端服务未配置或未启动，请运行 pnpm dev:all"
-        : `${fallback}（HTTP ${resp.status}，响应非 JSON）`,
-    )
+    throw new Error(parseApiErrorResponse(resp.status, {}, fallback))
   }
   if (!resp.ok) {
     throw new Error(parseApiErrorResponse(resp.status, data, fallback))
@@ -183,7 +257,6 @@ export async function updateMatrixProject(
             viralSkillIds: patch.viralSkillIds,
             enterpriseSkillId: patch.enterpriseSkillId,
             enterpriseSnapshot: patch.enterpriseSnapshot,
-            provider: patch.provider,
             matrix: patch.matrix,
             clearEnterpriseSnapshot: patch.clearEnterpriseSnapshot,
           }),
@@ -224,6 +297,8 @@ export async function generateMatrixProject(
   id: string,
   body: GenerateMatrixRequest,
 ): Promise<MatrixProject> {
+  const generationStartedAtMs = Date.now()
+  const baselineUpdatedAt = detailCache.get(id)?.project.updatedAt ?? 0
   let resp: Response
   try {
     resp = await fetch(
@@ -239,7 +314,23 @@ export async function generateMatrixProject(
       ),
     )
   } catch (err) {
+    const recovered = await reconcileGeneratedMatrix(
+      id,
+      body,
+      baselineUpdatedAt,
+      generationStartedAtMs,
+    )
+    if (recovered) return recovered
     throw mapFetchError(err, "生成矩阵失败")
+  }
+  if ([408, 502, 503, 504].includes(resp.status)) {
+    const recovered = await reconcileGeneratedMatrix(
+      id,
+      body,
+      baselineUpdatedAt,
+      generationStartedAtMs,
+    )
+    if (recovered) return recovered
   }
   const data = await parseJson<{ project: MatrixProject }>(resp)
   invalidateMatrixCaches(id)

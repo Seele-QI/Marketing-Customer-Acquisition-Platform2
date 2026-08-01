@@ -14,7 +14,9 @@ import {
   MATRIX_DAYS,
   matrixDateRange,
   matrixStartDateIso,
+  normalizeMatrixPlatformSelection,
   resolveViralSkillIds,
+  viralSkillIdsForPlatforms,
 } from "../lib/geo/matrix-platforms.ts"
 
 const SAMPLE_JSON = `{
@@ -92,6 +94,24 @@ test("八平台均有 viralSkillId", () => {
     "sohu",
   ])
   assert.equal(all.length, 8)
+})
+
+test("平台选择精确映射对应的知识库 Skill", () => {
+  assert.deepEqual(
+    viralSkillIdsForPlatforms(["xiaohongshu", "douyin", "unknown", "douyin"]),
+    ["viral-xiaohongshu", "viral-douyin-content"],
+  )
+})
+
+test("旧项目平台去重并在全部无效时回退默认平台", () => {
+  assert.deepEqual(
+    normalizeMatrixPlatformSelection(["xiaohongshu", "xiaohongshu", "unknown"]),
+    ["xiaohongshu"],
+  )
+  assert.deepEqual(
+    normalizeMatrixPlatformSelection(["unknown"]),
+    ["xiaohongshu", "douyin", "zhihu"],
+  )
 })
 
 test("matrixDateRange 返回恰好 14 天", () => {

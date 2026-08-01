@@ -4,66 +4,37 @@ import { NextResponse } from "next/server"
 import { chargeBillingEvent, estimateBillingCost } from "@/lib/api/charge-billing"
 import { getCreditBalance, withAuth } from "@/lib/api/with-auth"
 import {
-  buildArkStreamChatRequest,
-  getArkChatModelId,
-  isArkChatConfigured,
-} from "@/lib/llm/ark-client"
-import {
-  DEFAULT_MAX_TOKENS,
-  isArkChatModelId,
-  isSonettoModelId,
-} from "@/lib/llm/model-registry"
-import { buildSonettoStreamRequest } from "@/lib/llm/sonetto-client"
+  connectCopywritingStream,
+  listCopywritingProviderCandidates,
+  type CopywritingChatMessage,
+  type CopywritingContentPart,
+  type CopywritingProviderFailure,
+} from "@/lib/llm/copywriting-router"
+import { retrieveServerMemory, type MemoryRetrievalResult } from "@/lib/memory/server"
 import { buildCopywritingEnrichedSystemPrompt } from "@/lib/prompts/copywriting-agent-systems"
 import { getWorkflowKnowledgeForAgent } from "@/lib/prompts/copywriting-workflow-knowledge"
-import { deepseekApiKeyMissingUserMessage, getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
+import { readServerEnv } from "@/lib/server-env"
 
 export const runtime = "nodejs"
-
-/** 允许最大 10 MB 请求体（图片 Base64 较大）；Sonetto 南区最长约 280s */
 export const maxDuration = 300
-
-
-/**
- * 流式对话（SSE 透传）
- *
- * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 纯文本：DeepSeek Chat Completions（需 DEEPSEEK_API_KEY）
- *
- * 含图片 + 方舟：
- *   使用「Chat Completions」POST ${ARK_BASE_URL}/chat/completions（与 OpenAI 多模态一致）
- *   user 消息的 content 为数组：{ type: "text", text } 与 { type: "image_url", image_url: { url: data:... } }
- *   （须绑定视觉模型接入点；若误用纯文本接入点或 Responses 专用格式，易出现 unknown variant 等报错）
- *
- * 含图片 + 仅 DeepSeek：仍走 Chat Completions 多模态（DEEPSEEK_VISION_MODEL）
- *
- * 豆包统一走 lib/llm/ark-client.ts（Chat Completions）。
- * ARK_API_KEY + ARK_CHAT_MODEL（默认 doubao-seed-2-1-pro-260628）；可选 ARK_ENDPOINT_ID。
- * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- */
-
-const DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
-
-const DEFAULT_TEXT_MODEL = "deepseek-chat"
-const DEFAULT_VISION_MODEL = "deepseek-v4-flash"
 
 const MAX_IMAGE_ATTACHMENTS = 6
 const MAX_BASE64_CHARS_PER_IMAGE = 28_000_000
-
 const MAX_CONVERSATION_HISTORY_MESSAGES = 40
 const MAX_CHARS_PER_HISTORY_MESSAGE = 24_000
 
 type SanitizedTurn = { role: "user" | "assistant"; content: string }
+type IncomingImage = { mimeType?: string; dataBase64?: string }
 
 function sanitizeConversationHistory(raw: unknown): SanitizedTurn[] {
   if (!Array.isArray(raw)) return []
   const out: SanitizedTurn[] = []
   for (const item of raw) {
     if (!item || typeof item !== "object") continue
-    const r = item as Record<string, unknown>
-    if (r.role !== "user" && r.role !== "assistant") continue
-    const role = r.role
-    const content = typeof r.content === "string" ? r.content : ""
+    const record = item as Record<string, unknown>
+    if (record.role !== "user" && record.role !== "assistant") continue
+    const role = record.role
+    const content = typeof record.content === "string" ? record.content : ""
     if (role === "assistant" && !content.trim()) continue
     const clipped =
       content.length > MAX_CHARS_PER_HISTORY_MESSAGE
@@ -71,6 +42,7 @@ function sanitizeConversationHistory(raw: unknown): SanitizedTurn[] {
         : content
     out.push({ role, content: clipped })
   }
+
   let tail =
     out.length > MAX_CONVERSATION_HISTORY_MESSAGES
       ? out.slice(-MAX_CONVERSATION_HISTORY_MESSAGES)
@@ -81,35 +53,25 @@ function sanitizeConversationHistory(raw: unknown): SanitizedTurn[] {
   return tail
 }
 
-/** DeepSeek / 方舟 Chat Completions 多模态片段 */
-type ChatCompletionContentPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } }
-
-type IncomingImage = { mimeType?: string; dataBase64?: string }
-
-function appendArkEndpointHint(errBody: string): string {
-  if (
-    !errBody.includes("InvalidEndpointOrModel") &&
-    !errBody.includes("NotFound") &&
-    !errBody.includes("does not exist")
-  ) {
-    return errBody
-  }
-  return (
-    errBody +
-    "\n\n——\n【配置说明】上述表示当前请求里的 model 在 AI 平台侧不存在或当前 API Key 无权调用。\n" +
-    "1. 预置模型：.env 设置 ARK_CHAT_MODEL=doubao-seed-2-1-pro-260628 与 ARK_API_KEY。\n" +
-    "2. 或在线推理接入点：ARK_ENDPOINT_ID=ep-…；ARK_API_KEY=「API Key 管理」密钥（勿把接入点当 Key）。\n" +
-    "3. 确认 ARK_BASE_URL 与地域一致（北京：https://ark.cn-beijing.volces.com/api/v3）。\n" +
-    "4. 统一入口见 lib/llm/ark-client.ts。"
-  )
+function summarizeFailures(failures: CopywritingProviderFailure[]): Array<{
+  provider: string
+  model: string
+  status?: number
+  reason: string
+}> {
+  return failures.map((failure) => ({
+    provider: failure.name,
+    model: failure.model,
+    ...(failure.status == null ? {} : { status: failure.status }),
+    reason: failure.reason,
+  }))
 }
 
-/** 客户端断开时取消上游 SSE 读取，避免空转。 */
+/** 客户端断开时取消上游 SSE；只有实际收到正文才执行计费。 */
 function pipeSseWithBillingOnSuccess(
   upstreamBody: ReadableStream<Uint8Array>,
   clientSignal: AbortSignal,
+  memory: MemoryRetrievalResult,
   billing: {
     cookieHeader: string
     modelId: string
@@ -122,6 +84,15 @@ function pipeSseWithBillingOnSuccess(
     async start(controller) {
       const reader = upstreamBody.getReader()
       let sawContent = false
+      controller.enqueue(
+        encoder.encode(
+          `event: memory\ndata: ${JSON.stringify({
+            status: memory.status,
+            count: memory.count,
+            items: memory.items,
+          })}\n\n`,
+        ),
+      )
       const onAbort = () => {
         reader.cancel().catch(() => {})
       }
@@ -149,9 +120,9 @@ function pipeSseWithBillingOnSuccess(
                 balance: result.balance,
               })}\n\n`
             controller.enqueue(encoder.encode(event))
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : "CHARGE_FAILED"
-            const event = `event: billing_error\ndata: ${JSON.stringify({ code: msg })}\n\n`
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "CHARGE_FAILED"
+            const event = `event: billing_error\ndata: ${JSON.stringify({ code: message })}\n\n`
             controller.enqueue(encoder.encode(event))
           }
         }
@@ -176,9 +147,8 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
     agentName?: string
     images?: IncomingImage[]
     conversationHistory?: unknown
-    /** 用户记忆上下文（前端 localStorage 提取后传入） */
     memoryContext?: string
-    /** 模型 ID：缺省 deepseek-chat；Sonetto 模型走独立客户端与计量扣费 */
+    /** 兼容旧客户端；模型由服务端云端配置决定，该字段不会参与选路。 */
     modelId?: string
   }
   try {
@@ -189,26 +159,21 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
 
   const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : ""
   const agentName = typeof body.agentName === "string" ? body.agentName.trim() : ""
-  const modelId =
-    typeof body.modelId === "string" && body.modelId.trim()
-      ? body.modelId.trim()
-      : "deepseek-chat"
   const rawImages = Array.isArray(body.images) ? body.images : []
   const conversationHistory = sanitizeConversationHistory(body.conversationHistory)
 
   const sanitizedImages: { mime: string; dataBase64: string }[] = []
-  for (const img of rawImages) {
+  for (const image of rawImages) {
     if (sanitizedImages.length >= MAX_IMAGE_ATTACHMENTS) break
     let dataBase64 =
-      typeof img?.dataBase64 === "string" ? img.dataBase64.replace(/\s/g, "") : ""
-    // 若前端误传整段 data URL，只保留逗号后的纯 Base64（避免重复前缀）
+      typeof image?.dataBase64 === "string" ? image.dataBase64.replace(/\s/g, "") : ""
     const embedded = /^data:image\/[^;]+;base64,(.+)$/i.exec(dataBase64)
     if (embedded) dataBase64 = embedded[1].replace(/\s/g, "")
     if (!dataBase64) continue
     if (dataBase64.length > MAX_BASE64_CHARS_PER_IMAGE) {
       return NextResponse.json({ detail: "单张图片过大，请压缩后重试" }, { status: 400 })
     }
-    let mime = typeof img?.mimeType === "string" ? img.mimeType.trim().toLowerCase() : ""
+    let mime = typeof image?.mimeType === "string" ? image.mimeType.trim().toLowerCase() : ""
     if (!mime.startsWith("image/")) mime = "image/jpeg"
     sanitizedImages.push({ mime, dataBase64 })
   }
@@ -221,133 +186,132 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
   if (!effectiveUserText && !hasImages) {
     return NextResponse.json({ detail: "缺少正文或图片" }, { status: 400 })
   }
-
   if (!agentName) {
     return NextResponse.json({ detail: "缺少 agentName" }, { status: 400 })
   }
 
   const workflowKnowledge = getWorkflowKnowledgeForAgent(agentName)
-  const memoryContext = typeof body.memoryContext === "string" ? body.memoryContext.trim() : ""
-
+  // memoryContext remains a compatibility-only field.  It is intentionally
+  // ignored so a client cannot forge account memory into the system prompt.
+  const memory = await retrieveServerMemory({
+    cookieHeader,
+    scope: "copywriting",
+    agentName,
+    query: effectiveUserText,
+  })
   const enrichedSystemContent = buildCopywritingEnrichedSystemPrompt({
     agentName,
     workflowKnowledge,
-    memoryContext,
+    memoryContext: memory.context,
   })
 
-  const historyMessages: { role: "user" | "assistant"; content: string }[] =
-    conversationHistory.map((t) => ({
-      role: t.role,
-      content: t.content,
-    }))
+  const userContent: string | CopywritingContentPart[] = hasImages
+    ? [
+        { type: "text", text: effectiveUserText },
+        ...sanitizedImages.map(({ mime, dataBase64 }) => ({
+          type: "image_url" as const,
+          image_url: { url: `data:${mime};base64,${dataBase64}` },
+        })),
+      ]
+    : effectiveUserText
+  const upstreamMessages: CopywritingChatMessage[] = [
+    { role: "system", content: enrichedSystemContent },
+    ...conversationHistory,
+    { role: "user", content: userContent },
+  ]
 
-  // ── Sonetto（Claude / ChatGPT）：独立客户端 + 计量扣费 ──
-  if (isSonettoModelId(modelId)) {
-    if (hasImages) {
-      return NextResponse.json(
-        { detail: "当前 GPT/Claude 模型暂不支持图片，请改用 DeepSeek 或去掉图片" },
-        { status: 400 },
-      )
-    }
+  const providers = listCopywritingProviderCandidates({ hasImages })
+  if (providers.length === 0) {
+    const desktopRuntime = readServerEnv("DESKTOP_RUNTIME") === "1"
+    return NextResponse.json(
+      {
+        detail: {
+          code: desktopRuntime ? "CLOUD_MODEL_NOT_READY" : "MODEL_NOT_CONFIGURED",
+          message: desktopRuntime
+            ? "云端模型配置尚未同步完成，请稍后重试；若持续出现，请重新登录客户端。"
+            : "未配置可用文案模型；开发环境请配置 DeepSeek、Ark 或 NewAPI。",
+        },
+      },
+      { status: 503 },
+    )
+  }
 
-    const inputForEstimate = [
-      enrichedSystemContent,
-      ...historyMessages.map((m) => m.content),
-      effectiveUserText,
-    ].join("\n")
-    void inputForEstimate
-    const estimateCredits = estimateBillingCost("copywriting.llm_call", { modelId })
+  const connection = await connectCopywritingStream({
+    providers,
+    messages: upstreamMessages,
+    signal: request.signal,
+  })
+  if (!connection.ok) {
+    const attempts = summarizeFailures(connection.failures)
+    console.error("[chat-stream] all copywriting providers failed", attempts)
+    return NextResponse.json(
+      {
+        detail: {
+          code: "CLOUD_MODEL_UNAVAILABLE",
+          message: "云端模型暂不可用，请稍后重试。",
+          attempts,
+        },
+      },
+      { status: 502 },
+    )
+  }
 
-    let balance: number
-    try {
-      balance = await getCreditBalance(cookieHeader)
-    } catch {
-      return NextResponse.json(
-        { detail: { code: "BALANCE_FAILED", message: "无法查询积分余额" } },
-        { status: 500 },
-      )
-    }
-    if (balance < estimateCredits) {
+  if (connection.failures.length > 0) {
+    console.warn(
+      "[chat-stream] provider failover",
+      summarizeFailures(connection.failures),
+      "selected=",
+      { provider: connection.provider.name, model: connection.provider.model },
+    )
+  }
+
+  const billingModelId = connection.provider.model
+  const needCredits = estimateBillingCost("copywriting.llm_call", { modelId: billingModelId })
+  try {
+    const balance = await getCreditBalance(cookieHeader)
+    if (balance < needCredits) {
+      await connection.response.body?.cancel().catch(() => {})
       return NextResponse.json(
         {
           detail: {
             code: "INSUFFICIENT_CREDIT",
             message: "积分不足",
-            need: estimateCredits,
+            need: needCredits,
             have: balance,
           },
         },
         { status: 402 },
       )
     }
+  } catch {
+    /* 余额查询失败不阻断；最终扣费仍由云端校验。 */
+  }
 
-    const built = buildSonettoStreamRequest({
-      modelId,
-      messages: [
-        { role: "system", content: enrichedSystemContent },
-        ...historyMessages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
-        { role: "user", content: effectiveUserText },
-      ],
-      maxTokens: DEFAULT_MAX_TOKENS,
-    })
-    if (!built.ok) {
-      return NextResponse.json({ detail: built.detail }, { status: built.status })
-    }
-
-    const { setup } = built
-    const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
-    console.log(
-      `[chat-stream] provider=Sonetto, model=${modelId}, cost=${estimateCredits}, url=${setup.url}`,
+  const upstreamBody = connection.response.body
+  if (!upstreamBody) {
+    return NextResponse.json(
+      {
+        detail: {
+          code: "CLOUD_MODEL_UNAVAILABLE",
+          message: "云端模型未返回响应流，请稍后重试。",
+        },
+      },
+      { status: 502 },
     )
+  }
 
-    const upstreamSignal = AbortSignal.any([
-      request.signal,
-      AbortSignal.timeout(setup.timeoutMs),
-    ])
-
-    let upstream: Response
-    try {
-      upstream = await fetch(setup.url, {
-        method: "POST",
-        headers: {
-          Authorization: setup.authorization,
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(setup.requestBody),
-        signal: upstreamSignal,
-      })
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.error(`[chat-stream] fetch Sonetto error:`, msg)
-      return NextResponse.json({ detail: `请求 Sonetto 失败: ${msg}` }, { status: 502 })
-    }
-
-    if (!upstream.ok) {
-      const errText = await upstream.text()
-      return NextResponse.json(
-        { detail: errText.slice(0, 8000) || `HTTP ${upstream.status}` },
-        {
-          status:
-            upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502,
-        },
-      )
-    }
-    if (!upstream.body) {
-      return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
-    }
-
-    const stream = pipeSseWithBillingOnSuccess(upstream.body, request.signal, {
+  console.log(
+    `[chat-stream] provider=${connection.provider.name}, model=${connection.provider.model}, url=${connection.provider.url}`,
+  )
+  const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
+  return new Response(
+    pipeSseWithBillingOnSuccess(upstreamBody, request.signal, memory, {
       cookieHeader,
-      modelId,
+      modelId: billingModelId,
       userId,
       refId,
-    })
-
-    return new Response(stream, {
+    }),
+    {
       status: 200,
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -355,195 +319,6 @@ export const POST = withAuth(async (request, { userId, cookieHeader }) => {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       },
-    })
-  }
-
-  const deepseekKey = getDeepseekApiKey()
-  /** 带图对话走 chat/completions；鉴权统一走 ark-client（与生图专用 ARK_IMAGE_API_KEY 分离） */
-  const useArkVisionChat = hasImages && isArkChatConfigured()
-  const useArkTextChat = !hasImages && isArkChatModelId(modelId)
-
-  let upstreamUrl: string
-  let authorization: string
-  let requestBody: Record<string, unknown>
-  let providerLabel: string
-
-  if (useArkTextChat) {
-    const built = buildArkStreamChatRequest({
-      modelId: getArkChatModelId() || modelId,
-      messages: [
-        { role: "system", content: enrichedSystemContent },
-        ...historyMessages,
-        { role: "user", content: effectiveUserText },
-      ],
-    })
-    if ("error" in built) {
-      return NextResponse.json({ detail: built.error }, { status: built.status })
-    }
-    upstreamUrl = built.url
-    authorization = built.authorization
-    requestBody = built.body
-    providerLabel = "豆包"
-  } else if (!hasImages) {
-    if (!deepseekKey) {
-      return NextResponse.json(
-        {
-          detail: deepseekApiKeyMissingUserMessage(),
-        },
-        { status: 503 },
-      )
-    }
-    const textModel = readServerEnv("DEEPSEEK_CHAT_MODEL") || DEFAULT_TEXT_MODEL
-    const userPayload: { role: "user"; content: string } = {
-      role: "user",
-      content: effectiveUserText,
-    }
-    upstreamUrl = DEEPSEEK_CHAT_URL
-    authorization = `Bearer ${deepseekKey}`
-    requestBody = {
-      model: textModel,
-      stream: true,
-      messages: [{ role: "system", content: enrichedSystemContent }, ...historyMessages, userPayload],
-    }
-    providerLabel = "AI 模型"
-  } else if (useArkVisionChat) {
-    const userContentParts: ChatCompletionContentPart[] = [
-      { type: "text", text: effectiveUserText },
-      ...sanitizedImages.map(({ mime, dataBase64 }) => ({
-        type: "image_url" as const,
-        image_url: {
-          url: `data:${mime};base64,${dataBase64}`,
-        },
-      })),
-    ]
-    const built = buildArkStreamChatRequest({
-      messages: [
-        { role: "system", content: enrichedSystemContent },
-        ...historyMessages,
-        { role: "user", content: userContentParts },
-      ],
-    })
-    if ("error" in built) {
-      return NextResponse.json({ detail: built.error }, { status: built.status })
-    }
-    upstreamUrl = built.url
-    authorization = built.authorization
-    requestBody = built.body
-    providerLabel = "AI 视觉"
-  } else if (deepseekKey) {
-    const visionModel = readServerEnv("DEEPSEEK_VISION_MODEL") || DEFAULT_VISION_MODEL
-    const parts: ChatCompletionContentPart[] = sanitizedImages.map(({ mime, dataBase64 }) => ({
-      type: "image_url",
-      image_url: {
-        url: `data:${mime};base64,${dataBase64}`,
-      },
-    }))
-    parts.push({ type: "text", text: effectiveUserText })
-
-    upstreamUrl = DEEPSEEK_CHAT_URL
-    authorization = `Bearer ${deepseekKey}`
-    requestBody = {
-      model: visionModel,
-      stream: true,
-      messages: [
-        { role: "system", content: enrichedSystemContent },
-        ...historyMessages,
-        { role: "user", content: parts },
-      ],
-    }
-    providerLabel = "AI 模型"
-  } else {
-    return NextResponse.json(
-      {
-        detail:
-          "含图片时请配置 AI 视觉服务：视觉服务 API Key（识图/通用）与视觉模型接入点（支持视觉的多模态接入点）。生图专用密钥不会用于此处。本地 .env.local / 线上 Environment variables；值勿加引号。或配置 AI 服务密钥走 AI 模型多模态。",
-      },
-      { status: 503 },
-    )
-  }
-
-  console.log(`[chat-stream] provider=${providerLabel}, hasImages=${hasImages}, model=${(requestBody as Record<string, unknown>).model}, url=${upstreamUrl}`)
-
-  const billingModelId = useArkTextChat || useArkVisionChat
-    ? getArkChatModelId() || modelId
-    : hasImages
-      ? readServerEnv("DEEPSEEK_VISION_MODEL") || DEFAULT_VISION_MODEL
-      : readServerEnv("DEEPSEEK_CHAT_MODEL") || DEFAULT_TEXT_MODEL
-
-  const refId = `chat-stream:${userId}:${crypto.randomBytes(8).toString("hex")}`
-  const needCredits = estimateBillingCost("copywriting.llm_call", { modelId: billingModelId })
-  try {
-    const balance = await getCreditBalance(cookieHeader)
-    if (balance < needCredits) {
-      return NextResponse.json(
-        { detail: { code: "INSUFFICIENT_CREDIT", message: "积分不足", need: needCredits, have: balance } },
-        { status: 402 },
-      )
-    }
-  } catch {
-    /* 余额查询失败不阻断，扣费时仍会校验 */
-  }
-
-  const upstreamSignal = AbortSignal.any([
-    request.signal,
-    AbortSignal.timeout(90_000),
-  ])
-
-  let upstream: Response
-  try {
-    upstream = await fetch(upstreamUrl, {
-      method: "POST",
-      headers: {
-        Authorization: authorization,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify(requestBody),
-      signal: upstreamSignal,
-    })
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error(`[chat-stream] fetch ${providerLabel} error:`, msg)
-    return NextResponse.json(
-      { detail: `请求 ${providerLabel} 失败: ${msg}` },
-      { status: 502 },
-    )
-  }
-
-  if (!upstream.ok) {
-    const errText = await upstream.text()
-    const raw = errText.slice(0, 8000) || `HTTP ${upstream.status}`
-    const detail =
-      providerLabel.includes("AI 视觉") || upstreamUrl.includes("volces.com")
-        ? appendArkEndpointHint(raw)
-        : raw
-    return NextResponse.json(
-      { detail },
-      {
-        status:
-          upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502,
-      },
-    )
-  }
-
-  if (!upstream.body) {
-    return NextResponse.json({ detail: "上游无响应体" }, { status: 502 })
-  }
-
-  return new Response(
-    pipeSseWithBillingOnSuccess(upstream.body, request.signal, {
-      cookieHeader,
-      modelId: billingModelId,
-      userId,
-      refId,
-    }),
-    {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
     },
-  })
+  )
 })

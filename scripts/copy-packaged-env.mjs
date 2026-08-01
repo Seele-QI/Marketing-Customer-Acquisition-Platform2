@@ -38,6 +38,10 @@ const CLOUD_SYNC_KEY_COMMENTS = `
 # SEEDANCE_API_KEY / SEEDANCE_BASE_URL（secondary 兼容别名）
 # XINGHE_API_KEY / XINGHE_BASE_URL（tertiary 兼容别名）
 #
+# 图片工作台与视频封面图（海外图片服务）：
+# RUNNINGHUB_API_KEY / RUNNINGHUB_IMAGE_API_KEY / RUNNINGHUB_IMAGE_BASE_URL
+# RunningHub 国内工作流与海外图片服务固定使用本地 resources/.env，云端快照不覆盖。
+#
 # 数字人创作超时（秒，默认 3000 = 50 分钟）：
 # DH_V2_TASK_TIMEOUT / DH_V2_SEGMENT_POLL_TIMEOUT
 `.trim();

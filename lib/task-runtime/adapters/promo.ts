@@ -131,7 +131,7 @@ export const promoVideoAdapter: TaskAdapter = {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (/404|未找到|NOT_FOUND|TASK_NOT_FOUND/i.test(msg)) {
+      if (/404|task\s*not\s*found|未找到|NOT_FOUND|TASK_NOT_FOUND/i.test(msg)) {
         return { type: "not_found", error: msg }
       }
       throw err

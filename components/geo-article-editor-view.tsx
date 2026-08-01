@@ -3,6 +3,7 @@
 import * as React from "react"
 import {
   ChevronRight,
+  Cloud,
   Download,
   Eye,
   ImagePlus,
@@ -20,20 +21,27 @@ import {
   type GeoWorkflowStepId,
 } from "@/components/geo/geo-workflow-shell"
 import { GeoScorePanel, type GeoScores } from "@/components/geo/geo-score-panel"
-import { GeoLlmProviderSelect } from "@/components/geo/geo-llm-provider-select"
-import { GeoSkillToolbar } from "@/components/geo/geo-knowledge-base-picker"
 import { GeoArticleBatchPanel } from "@/components/geo/article/geo-article-batch-panel"
 import {
   GeoArticleDocGrid,
   type DocGridItem,
 } from "@/components/geo/article/geo-article-doc-grid"
 import { GeoArticlePreviewDialog } from "@/components/geo/article/geo-article-preview-dialog"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
-import { getEnterpriseSkillEntry } from "@/lib/geo/skills-registry"
 import { downloadArticleMarkdown } from "@/lib/geo/article-export"
 import { parseMarkdownOutline } from "@/lib/geo/markdown-outline"
 import { scoreArticle } from "@/lib/geo/article-score-api"
 import { retryArticleGenerate } from "@/lib/geo/article-batch-api"
+import {
+  retryFailedArticleIllustrations,
+  submitArticleIllustrationTask,
+  waitForArticleIllustrationResult,
+} from "@/lib/geo/article-illustration-api"
+import { applyArticleIllustrations } from "@/lib/geo/article-illustration-planner"
+import {
+  buildInitialIllustrationSnapshot,
+  failedArticleIllustrationIds,
+  shouldResumeArticleIllustrations,
+} from "@/lib/geo/article-illustration-orchestration"
 import { buildRetryJob } from "@/lib/geo/article-batch-jobs"
 import { getMatrixProject } from "@/lib/geo/matrix-api"
 import { fileToBase64Parts } from "@/lib/image-base64"
@@ -46,9 +54,9 @@ import {
   type ArticleBatchConfig,
 } from "@/lib/geo/article-batch-store"
 import type { ArticleJob, GeneratedArticle } from "@/lib/geo/article-types"
+import type { ArticleIllustrationTaskSnapshot } from "@/lib/geo/article-illustration-types"
+import type { MatrixProject } from "@/lib/geo/matrix-types"
 import { toast } from "@/hooks/use-toast"
-
-const ARTICLE_PROVIDER_KEY = "geo-article-llm-provider"
 
 function parseMarkdownTitle(markdown: string, fallback: string): string {
   const match = markdown.match(/^#\s+(.+)$/m)
@@ -66,11 +74,8 @@ export function GeoArticleEditorView() {
   const [batchProgress, setBatchProgress] = React.useState({ done: 0, total: 0 })
   const [previewOpen, setPreviewOpen] = React.useState(false)
   const [activeSection, setActiveSection] = React.useState("")
-  const [modelSkillId, setModelSkillId] = React.useState<string | null>(null)
-  const [viralSkillIds, setViralSkillIds] = React.useState<string[]>([])
-  const [enterpriseSkillId, setEnterpriseSkillId] = React.useState<string | null>(null)
+  const [selectedMatrixProject, setSelectedMatrixProject] = React.useState<MatrixProject | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
-  const [provider, setProvider] = React.useState<LlmProviderId>("deepseek")
   const [scores, setScores] = React.useState<GeoScores | null>(null)
   const [scoreSummary, setScoreSummary] = React.useState<string | null>(null)
   const [scoreLoading, setScoreLoading] = React.useState(false)
@@ -79,6 +84,11 @@ export function GeoArticleEditorView() {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const lastAutoScoredArticleIdRef = React.useRef<string | null>(null)
+  const selectedProjectIdRef = React.useRef<string | null>(null)
+  const activeArticleIdRef = React.useRef<string | null>(null)
+  const illustrationPollersRef = React.useRef<Map<string, AbortController>>(
+    new Map(),
+  )
 
   const activeArticle = React.useMemo(
     () => articles.find((a) => a.id === activeArticleId) ?? null,
@@ -88,41 +98,34 @@ export function GeoArticleEditorView() {
   const outline = React.useMemo(() => parseMarkdownOutline(markdown), [markdown])
 
   React.useEffect(() => {
-    try {
-      const stored = localStorage.getItem(ARTICLE_PROVIDER_KEY)
-      if (
-        stored === "deepseek" ||
-        stored === "doubao" ||
-        stored === "kimi" ||
-        stored === "gpt" ||
-        stored === "claude" ||
-        stored === "gemini"
-      ) {
-        setProvider(stored)
-      }
-    } catch {
-      /* ignore */
-    }
-    const batch = loadArticleBatch()
-    if (batch.articles.length > 0) {
-      setArticles(batch.articles)
-      setGridItems(batch.articles.map((a) => ({ kind: "article", article: a })))
-    }
-  }, [])
+    activeArticleIdRef.current = activeArticleId
+  }, [activeArticleId])
 
-  const handleProviderChange = React.useCallback((id: LlmProviderId) => {
-    setProvider(id)
-    try {
-      localStorage.setItem(ARTICLE_PROVIDER_KEY, id)
-    } catch {
-      /* ignore */
+  const handleProjectChange = React.useCallback((project: MatrixProject | null) => {
+    for (const controller of illustrationPollersRef.current.values()) {
+      controller.abort()
     }
+    illustrationPollersRef.current.clear()
+    selectedProjectIdRef.current = project?.id ?? null
+    setSelectedMatrixProject(project)
+    if (!project) {
+      setArticles([])
+      setGridItems([])
+      setActiveArticleId(null)
+      setMarkdown("")
+      return
+    }
+    const projectArticles = loadArticleBatch(project.id).articles
+    setArticles(projectArticles)
+    setGridItems(
+      projectArticles.map((article) => ({ kind: "article", article })),
+    )
+    setActiveArticleId(null)
+    setMarkdown("")
+    setScores(null)
+    setScoreSummary(null)
+    setStep(2)
   }, [])
-
-  const enterpriseSnapshot = React.useMemo(
-    () => getEnterpriseSkillEntry(enterpriseSkillId)?.content ?? null,
-    [enterpriseSkillId],
-  )
 
   const handleBatchStart = React.useCallback(
     (jobs: { jobId: string; title: string; platformId: string; date?: string }[]) => {
@@ -144,7 +147,161 @@ export function GeoArticleEditorView() {
     [],
   )
 
-  const handleArticleDone = React.useCallback((article: GeneratedArticle) => {
+  const persistIllustrationSnapshot = React.useCallback(
+    (
+      sourceArticle: GeneratedArticle,
+      snapshot: ArticleIllustrationTaskSnapshot,
+    ): GeneratedArticle => {
+      const projectId = sourceArticle.projectId
+      const stored = projectId
+        ? loadArticleBatch(projectId).articles.find(
+            (candidate) => candidate.id === sourceArticle.id,
+          )
+        : undefined
+      const latest = stored ?? sourceArticle
+      const applied = applyArticleIllustrations(latest.markdown, snapshot.items)
+      const updated: GeneratedArticle = {
+        ...latest,
+        markdown: applied.markdown,
+        illustrationTask: snapshot,
+        illustrations: snapshot.items,
+      }
+      upsertArticle(updated, projectId)
+
+      if (projectId !== selectedProjectIdRef.current) {
+        return updated
+      }
+      setArticles((prev) => {
+        const found = prev.some((article) => article.id === updated.id)
+        return found
+          ? prev.map((article) =>
+              article.id === updated.id ? updated : article,
+            )
+          : [...prev, updated]
+      })
+      setGridItems((prev) =>
+        prev.map((item) =>
+          item.kind === "article" && item.article.id === updated.id
+            ? { kind: "article", article: updated }
+            : item,
+        ),
+      )
+      if (activeArticleIdRef.current === updated.id) {
+        setMarkdown(updated.markdown)
+      }
+      return updated
+    },
+    [],
+  )
+
+  const pollIllustrationTask = React.useCallback(
+    (
+      article: GeneratedArticle,
+      initial: ArticleIllustrationTaskSnapshot,
+    ) => {
+      if (
+        !article.projectId ||
+        !initial.taskId ||
+        initial.status === "success" ||
+        initial.status === "failed"
+      ) {
+        return
+      }
+      const pollerKey = `${article.projectId}:${article.id}:${initial.taskId}`
+      if (illustrationPollersRef.current.has(pollerKey)) return
+
+      const controller = new AbortController()
+      illustrationPollersRef.current.set(pollerKey, controller)
+      void waitForArticleIllustrationResult(
+        {
+          taskId: initial.taskId,
+          projectId: article.projectId,
+          articleId: article.id,
+        },
+        {
+          signal: controller.signal,
+          onUpdate: (snapshot) => {
+            persistIllustrationSnapshot(article, snapshot)
+          },
+        },
+      )
+        .then((snapshot) => {
+          persistIllustrationSnapshot(article, snapshot)
+        })
+        .catch((error: unknown) => {
+          if (
+            error instanceof DOMException &&
+            error.name === "AbortError"
+          ) {
+            return
+          }
+          persistIllustrationSnapshot(article, {
+            ...initial,
+            warning: "插图仍在后台处理，返回该项目后会自动恢复进度。",
+            updatedAt: Date.now(),
+          })
+        })
+        .finally(() => {
+          if (illustrationPollersRef.current.get(pollerKey) === controller) {
+            illustrationPollersRef.current.delete(pollerKey)
+          }
+        })
+    },
+    [persistIllustrationSnapshot],
+  )
+
+  const launchArticleIllustrations = React.useCallback(
+    async (article: GeneratedArticle, illustrationCount: number) => {
+      if (!article.projectId || illustrationCount < 1) return
+      const prepared: GeneratedArticle = {
+        ...article,
+        illustrationsPerArticle: illustrationCount,
+      }
+      const initial = buildInitialIllustrationSnapshot({
+        projectId: article.projectId,
+        articleId: article.id,
+        count: illustrationCount,
+      })
+      persistIllustrationSnapshot(prepared, initial)
+      try {
+        const snapshot = await submitArticleIllustrationTask({
+          projectId: article.projectId,
+          articleId: article.id,
+          platformId: article.platformId,
+          title: article.title,
+          markdown: article.markdown,
+          illustrationCount,
+        })
+        persistIllustrationSnapshot(prepared, snapshot)
+        pollIllustrationTask(prepared, snapshot)
+      } catch {
+        persistIllustrationSnapshot(prepared, {
+          taskId: "",
+          projectId: article.projectId,
+          articleId: article.id,
+          requestedCount: illustrationCount,
+          completedCount: 0,
+          failedCount: illustrationCount,
+          status: "failed",
+          items: [],
+          error: "插图任务提交失败，请稍后重试。",
+          updatedAt: Date.now(),
+        })
+      }
+    },
+    [persistIllustrationSnapshot, pollIllustrationTask],
+  )
+
+  const handleArticleDone = React.useCallback((
+    article: GeneratedArticle,
+    options: { illustrationsPerArticle: number } = {
+      illustrationsPerArticle: article.illustrationsPerArticle ?? 0,
+    },
+  ) => {
+    const articleWithOptions: GeneratedArticle = {
+      ...article,
+      illustrationsPerArticle: options.illustrationsPerArticle,
+    }
     setGridItems((prev) => {
       const withoutPending = prev.filter(
         (i) => !(i.kind === "pending" && i.jobId === article.jobId),
@@ -152,13 +309,79 @@ export function GeoArticleEditorView() {
       const withoutDup = withoutPending.filter(
         (i) => !(i.kind === "article" && i.article.jobId === article.jobId),
       )
-      return [...withoutDup, { kind: "article", article }]
+      return [...withoutDup, { kind: "article", article: articleWithOptions }]
     })
-    const next = mergeArticles([article])
+    const next = mergeArticles([articleWithOptions], article.projectId)
     setArticles(next)
-  }, [])
+    if (options.illustrationsPerArticle > 0) {
+      void launchArticleIllustrations(
+        articleWithOptions,
+        options.illustrationsPerArticle,
+      )
+    }
+  }, [launchArticleIllustrations])
+
+  const handleRetryIllustrations = React.useCallback(
+    async (article: GeneratedArticle) => {
+      const snapshot = article.illustrationTask
+      const desiredCount = article.illustrationsPerArticle ?? 0
+      if (!article.projectId || desiredCount < 1) return
+
+      if (!snapshot?.taskId) {
+        await launchArticleIllustrations(article, desiredCount)
+        return
+      }
+      const failedIllustrationIds = failedArticleIllustrationIds(snapshot)
+      if (failedIllustrationIds.length === 0) return
+
+      try {
+        const next = await retryFailedArticleIllustrations(
+          {
+            taskId: snapshot.taskId,
+            projectId: article.projectId,
+            articleId: article.id,
+          },
+          failedIllustrationIds,
+        )
+        persistIllustrationSnapshot(article, next)
+        pollIllustrationTask(article, next)
+      } catch {
+        persistIllustrationSnapshot(article, {
+          ...snapshot,
+          warning: "插图重试提交失败，可稍后再次重试。",
+          updatedAt: Date.now(),
+        })
+      }
+    },
+    [
+      launchArticleIllustrations,
+      persistIllustrationSnapshot,
+      pollIllustrationTask,
+    ],
+  )
+
+  React.useEffect(() => {
+    if (!selectedMatrixProject) return
+    for (const article of articles) {
+      const snapshot = article.illustrationTask
+      if (shouldResumeArticleIllustrations(snapshot)) {
+        pollIllustrationTask(article, snapshot)
+      }
+    }
+  }, [articles, selectedMatrixProject, pollIllustrationTask])
+
+  React.useEffect(
+    () => () => {
+      for (const controller of illustrationPollersRef.current.values()) {
+        controller.abort()
+      }
+      illustrationPollersRef.current.clear()
+    },
+    [],
+  )
 
   const handleJobError = React.useCallback((jobId: string, error: string, meta?: Partial<GeneratedArticle>) => {
+    const snapshot = getJobSnapshot(jobId)
     setGridItems((prev) => {
       const pending = prev.find((i) => i.kind === "pending" && i.jobId === jobId)
       const fromArticle = prev.find(
@@ -175,17 +398,25 @@ export function GeoArticleEditorView() {
       const failed: GeneratedArticle = {
         id: meta?.id ?? `failed-${jobId}`,
         jobId,
-        mode: meta?.mode ?? (fromArticle?.kind === "article" ? fromArticle.article.mode : "direction"),
-        platformId: meta?.platformId ?? ("platformId" in base ? base.platformId : ""),
-        date: meta?.date ?? ("date" in base ? base.date : undefined),
-        title: meta?.title ?? ("title" in base ? base.title : "生成失败"),
+        projectId: meta?.projectId ?? snapshot?.projectId ?? (fromArticle?.kind === "article" ? fromArticle.article.projectId : undefined),
+        mode: meta?.mode ?? snapshot?.mode ?? (fromArticle?.kind === "article" ? fromArticle.article.mode : "matrix"),
+        platformId: meta?.platformId ?? snapshot?.platformId ?? ("platformId" in base ? base.platformId : ""),
+        date: meta?.date ?? snapshot?.date ?? ("date" in base ? base.date : undefined),
+        title: meta?.title ?? snapshot?.title ?? ("title" in base ? base.title : "生成失败"),
         markdown: "",
         status: "failed",
         error,
         createdAt: meta?.createdAt ?? Date.now(),
       }
-      mergeArticles([failed])
+      const failedProjectId = failed.projectId
+      mergeArticles([failed], failedProjectId)
       setArticles((a) => {
+        if (
+          selectedMatrixProject?.id &&
+          failedProjectId !== selectedMatrixProject.id
+        ) {
+          return a
+        }
         const filtered = a.filter((x) => x.jobId !== jobId)
         return [...filtered, failed]
       })
@@ -198,7 +429,7 @@ export function GeoArticleEditorView() {
         { kind: "article", article: failed },
       ]
     })
-  }, [])
+  }, [selectedMatrixProject?.id])
 
   const handleBatchComplete = React.useCallback((config: ArticleBatchConfig) => {
     saveBatchConfig(config)
@@ -206,18 +437,15 @@ export function GeoArticleEditorView() {
 
   const resolveRetryJob = React.useCallback(
     async (article: GeneratedArticle): Promise<ArticleJob> => {
+      if (article.mode !== "matrix") {
+        throw new Error("旧版自定义方向文章不支持重试，请从内容矩阵重新创作")
+      }
       const snapshot = getJobSnapshot(article.jobId)
       if (snapshot) return snapshot
-
-      const { lastConfig } = loadArticleBatch()
-      if (!lastConfig) {
-        throw new Error("缺少批次配置，请重新发起批量创作")
+      if (!article.projectId) {
+        throw new Error("该文章缺少所属矩阵信息，请从内容矩阵重新创作")
       }
-
-      let project = null
-      if (lastConfig.mode === "matrix" && lastConfig.projectId) {
-        project = await getMatrixProject(lastConfig.projectId)
-      }
+      const project = await getMatrixProject(article.projectId)
 
       return buildRetryJob({
         jobId: article.jobId,
@@ -225,7 +453,6 @@ export function GeoArticleEditorView() {
         platformId: article.platformId,
         date: article.date,
         title: article.title,
-        direction: lastConfig.direction,
         project,
       })
     },
@@ -250,11 +477,12 @@ export function GeoArticleEditorView() {
       setRetryingJobIds((prev) => new Set(prev).add(article.jobId))
 
       try {
+        const projectId = job.projectId ?? article.projectId
+        if (!projectId) {
+          throw new Error("缺少矩阵项目，请重新选择矩阵后重试")
+        }
         const result = await retryArticleGenerate({
-          provider,
-          modelSkillId,
-          viralSkillIds,
-          enterpriseSnapshot,
+          projectId,
           job,
         })
 
@@ -283,10 +511,6 @@ export function GeoArticleEditorView() {
     [
       retryingJobIds,
       resolveRetryJob,
-      provider,
-      modelSkillId,
-      viralSkillIds,
-      enterpriseSnapshot,
       handleArticleDone,
       handleJobError,
     ],
@@ -299,12 +523,13 @@ export function GeoArticleEditorView() {
     }
     setScoreLoading(true)
     try {
+      const projectId = activeArticle?.projectId
+      if (!projectId) {
+        throw new Error("缺少矩阵项目，无法按矩阵策略评分")
+      }
       const result = await scoreArticle({
-        provider,
         markdown,
-        modelSkillId,
-        viralSkillIds,
-        enterpriseSnapshot,
+        projectId,
         platformId: activeArticle?.platformId ?? null,
       })
       setScores(result.scores)
@@ -319,10 +544,7 @@ export function GeoArticleEditorView() {
     }
   }, [
     markdown,
-    provider,
-    modelSkillId,
-    viralSkillIds,
-    enterpriseSnapshot,
+    activeArticle?.projectId,
     activeArticle?.platformId,
   ])
 
@@ -359,7 +581,7 @@ export function GeoArticleEditorView() {
         markdown,
         title: parseMarkdownTitle(markdown, activeArticle?.title ?? "未命名文章"),
       }
-      upsertArticle(updated)
+      upsertArticle(updated, updated.projectId)
       setArticles((prev) => {
         const idx = prev.findIndex((a) => a.id === activeArticleId)
         if (idx < 0) return [...prev, updated]
@@ -429,6 +651,7 @@ export function GeoArticleEditorView() {
 
   return (
     <GeoWorkflowPage>
+      <div data-tutorial-id="geo-article-view">
       <GeoWorkflowHero
         title="深度优化"
         accentWord="文章创作"
@@ -445,15 +668,10 @@ export function GeoArticleEditorView() {
       </div>
 
       <div className="mb-4 flex flex-wrap items-end justify-end gap-2 sm:gap-3">
-        <GeoLlmProviderSelect value={provider} onChange={handleProviderChange} showLabel />
-        <GeoSkillToolbar
-          modelSkillId={modelSkillId}
-          viralSkillIds={viralSkillIds}
-          enterpriseSkillId={enterpriseSkillId}
-          onModelChange={setModelSkillId}
-          onViralChange={setViralSkillIds}
-          onEnterpriseChange={setEnterpriseSkillId}
-        />
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-[11px] font-medium text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-300">
+          <Cloud className="h-3.5 w-3.5" aria-hidden />
+          云端智能调度
+        </span>
       </div>
 
       {batchGenerating && batchProgress.total > 0 && (
@@ -478,10 +696,6 @@ export function GeoArticleEditorView() {
       {showBatchWorkspace ? (
         <div className="space-y-4">
           <GeoArticleBatchPanel
-            provider={provider}
-            modelSkillId={modelSkillId}
-            viralSkillIds={viralSkillIds}
-            enterpriseSnapshot={enterpriseSnapshot}
             generating={batchGenerating}
             onGeneratingChange={setBatchGenerating}
             onProgress={(done, total) => setBatchProgress({ done, total })}
@@ -489,6 +703,7 @@ export function GeoArticleEditorView() {
             onArticle={handleArticleDone}
             onJobError={handleJobError}
             onBatchComplete={handleBatchComplete}
+            onProjectChange={handleProjectChange}
           />
           <GeoArticleDocGrid
             items={gridItems}
@@ -496,6 +711,9 @@ export function GeoArticleEditorView() {
             retryingJobIds={retryingJobIds}
             onSelect={handleSelectArticle}
             onRetry={(article) => void handleRetryArticle(article)}
+            onRetryIllustrations={(article) =>
+              void handleRetryIllustrations(article)
+            }
           />
         </div>
       ) : step === 4 ? (
@@ -663,6 +881,7 @@ export function GeoArticleEditorView() {
         title={editorTitle}
         markdown={markdown}
       />
+      </div>
     </GeoWorkflowPage>
   )
 }

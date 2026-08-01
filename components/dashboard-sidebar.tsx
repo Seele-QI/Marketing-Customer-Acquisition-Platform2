@@ -4,10 +4,8 @@ import * as React from "react"
 import NextImage from "next/image"
 import {
   Target,
-  Lightbulb,
   PenLine,
   Video,
-  Users,
   LayoutDashboard,
   LifeBuoy,
   Sparkles,
@@ -25,11 +23,17 @@ import {
   Grid3x3,
   FileEdit,
   Settings,
+  Send,
+  Newspaper,
+  Palette,
+  Menu,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { UserMenu } from "@/components/user-menu"
 import { VIDEO_VIEWS } from "@/lib/video/workspace"
 import { GEO_VIEWS } from "@/lib/geo/workspace"
+import { DISTRIBUTION_VIEWS } from "@/lib/distribution/workspace"
 import { useRuntimeTasks, VIEW_TO_TASK_KIND } from "@/lib/task-runtime"
 
 type NavItem = {
@@ -62,6 +66,7 @@ const mainNav: NavItem[] = [
   { label: "视频创作", icon: Clapperboard, badge: "NEW", iconColor: "text-rose-500", iconBg: "bg-rose-500/10",
     children: [
       { label: "数字人口播视频（新）", view: VIDEO_VIEWS.DH_VIDEO_V2, icon: Sparkles, iconColor: "text-amber-500" },
+      { label: "数字人视频创作（经济版）", view: VIDEO_VIEWS.DH_VIDEO_ECONOMY, icon: Video, iconColor: "text-emerald-500" },
       { label: "图文视频", view: VIDEO_VIEWS.IMAGE_VIDEO, icon: Image, iconColor: "text-emerald-500" },
       { label: "视频混剪", view: VIDEO_VIEWS.MASHUP, icon: Scissors, iconColor: "text-violet-500" },
       { label: "宣传视频", view: VIDEO_VIEWS.PROMO, icon: Video, iconColor: "text-sky-500" },
@@ -73,6 +78,13 @@ const mainNav: NavItem[] = [
       { label: "企业知识库搭建", view: GEO_VIEWS.KNOWLEDGE_BASE, icon: Database, iconColor: "text-cyan-500" },
       { label: "内容矩阵规划", view: GEO_VIEWS.CONTENT_MATRIX, icon: Grid3x3, iconColor: "text-cyan-600" },
       { label: "深度优化文章创作", view: GEO_VIEWS.ARTICLE_EDITOR, icon: FileEdit, iconColor: "text-teal-500" },
+    ],
+  },
+  { label: "图片工作台", icon: Palette, badge: "NEW", iconColor: "text-violet-500", iconBg: "bg-violet-500/10" },
+  { label: "一键分发", icon: Send, badge: "NEW", iconColor: "text-orange-500", iconBg: "bg-orange-500/10",
+    children: [
+      { label: "视频一键分发", view: DISTRIBUTION_VIEWS.VIDEO, icon: Video, iconColor: "text-orange-500" },
+      { label: "GEO文章一键分发", view: DISTRIBUTION_VIEWS.GEO_ARTICLE, icon: Newspaper, iconColor: "text-cyan-600", badge: "即将开放" },
     ],
   },
   { label: "充值兑换", icon: TicketPercent, iconColor: "text-amber-500", iconBg: "bg-amber-500/10" },
@@ -87,6 +99,108 @@ const bottomNav: NavItem[] = [
 type DashboardSidebarProps = {
   active: MainView
   onSelect: (view: MainView) => void
+}
+
+function MobileDashboardNavigation({
+  active,
+  onSelect,
+}: DashboardSidebarProps) {
+  const [open, setOpen] = React.useState(false)
+  const navigate = (view: MainView) => {
+    onSelect(view)
+    setOpen(false)
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="fixed bottom-5 left-4 z-40 flex h-12 items-center gap-2 rounded-full border border-border bg-background/95 px-4 text-sm font-semibold shadow-xl backdrop-blur lg:hidden"
+        aria-label="打开功能导航"
+      >
+        <Menu className="h-5 w-5" />
+        功能
+      </button>
+      {open ? (
+        <div className="fixed inset-0 z-[70] bg-slate-950/45 backdrop-blur-sm lg:hidden" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setOpen(false)
+        }}>
+          <aside className="flex h-full w-[min(86vw,340px)] flex-col bg-background shadow-2xl">
+            <div className="flex h-16 items-center justify-between border-b px-4">
+              <strong className="text-base">功能导航</strong>
+              <button type="button" onClick={() => setOpen(false)} className="rounded-xl p-2 hover:bg-muted" aria-label="关闭功能导航">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <nav className="flex-1 overflow-y-auto p-3">
+              <div className="space-y-2">
+                {mainNav.map((item) => {
+                  const Icon = item.icon
+                  if (item.children?.length) {
+                    return (
+                      <section key={item.label} className="rounded-2xl border border-border/70 p-2">
+                        <div className="flex items-center gap-2 px-2 py-1.5 text-sm font-semibold">
+                          <Icon className={cn("h-4 w-4", item.iconColor)} />
+                          {item.label}
+                          {item.badge ? <span className="ml-auto rounded-full bg-blue-50 px-2 py-0.5 text-[9px] text-blue-600">{item.badge}</span> : null}
+                        </div>
+                        <div className="mt-1 space-y-1">
+                          {item.children.map((child) => {
+                            const childView = (child.view || child.label) as MainView
+                            const ChildIcon = child.icon
+                            return (
+                              <button
+                                key={childView}
+                                type="button"
+                                onClick={() => navigate(childView)}
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm",
+                                  active === childView ? "bg-primary/10 font-semibold text-primary" : "text-muted-foreground hover:bg-muted",
+                                )}
+                              >
+                                <ChildIcon className={cn("h-4 w-4", child.iconColor)} />
+                                <span className="min-w-0 flex-1 truncate">{child.label}</span>
+                                {child.badge ? <span className="text-[9px] text-muted-foreground">{child.badge}</span> : null}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </section>
+                    )
+                  }
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => navigate(item.label as MainView)}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm",
+                        active === item.label ? "bg-primary/10 font-semibold text-primary" : "hover:bg-muted",
+                      )}
+                    >
+                      <Icon className={cn("h-4 w-4", item.iconColor)} />
+                      {item.label}
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="my-3 border-t" />
+              {bottomNav.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button key={item.label} type="button" onClick={() => navigate(item.label as MainView)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-muted">
+                    <Icon className={cn("h-4 w-4", item.iconColor)} />
+                    {item.label}
+                  </button>
+                )
+              })}
+            </nav>
+          </aside>
+        </div>
+      ) : null}
+    </>
+  )
 }
 
 export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
@@ -124,6 +238,8 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
   }
 
   return (
+    <>
+    <MobileDashboardNavigation active={active} onSelect={onSelect} />
     <aside className="sticky top-0 hidden h-screen w-[240px] shrink-0 border-r border-sidebar-border bg-sidebar lg:flex lg:flex-col">
       {/* Brand */}
       <div className="flex h-[92px] items-center px-3 py-2">
@@ -132,7 +248,8 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
           alt="招财猫"
           width={224}
           height={72}
-          className="h-[72px] w-full object-contain object-left"
+          className="h-auto max-h-[72px] w-full object-contain object-left"
+          style={{ height: "auto" }}
           priority
         />
       </div>
@@ -159,6 +276,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
               <li key={item.label}>
                 <button
                   type="button"
+                  data-tutorial-id={`nav-${item.label}`}
                   onClick={() => {
                     if (hasChildren) {
                       toggleExpand(item.label)
@@ -225,6 +343,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
                         <li key={child.label}>
                           <button
                             type="button"
+                            data-tutorial-id={`nav-${child.label}`}
                             onClick={() => onSelect(childView as MainView)}
                             className={cn(
                               "group flex w-full items-center gap-2.5 rounded-full px-3 py-1.5 text-left text-[13px] transition-colors",
@@ -274,6 +393,7 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
               <li key={item.label}>
                 <button
                   type="button"
+                  data-tutorial-id={`nav-${item.label}`}
                   onClick={() => onSelect(item.label as MainView)}
                   className={cn(
                     "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors",
@@ -302,5 +422,6 @@ export function DashboardSidebar({ active, onSelect }: DashboardSidebarProps) {
       {/* User menu */}
       <UserMenu />
     </aside>
+    </>
   )
 }

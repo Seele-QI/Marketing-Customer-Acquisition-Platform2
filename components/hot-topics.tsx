@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { Flame, ArrowUp, Rocket, Zap, Radio, ArrowLeft } from "lucide-react"
 import { VideoDetailModal } from "@/components/video-detail-modal"
 import { publishTimeFromSeed } from "@/lib/publish-time"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 
 type Topic = {
   rank: number
@@ -315,11 +316,7 @@ export function HotTopics({ variant = "mini" }: HotTopicsProps) {
         headers: { Accept: "application/json" },
         credentials: "include",
       })
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-
-      const data = (await response.json()) as Array<{
+      const data = (await response.json().catch(() => null)) as Array<{
         name: string
         status?: "ok" | "rate_limited" | "unavailable" | "error"
         message?: string
@@ -330,7 +327,12 @@ export function HotTopics({ variant = "mini" }: HotTopicsProps) {
           hot_value: string
           url?: string
         }>
-      }>
+      }> | { detail?: unknown } | null
+      if (!response.ok) {
+        const detail = data && !Array.isArray(data) ? data.detail : undefined
+        throw new Error(parseApiErrorResponse(response.status, { detail }, "热点抓取失败"))
+      }
+      if (!Array.isArray(data)) throw new Error("热点服务返回内容异常，请稍后重试。")
 
       if (!Array.isArray(data)) {
         throw new Error("返回格式错误")

@@ -13,9 +13,10 @@
  */
 
 import { createHash, createHmac } from "node:crypto"
-import { readFileSync, readdirSync, existsSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import * as path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { pickReleaseArtifacts } from "./lib/release-artifacts.mjs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, "..")
@@ -88,30 +89,31 @@ async function ossPut({ region, bucket, accessKeyId, accessKeySecret, objectKey,
   return url
 }
 
-function pickArtifacts(dir) {
-  const names = readdirSync(dir)
-  const setup = names.filter((n) => /Setup-.*\.exe$/i.test(n) && !/\.blockmap$/i.test(n))
-  const macDmgs = names.filter((n) => /-mac(-(arm64|x64))?\.dmg$/i.test(n) && !/\.blockmap$/i.test(n))
-  const yml = names.filter((n) => /^latest\.yml$/i.test(n) || /^latest-mac(-arm64|-x64)?\.yml$/i.test(n))
-  const blockmaps = names.filter(
-    (n) => /\.exe\.blockmap$/i.test(n) || /\.dmg\.blockmap$/i.test(n) || /\.blockmap$/i.test(n),
-  )
-  if (!setup.length && !macDmgs.length) {
-    throw new Error(`未找到 Setup.exe 或 *-mac.dmg：${dir}`)
-  }
-  if (!yml.length) {
-    console.warn(
-      "[upload-release-oss] 未找到 latest.yml / latest-mac.yml。请确认 electron-builder.yml 已配置 publish.provider=generic。",
-    )
-  }
-  return [...setup, ...macDmgs, ...yml, ...blockmaps].map((n) => path.join(dir, n))
-}
-
 function contentTypeFor(file) {
   if (file.endsWith(".yml") || file.endsWith(".yaml")) return "text/yaml; charset=utf-8"
   if (file.endsWith(".exe") || file.endsWith(".dmg")) return "application/octet-stream"
   if (file.endsWith(".blockmap")) return "application/octet-stream"
   return "application/octet-stream"
+}
+
+async function verifyPublicUpload(url, expectedSize, { requireRange = false } = {}) {
+  const head = await fetch(url, { method: "HEAD" })
+  if (!head.ok) {
+    throw new Error(`上传后公网校验失败: HEAD ${url} → ${head.status}`)
+  }
+  const remoteSize = Number(head.headers.get("content-length") || 0)
+  if (remoteSize !== expectedSize) {
+    throw new Error(`上传后大小不一致: ${url} remote=${remoteSize} local=${expectedSize}`)
+  }
+  if (requireRange) {
+    const ranged = await fetch(url, { headers: { Range: "bytes=0-0" } })
+    const body = await ranged.arrayBuffer()
+    if (ranged.status !== 206 || body.byteLength !== 1) {
+      throw new Error(
+        `更新安装包不支持 Range 下载: ${url} status=${ranged.status} bytes=${body.byteLength}`,
+      )
+    }
+  }
 }
 
 async function main() {
@@ -131,7 +133,7 @@ async function main() {
     console.warn(`[upload-release-oss] OSS_REGION unset, defaulting to ${region}`)
   }
 
-  const files = pickArtifacts(dir)
+  const files = pickReleaseArtifacts(dir)
   console.log(`[upload-release-oss] ${files.length} file(s) → oss://${bucket}/${prefix}/`)
 
   for (const file of files) {
@@ -148,6 +150,11 @@ async function main() {
       body,
       contentType: contentTypeFor(base),
     })
+    if (!/\.ya?ml$/i.test(base)) {
+      await verifyPublicUpload(url, body.length, {
+        requireRange: /\.exe$/i.test(base),
+      })
+    }
     console.log(`OK ${base}  ${Math.round(body.length / 1024 / 1024)}MB  sha256=${sha}…  ${url}`)
   }
   console.log("[upload-release-oss] done")
@@ -182,7 +189,13 @@ async function main() {
   console.log("6. 生产机：设置页 → 检查更新 → 下载 → 安装并重启")
 }
 
-main().catch((e) => {
-  console.error(e)
-  process.exit(1)
-})
+const isDirectExecution =
+  Boolean(process.argv[1]) &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+
+if (isDirectExecution) {
+  main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+  })
+}

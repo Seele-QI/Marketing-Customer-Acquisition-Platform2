@@ -2,7 +2,10 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import {
+  ARTICLE_HARD_MAX_CHARS,
   ARTICLE_MAX_CHARS,
+  ARTICLE_TARGET_MAX_CHARS,
+  ARTICLE_TARGET_MIN_CHARS,
   countChars,
   enforceArticleFormat,
   stripMarkdown,
@@ -40,14 +43,21 @@ describe("stripMarkdown", () => {
 })
 
 describe("enforceArticleFormat", () => {
-  it("caps total chars at 1000 including tag line", () => {
-    const longBody = "甲".repeat(1200)
-    const out = enforceArticleFormat(`# 大标题\n\n${longBody}\n\n标签：#A #B #C`, {
-      title: "火山方舟实践",
+  it("uses the approved 900 1100 1200 limits", () => {
+    assert.equal(ARTICLE_TARGET_MIN_CHARS, 900)
+    assert.equal(ARTICLE_TARGET_MAX_CHARS, 1100)
+    assert.equal(ARTICLE_HARD_MAX_CHARS, 1200)
+    assert.equal(ARTICLE_MAX_CHARS, ARTICLE_HARD_MAX_CHARS)
+  })
+
+  it("normalizes without character-truncating the body", () => {
+    const body = `# 标题\n\n${"完整句子。".repeat(300)}\n\n标签：#A #B #C`
+    const out = enforceArticleFormat(body, {
+      title: "标题",
       platformLabel: "知乎",
     })
-    assert.ok(countChars(out) <= ARTICLE_MAX_CHARS)
-    assert.match(out, /^标签：/m)
+    assert.match(out, /完整句子。\n\n标签：#A #B #C$/)
+    assert.ok(countChars(out) > ARTICLE_HARD_MAX_CHARS)
   })
 
   it("appends fallback tags when model omits them", () => {

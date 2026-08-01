@@ -28,6 +28,11 @@ def test_plan_segment_count_exact_multiple():
     assert plan_segment_count(20.0) == 1
 
 
+@pytest.mark.parametrize("duration, expected", [(1.0, 1), (20.0, 1), (36.0, 2), (40.0, 2)])
+def test_economy_plan_segment_count_contract(duration, expected):
+    assert plan_segment_count(duration) == expected
+
+
 def test_plan_segment_count_zero_or_negative_defaults_to_one():
     assert plan_segment_count(0.0) == 1
     assert plan_segment_count(-5.0) == 1

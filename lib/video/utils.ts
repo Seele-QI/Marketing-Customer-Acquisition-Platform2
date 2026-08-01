@@ -86,7 +86,15 @@ export function extractVideoUrlFromShareText(raw: string): string | null {
 }
 
 /** 由 FastAPI 挂载的本地静态资源路径前缀 */
-const LOCAL_STATIC_PREFIXES = ["/static/video-postprocess/", "/static/video-generated/"] as const
+const LOCAL_STATIC_PREFIXES = [
+  "/static/video-postprocess/",
+  "/static/video-generated/",
+  "/static/video-covers/",
+  "/static/posters/",
+  "/static/image-workbench/",
+  "/static/geo-article-illustrations/",
+  "/static/manual-uploads/",
+] as const
 
 /** 与 electron/utils/paths.ts UVICORN_PORT 保持一致 */
 const DESKTOP_UVICORN_PORT = "8010"
@@ -145,8 +153,6 @@ export function resolveMediaUrl(url: string): string {
 
   const origin = typeof window !== "undefined" ? window.location.origin : ""
   const bakedApi = getFastapiBase()
-  const staticPostprocess = "/static/video-postprocess/"
-
   const desktopApi = getDesktopFastapiOrigin(bakedApi)
   if (desktopApi && isLocalStaticMediaPath(url)) {
     return `${desktopApi}${localStaticPathFromUrl(url)}`
@@ -157,7 +163,7 @@ export function resolveMediaUrl(url: string): string {
   if (url.startsWith("http")) {
     try {
       const parsed = new URL(url)
-      if (parsed.pathname.includes(staticPostprocess) || parsed.pathname.includes("/static/video-generated/")) {
+      if (isLocalStaticMediaPath(url)) {
         const path = parsed.pathname + parsed.search
         const base = fastapiBase.replace(/\/$/, "")
         if (base && !url.startsWith(base)) {
@@ -175,6 +181,23 @@ export function resolveMediaUrl(url: string): string {
 
   const base = fastapiBase
   return `${base.replace(/\/$/, "")}${url.startsWith("/") ? url : `/${url}`}`
+}
+
+/** Build an attachment URL on the media origin for Electron-safe downloads. */
+export function resolveMediaDownloadUrl(url: string, filename: string): string {
+  const resolved = resolveMediaUrl(url)
+  if (!resolved || resolved.startsWith("blob:") || resolved.startsWith("data:")) return resolved
+
+  try {
+    const fallbackOrigin = typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1"
+    const parsed = new URL(resolved, fallbackOrigin)
+    if (!LOCAL_STATIC_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))) return resolved
+    const safeFilename = (filename || "media").replace(/[\\/?*:|"<>]/g, "_")
+    const query = new URLSearchParams({ path: parsed.pathname, filename: safeFilename })
+    return `${parsed.origin}/api/media/download?${query.toString()}`
+  } catch {
+    return resolved
+  }
 }
 
 function loadImageElement(src: string): Promise<HTMLImageElement> {

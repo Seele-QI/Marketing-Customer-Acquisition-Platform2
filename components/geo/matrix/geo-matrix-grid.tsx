@@ -43,7 +43,7 @@ export function GeoMatrixGrid({ platformId, cells, onCellClick, empty }: Props) 
         <p className="text-[13px] font-medium text-slate-600 dark:text-slate-400">
           {getMatrixPlatformLabel(platformId)} 暂无矩阵数据
         </p>
-        <p className="mt-1 text-[12px] text-slate-500">请先配置平台与 AI 引擎，点击「生成两周矩阵」</p>
+        <p className="mt-1 text-[12px] text-slate-500">请先配置发布平台与内容策略，点击「生成两周矩阵」</p>
       </div>
     )
   }

@@ -13,6 +13,7 @@
  */
 
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
@@ -29,6 +30,10 @@ function check(label, ok, detail = '') {
   console.log(`  ${icon} ${label}${detail ? ': ' + detail : ''}`);
   checks.push({ label, ok });
   if (!ok) failed++;
+}
+
+function sha256File(filePath) {
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex');
 }
 
 /* ============ resources/ 存在 ============ */
@@ -102,6 +107,24 @@ for (const entry of pythonRoots) {
   const appLib = path.join(entry.root, entry.appLib);
   check(`${entry.label} ${entry.appLib}/`, existsSync(appLib));
   check(`${entry.label} ${entry.appLib}/email.py`, existsSync(path.join(appLib, 'email.py')));
+  for (const sourceName of [
+    'runninghub_client.py',
+    'runninghub_network.py',
+    'safe_http.py',
+    'promo_video_service.py',
+  ]) {
+    const sourcePath = path.join(projectRoot, 'lib', sourceName);
+    const bundledPath = path.join(appLib, sourceName);
+    const sourceSynced =
+      existsSync(sourcePath) &&
+      existsSync(bundledPath) &&
+      sha256File(sourcePath) === sha256File(bundledPath);
+    check(
+      `${entry.label} ${sourceName} source sync`,
+      sourceSynced,
+      sourceSynced ? 'sha256 matched' : `${bundledPath} is missing or stale`,
+    );
+  }
   if (!libDst && existsSync(appLib)) {
     libDst = appLib;
     libParentDir = path.join(entry.root, entry.libParent);
@@ -296,6 +319,8 @@ check('.env exists', existsSync(packagedEnv), packagedEnv);
 const REQUIRED_ENV_KEYS = [
   'DEEPSEEK_API_KEY',
   'RUNNINGHUB_API_KEY',
+  'RUNNINGHUB_IMAGE_API_KEY',
+  'RUNNINGHUB_IMAGE_BASE_URL',
   'EMAIL_HASH_SALT',
   'CREDIT_ADMIN_ACCESS_KEY',
   'ADMIN_PASSWORD_HASH',

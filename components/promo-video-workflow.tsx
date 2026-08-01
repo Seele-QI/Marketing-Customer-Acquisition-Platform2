@@ -698,6 +698,7 @@ export default function PromoVideoWorkflow() {
 
   return (
     <VideoWorkflowPage compact>
+      <div data-tutorial-id="promo-video-workflow">
       <WorkflowHero
         compact
         accentColor={ACCENT}
@@ -1397,6 +1398,7 @@ export default function PromoVideoWorkflow() {
           )}
         </div>
       )}
+      </div>
     </VideoWorkflowPage>
   )
 }

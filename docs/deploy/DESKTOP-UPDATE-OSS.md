@@ -53,8 +53,16 @@ OSS_PREFIX=releases
 pnpm resources:build
 pnpm preflight
 pnpm dist:win
+node scripts/verify-desktop-update.mjs --client 0.1.3 --expect 1.3.6 --old-version 0.1.3
+# 只在明确批准正式发布后执行：
 pnpm release:upload-oss
 ```
+
+`dist:win` 会在 NSIS 打包前生成并校验
+`release/win-unpacked/resources/app-update.yml`。缺少该文件、安装包、对应
+`.blockmap` 或 `latest.yml` 时必须停止发版，不得手工跳过。上传脚本先上传安装包与
+blockmap，完成公网读取和 Range 校验后，最后上传 `latest.yml`，避免客户端看到尚未
+准备完整的新版本。
 
 然后按脚本打印的核对清单：
 
@@ -62,7 +70,11 @@ pnpm release:upload-oss
 2. Zeabur api：`CENTRAL_LATEST_VERSION` = 本包版本  
 3. **仅重大不兼容**时抬高 `CENTRAL_FORCE_UPDATE_BELOW`  
 4. `CENTRAL_UPDATE_URL` 与客户端 `UPDATE_FEED_URL` 指向同一 OSS `releases/`  
-5. 可选填写 `CENTRAL_RELEASE_NOTES`，Redeploy api  
+5. `CENTRAL_RELEASE_NOTES` 与 `latest.yml` 使用相同的简短公告，Redeploy api
+
+当前 1.3.6 公告：
+
+> 修复桌面客户端更新失败问题，启用更快速的差分更新，并提升后续版本更新稳定性。
 
 ## 本地上传脚本
 
@@ -78,6 +90,29 @@ node scripts/upload-release-oss.mjs --dir release
 2. 旧版客户端：设置页「检查更新」能发现新版本并下载安装  
 3. 将 `CENTRAL_FORCE_UPDATE_BELOW` 抬到高于当前包版本时，启动应进入应用内强更下载并重启安装  
 4. `GET {CLOUD_API_URL}/api/central/manifest?client_version=0.0.1` 返回 JSON（非 404）
+
+## 已发布 0.1.3 / 1.3.5 的一次性修复
+
+这两个已发布安装包缺少 `resources/app-update.yml`，在下载阶段会报 `ENOENT`。
+旧代码无法从远端自行补上尚不存在的本地文件，因此先运行轻量修复脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/repair-desktop-updater.ps1 `
+  -InstallDir "E:\AI\cuocuo-ai"
+```
+
+脚本只执行以下动作：
+
+1. 确认目录内同时存在招财猫主程序和 `resources`；
+2. 备份内容不同的旧配置；
+3. 原子写入数行公开更新配置；
+4. 不修改业务文件、数据库、登录凭证或用户数据。
+
+完成后重启客户端，在「设置 → 应用更新」重新检查。OSS 必须继续保留旧版本安装包
+及其 `.blockmap`，electron-updater 才能根据新旧 blockmap 优先差分下载。若终端策略
+禁止 PowerShell 脚本，则直接运行 1.3.6 NSIS 安装包覆盖原目录；不要先卸载，也不要
+删除用户数据。
 
 ### 若云端 api 精简镜像仍缺 `/api/central/manifest`
 

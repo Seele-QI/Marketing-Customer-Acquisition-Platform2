@@ -27,6 +27,7 @@ const staticSrc = path.join(projectRoot, '.next', 'static');
 const publicSrc = path.join(projectRoot, 'public');
 const bgmSrc = path.join(projectRoot, 'assets', 'bgm');
 const mainPySrc = path.join(projectRoot, 'main.py');
+const libSrc = path.join(projectRoot, 'lib');
 const routesSrc = path.join(projectRoot, 'routes');
 const scriptsSrc = path.join(projectRoot, 'scripts');
 
@@ -37,18 +38,26 @@ const targetBgm = path.join(projectRoot, 'resources', 'bgm');
 const targetMainPy = path.join(projectRoot, 'resources', 'main.py');
 const targetRoutes = path.join(projectRoot, 'resources', 'routes');
 const targetScripts = path.join(projectRoot, 'resources', 'scripts');
+const pythonApplicationLibTargets = [
+  path.join(projectRoot, 'resources', 'python', 'lib'),
+  path.join(projectRoot, 'resources', 'runtime', 'darwin-arm64', 'python', 'applib', 'lib'),
+  path.join(projectRoot, 'resources', 'runtime', 'darwin-x64', 'python', 'applib', 'lib'),
+];
 
 console.log('[build-next-standalone] starting...');
 
-/* ============ Step 1: pnpm build ============ */
+/* ============ Step 1: Next build ============ */
 
 async function runBuild() {
-  console.log('[build-next-standalone] running pnpm build (desktop FASTAPI → 127.0.0.1:8010)...');
+  console.log('[build-next-standalone] running Next build (desktop FASTAPI → 127.0.0.1:8010)...');
+  const nextCli = path.join(projectRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
   return new Promise((resolve, reject) => {
-    const child = spawn('pnpm', ['build'], {
+    // Run the actual Next process. On Windows, `shell: true` can emit `exit`
+    // before the descendant has finished materializing .next/standalone.
+    const child = spawn(process.execPath, [nextCli, 'build'], {
       cwd: projectRoot,
       stdio: 'inherit',
-      shell: process.platform === 'win32',
+      shell: false,
       env: {
         ...process.env,
         // 构建期写入客户端 bundle + routes-manifest rewrites，避免落到 dev 默认 8000
@@ -56,9 +65,9 @@ async function runBuild() {
         NEXT_PUBLIC_FASTAPI_URL: 'http://127.0.0.1:8010',
       },
     });
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`pnpm build exit ${code}`));
+      else reject(new Error(`next build exit ${code}`));
     });
     child.on('error', reject);
   });
@@ -178,6 +187,29 @@ function copyServerExternalPackages() {
 
 copyServerExternalPackages();
 materializePnpmDeps();
+
+function syncPythonApplicationSources() {
+  if (!existsSync(libSrc)) {
+    throw new Error(`[build-next-standalone] missing Python application source: ${libSrc}`);
+  }
+
+  let synced = 0;
+  for (const targetLib of pythonApplicationLibTargets) {
+    if (!existsSync(targetLib)) continue;
+    console.log(`[build-next-standalone] syncing Python lib/ -> ${targetLib}`);
+    rmSync(targetLib, { recursive: true, force: true });
+    cpSync(libSrc, targetLib, { recursive: true });
+    synced += 1;
+  }
+
+  if (synced === 0) {
+    throw new Error(
+      '[build-next-standalone] no bundled Python application lib found; run build-python-bundle first',
+    );
+  }
+}
+
+syncPythonApplicationSources();
 
 /* ============ Step 5: main.py 复制 ============ */
 

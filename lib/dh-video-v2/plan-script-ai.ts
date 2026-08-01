@@ -1,42 +1,35 @@
 /**
- * 数字人视频创作（新）— 大模型分镜规划（GPT-5.5 优先，DeepSeek 兜底）
+ * 数字人视频创作（新）— 大模型分镜规划。
+ * 模型 URL、Key、Model 与调用顺序完全来自云端功能绑定。
  */
 
+import { readServerEnv } from "@/lib/server-env"
 import {
-  deepseekChatCompletion,
-  deepseekChatVisionCompletion,
-} from "@/lib/deepseek-chat"
-import { getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
-import {
-  DEFAULT_NEWAPI_CLAUDE_MODEL,
-  DEFAULT_NEWAPI_GPT_MODEL,
-} from "@/lib/llm/model-registry"
-import {
-  isSonettoProviderConfigured,
-  sonettoChatCompletion,
-  type SonettoContentPart,
-  type SonettoMessage,
-} from "@/lib/llm/sonetto-client"
+  completeCloudFeatureChat,
+  listCloudFeatureProviderCandidates,
+  type CloudChatContentPart,
+  type CloudChatMessage,
+  type CloudFeatureProviderCandidate,
+} from "@/lib/llm/cloud-feature-completion"
 import {
   assessScriptDuration,
   countScriptChars,
+  buildLocalScriptPlan,
   DH_V2_DIALOGUE_CHARS_MAX,
   DH_V2_DIALOGUE_CHARS_MIN,
   type DhV2ScriptPlan,
 } from "./script-plan"
 import { extractPlanJsonBlock, mergeAiPlanFromResponse } from "./plan-script-parse"
+import {
+  calculateDhV2PlanMaxTokens,
+  runDhV2PlanProviderChain,
+} from "./plan-provider-chain"
+const PLAN_LLM_TEMPERATURE = 0.2
+const DEFAULT_PLAN_PROVIDER_TIMEOUT_MS = 60_000
+const DEFAULT_PLAN_TOTAL_TIMEOUT_MS = 150_000
+const PLAN_SCRIPT_FEATURE_ID = "video.dh.plan_script"
 
-const DEFAULT_SONETTO_GPT_MODEL = DEFAULT_NEWAPI_GPT_MODEL
-const DEFAULT_SONETTO_CLAUDE_MODEL = DEFAULT_NEWAPI_CLAUDE_MODEL
-const PLAN_LLM_TEMPERATURE = 0.85
-
-export type DhV2PlanLlmProvider = "sonetto_gpt" | "sonetto_claude" | "deepseek"
-
-/** 分镜脚本：GPT-5.5 优先，DeepSeek 兜底；不使用 Claude */
-export const DH_V2_PLAN_LLM_PROVIDER_ORDER: DhV2PlanLlmProvider[] = [
-  "sonetto_gpt",
-  "deepseek",
-]
+export type DhV2PlanLlmProvider = string
 
 const SYSTEM_PROMPT = `你是一位精通 Seedance 2.0 的数字人视频导演。
 
@@ -86,27 +79,8 @@ export type DhV2PlanScriptAiResult =
   | { ok: true; plan: DhV2ScriptPlan; plan_source: DhV2PlanLlmProvider }
   | { ok: false; status: number; detail: string }
 
-function sonettoModelIdForProvider(provider: "sonetto_gpt" | "sonetto_claude"): string {
-  if (provider === "sonetto_gpt") {
-    return (
-      readServerEnv("DH_V2_PLAN_GPT_MODEL") ||
-      DEFAULT_SONETTO_GPT_MODEL
-    )
-  }
-  return (
-    readServerEnv("NEWAPI_CLAUDE_MODEL") ||
-    readServerEnv("SONETTO_CLAUDE_MODEL") ||
-    DEFAULT_SONETTO_CLAUDE_MODEL
-  )
-}
-
-function isProviderConfigured(provider: DhV2PlanLlmProvider): boolean {
-  if (provider === "deepseek") return Boolean(getDeepseekApiKey())
-  return isSonettoProviderConfigured(provider)
-}
-
-export function getAvailablePlanLlmProviders(): DhV2PlanLlmProvider[] {
-  return DH_V2_PLAN_LLM_PROVIDER_ORDER.filter(isProviderConfigured)
+export function getAvailablePlanLlmProviders(): CloudFeatureProviderCandidate[] {
+  return listCloudFeatureProviderCandidates(PLAN_SCRIPT_FEATURE_ID)
 }
 
 export function isLlmPlanAvailable(): boolean {
@@ -122,14 +96,6 @@ function toImageUrl(data: string): string {
   const raw = (data || "").trim()
   if (raw.startsWith("data:")) return raw
   return `data:image/jpeg;base64,${raw}`
-}
-
-function parseDataUrl(data: string): { mime: string; dataBase64: string } | null {
-  const raw = (data || "").trim()
-  const m = raw.match(/^data:([^;]+);base64,(.+)$/i)
-  if (m) return { mime: m[1], dataBase64: m[2].trim() }
-  if (raw) return { mime: "image/jpeg", dataBase64: raw }
-  return null
 }
 
 function buildUserText(input: DhV2PlanScriptAiInput): string {
@@ -149,14 +115,37 @@ function buildUserText(input: DhV2PlanScriptAiInput): string {
   return lines.join("\n")
 }
 
-function buildSonettoUserContent(input: DhV2PlanScriptAiInput): SonettoContentPart[] {
-  const parts: SonettoContentPart[] = []
+function buildCloudUserContent(input: DhV2PlanScriptAiInput): CloudChatContentPart[] {
+  const parts: CloudChatContentPart[] = []
   const imgs = (input.images_base64 || []).slice(0, 3)
   for (const img of imgs) {
     parts.push({ type: "image_url", image_url: { url: toImageUrl(img) } })
   }
   parts.push({ type: "text", text: buildUserText(input) })
   return parts
+}
+
+function readBoundedTimeout(name: string, fallback: number, max: number): number {
+  const raw = readServerEnv(name)
+  const parsed = Number(raw)
+  if (!raw || !Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.min(max, Math.max(5_000, Math.floor(parsed)))
+}
+
+export function readDhV2PlanProviderTimeoutMs(): number {
+  return readBoundedTimeout(
+    "DH_V2_PLAN_PROVIDER_TIMEOUT_MS",
+    DEFAULT_PLAN_PROVIDER_TIMEOUT_MS,
+    120_000,
+  )
+}
+
+export function readDhV2PlanTotalTimeoutMs(): number {
+  return readBoundedTimeout(
+    "DH_V2_PLAN_TOTAL_TIMEOUT_MS",
+    DEFAULT_PLAN_TOTAL_TIMEOUT_MS,
+    300_000,
+  )
 }
 
 function parsePlanFromLlmText(
@@ -187,61 +176,27 @@ function parsePlanFromLlmText(
   }
 }
 
-async function callSonettoPlan(
-  provider: "sonetto_gpt" | "sonetto_claude",
+async function callPlanProvider(
+  provider: CloudFeatureProviderCandidate,
   input: DhV2PlanScriptAiInput,
+  timeoutMs: number,
+  maxTokens: number,
 ): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
-  const modelId = sonettoModelIdForProvider(provider)
-  const messages: SonettoMessage[] = [
+  const messages: CloudChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: buildSonettoUserContent(input) },
+    { role: "user", content: buildCloudUserContent(input) },
   ]
-  const result = await sonettoChatCompletion({
-    modelId,
+  const result = await completeCloudFeatureChat({
+    providers: [provider],
     messages,
-    maxTokens: 8192,
+    maxTokens,
+    timeoutMs,
     temperature: PLAN_LLM_TEMPERATURE,
+    structuredJson: true,
+    disableReasoning: true,
   })
   if (!result.ok) return result
   return { ok: true, text: result.text }
-}
-
-async function callDeepseekPlan(
-  input: DhV2PlanScriptAiInput,
-): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
-  const userText = buildUserText(input)
-  const firstImg = (input.images_base64 || [])[0]
-  const parsed = firstImg ? parseDataUrl(firstImg) : null
-  const timeoutMs = 280_000
-
-  if (parsed) {
-    const result = await deepseekChatVisionCompletion(
-      SYSTEM_PROMPT,
-      userText,
-      { mime: parsed.mime, dataBase64: parsed.dataBase64 },
-      timeoutMs,
-    )
-    if (!result.ok) return result
-    return { ok: true, text: result.text }
-  }
-
-  const result = await deepseekChatCompletion(
-    [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userText },
-    ],
-    timeoutMs,
-  )
-  if (!result.ok) return result
-  return { ok: true, text: result.text }
-}
-
-async function callPlanProvider(
-  provider: DhV2PlanLlmProvider,
-  input: DhV2PlanScriptAiInput,
-): Promise<{ ok: true; text: string } | { ok: false; status: number; detail: string }> {
-  if (provider === "deepseek") return callDeepseekPlan(input)
-  return callSonettoPlan(provider, input)
 }
 
 /** 从 AI 文本中提取 JSON — 再导出供测试 */
@@ -259,30 +214,52 @@ export async function generateDhV2PlanWithLlm(
     return {
       ok: false,
       status: 503,
-      detail:
-        "未配置分镜大模型 API Key，请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY 中的至少一项",
+      detail: "云端未给 video.dh.plan_script 下发可用模型，请在模型配置中心绑定并启用模型。",
     }
   }
 
-  const errors: string[] = []
-  for (const provider of providers) {
-    const llm = await callPlanProvider(provider, input)
-    if (!llm.ok) {
-      errors.push(`${provider}: ${llm.detail}`)
-      continue
-    }
-    const parsed = parsePlanFromLlmText(input.script, llm.text)
-    if (!parsed.ok) {
-      errors.push(`${provider}: ${parsed.detail}`)
-      continue
-    }
-    return { ok: true, plan: parsed.plan, plan_source: provider }
-  }
+  const assessment = assessScriptDuration(input.script)
+  const maxTokens = calculateDhV2PlanMaxTokens(assessment.segment_count)
+  const providerById = new Map(providers.map((provider) => [String(provider.id), provider]))
+  const chain = await runDhV2PlanProviderChain({
+    providers: providers.map((provider) => String(provider.id)),
+    providerTimeoutMs: readDhV2PlanProviderTimeoutMs(),
+    totalTimeoutMs: readDhV2PlanTotalTimeoutMs(),
+    call: async (providerId, timeoutMs) => {
+      const provider = providerById.get(providerId)
+      if (!provider) {
+        return { ok: false as const, status: 503, detail: `云端模型 ${providerId} 不存在` }
+      }
+      const startedAt = Date.now()
+      const llm = await callPlanProvider(provider, input, timeoutMs, maxTokens)
+      const durationMs = Date.now() - startedAt
+      console.info(
+        `[dh-v2-plan] provider_id=${provider.id} provider=${provider.name} model=${provider.model} duration_ms=${durationMs} timeout_ms=${timeoutMs} ok=${llm.ok}`,
+      )
+      if (!llm.ok) return llm
+      const parsed = parsePlanFromLlmText(input.script, llm.text)
+      if (!parsed.ok) return { ok: false as const, status: 502, detail: parsed.detail }
+      return { ok: true as const, value: parsed.plan }
+    },
+  })
 
+  if (chain.ok) {
+    const provider = providerById.get(chain.provider)
+    return {
+      ok: true,
+      plan: chain.value,
+      plan_source: provider ? `${provider.name} / ${provider.model}` : chain.provider,
+    }
+  }
+  console.warn(`[dh-v2-plan] all cloud providers failed; using deterministic local plan: ${chain.detail}`)
   return {
-    ok: false,
-    status: 502,
-    detail: errors.join("；") || "所有大模型均未能生成分镜",
+    ok: true,
+    plan: buildLocalScriptPlan(
+      input.script,
+      input.creative_idea,
+      Boolean(input.has_audio_ref),
+    ),
+    plan_source: "本地可靠分镜（云模型暂不可用）",
   }
 }
 

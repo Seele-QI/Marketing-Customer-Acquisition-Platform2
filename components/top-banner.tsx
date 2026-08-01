@@ -52,13 +52,11 @@ function getBeijingTimeParts(): BeijingTimeParts {
 /* ------------------------------------------------------------------ */
 
 type TopBannerProps = {
-  userName?: string
   agentCount?: number
   hotTrendHighlightCount?: number
 }
 
 export function TopBanner({
-  userName = "各位朋友",
   agentCount = 8,
   hotTrendHighlightCount = 12,
 }: TopBannerProps) {
@@ -177,15 +175,15 @@ export function TopBanner({
         <div className="relative min-w-0 text-center md:text-left">
           <div className="mb-3 inline-flex animate-slide-up items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
             <Sparkles className="h-3 w-3 animate-pulse" />
-            ✨ 状态拉满 · AI超级中台工作站
+            全链路营销获客 · AI超级中台
           </div>
 
           <h1 className="animate-slide-up delay-100 text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-[28px] lg:text-[32px]">
-            {greeting}，<span className="shimmer-text">{userName}</span>，你的「AI超级中台」已经准备就绪
+            {greeting}，营销获客全链路，一个中台就够了
           </h1>
 
           <p className="mt-2 animate-slide-up delay-200 text-pretty text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
-            一人即可掌控全域增长——AI 数据洞察、脚本创作、视频生成一站完成。
+            从定位、文案、数字人口播到混剪成片与 GEO 获客，内容当天出、线索每天进。
           </p>
         </div>
 

@@ -22,7 +22,7 @@ const TEXT_EXTENSIONS = [".txt", ".md", ".markdown"]
 
 type Props = {
   docs: GeoUploadedDoc[]
-  onChange: (docs: GeoUploadedDoc[]) => void
+  onChange: (docs: GeoUploadedDoc[]) => Promise<void> | void
   className?: string
 }
 
@@ -84,18 +84,10 @@ async function extractViaApi(file: File): Promise<string> {
 
 export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
   const inputRef = React.useRef<HTMLInputElement>(null)
+  const busyRef = React.useRef(false)
   const [busyName, setBusyName] = React.useState<string | null>(null)
 
-  const processFile = async (file: File) => {
-    if (docs.length >= MAX_DOCUMENTS) {
-      toast({
-        title: "已达上限",
-        description: `最多上传 ${MAX_DOCUMENTS} 份资料`,
-        variant: "destructive",
-      })
-      return
-    }
-
+  const processFile = async (file: File): Promise<GeoUploadedDoc | null> => {
     if (!isSupportedDocumentName(file.name)) {
       const ext = getExtension(file.name)
       toast({
@@ -106,7 +98,7 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
             : `请上传 Word (.docx) / PDF / TXT / MD`,
         variant: "destructive",
       })
-      return
+      return null
     }
 
     if (file.size > MAX_DOCUMENT_BYTES) {
@@ -115,7 +107,7 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
         description: `${file.name} 超过 20MB`,
         variant: "destructive",
       })
-      return
+      return null
     }
 
     setBusyName(file.name)
@@ -126,7 +118,7 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
 
       if (!text.trim()) {
         toast({ title: "文件为空", description: file.name, variant: "destructive" })
-        return
+        return null
       }
       const entry: GeoUploadedDoc = {
         name: file.name,
@@ -134,26 +126,52 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
         text,
         preview: makePreview(text),
       }
-      onChange([...docs, entry])
-      toast({ title: "文档已添加", description: file.name })
+      return entry
     } catch (err) {
       toast({
         title: "解析失败",
         description: err instanceof Error ? err.message : file.name,
         variant: "destructive",
       })
+      return null
     } finally {
       setBusyName(null)
     }
   }
 
-  const handleFiles = (files: FileList | null) => {
-    if (!files) return
-    Array.from(files).forEach((f) => void processFile(f))
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || busyRef.current) return
+    const candidates = Array.from(files).slice(0, Math.max(0, MAX_DOCUMENTS - docs.length))
+    if (candidates.length < files.length) {
+      toast({ title: "已达上限", description: `最多上传 ${MAX_DOCUMENTS} 份资料`, variant: "destructive" })
+    }
+    if (!candidates.length) return
+    busyRef.current = true
+    try {
+      const added: GeoUploadedDoc[] = []
+      for (const file of candidates) {
+        const entry = await processFile(file)
+        if (entry) added.push(entry)
+      }
+      if (added.length) {
+        await onChange([...docs, ...added])
+        toast({ title: "文档已添加", description: `已保存 ${added.length} 份企业资料` })
+      }
+    } catch (err) {
+      toast({ title: "资料保存失败", description: err instanceof Error ? err.message : "请重试", variant: "destructive" })
+    } finally {
+      busyRef.current = false
+      setBusyName(null)
+    }
   }
 
-  const removeDoc = (index: number) => {
-    onChange(docs.filter((_, i) => i !== index))
+  const removeDoc = async (index: number) => {
+    if (busyRef.current) return
+    try {
+      await onChange(docs.filter((_, i) => i !== index))
+    } catch (err) {
+      toast({ title: "资料移除失败", description: err instanceof Error ? err.message : "请重试", variant: "destructive" })
+    }
   }
 
   return (
@@ -185,7 +203,7 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
-          handleFiles(e.dataTransfer.files)
+          void handleFiles(e.dataTransfer.files)
         }}
         onClick={() => inputRef.current?.click()}
         onKeyDown={(e) => {
@@ -210,9 +228,10 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
         type="file"
         accept={ACCEPTED_DOCUMENT_EXTENSIONS}
         multiple
+        disabled={Boolean(busyName)}
         className="hidden"
         onChange={(e) => {
-          handleFiles(e.target.files)
+          void handleFiles(e.target.files)
           e.target.value = ""
         }}
       />
@@ -237,10 +256,11 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
               </div>
               <button
                 type="button"
+                disabled={Boolean(busyName)}
                 aria-label={`移除 ${d.name}`}
                 onClick={(e) => {
                   e.stopPropagation()
-                  removeDoc(i)
+                  void removeDoc(i)
                 }}
                 className="shrink-0 text-slate-400 opacity-60 transition-opacity hover:text-red-500 group-hover:opacity-100"
               >
@@ -254,7 +274,7 @@ export function GeoDocUploadPanel({ docs, onChange, className }: Props) {
       {docs.length === 0 && (
         <p className="mt-2 flex items-center gap-1 text-[10px] text-amber-600/80 dark:text-amber-400/70">
           <AlertCircle className="h-3 w-3" />
-          上传资料可提升 Skill 质量；也可仅用实体信息生成
+          上传后自动提取企业事实；资料缺失项会标记待补充，不要求手工整理
         </p>
       )}
     </div>

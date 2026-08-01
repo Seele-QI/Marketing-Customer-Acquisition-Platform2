@@ -1,12 +1,8 @@
 import type { GeoScores } from "@/lib/geo/geo-scores"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
 
 export type ScoreArticleRequest = {
-  provider: LlmProviderId
   markdown: string
-  modelSkillId?: string | null
-  viralSkillIds?: string[]
-  enterpriseSnapshot?: string | null
+  projectId: string
   platformId?: string | null
 }
 

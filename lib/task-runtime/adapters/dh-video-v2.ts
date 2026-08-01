@@ -105,8 +105,13 @@ export const dhVideoV2Adapter: TaskAdapter = {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (/尚未接入|501|not_found/i.test(msg)) {
+      if (/尚未接入|501|not_found|task not found|404/i.test(msg)) {
         return { type: "not_found", error: msg }
+      }
+      if (/无法连接|网络|network|failed to fetch|fetch failed|load failed|超时|timeout/i.test(msg)) {
+        // 交给 TaskRuntime 的错误计数与退避重试；短暂切页、服务热重启或网络抖动
+        // 不应把仍在上游执行的视频任务立即标记为失败。
+        throw e
       }
       return { type: "failed", error: msg }
     }

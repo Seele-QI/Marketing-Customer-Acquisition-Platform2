@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useLoginRequired } from "@/components/auth/login-required-provider"
 import {
   Sparkles,
   Loader2,
@@ -10,15 +11,19 @@ import {
   Star,
   Save,
   Pencil,
+  ShieldCheck,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { GeoLlmProviderSelect } from "@/components/geo/geo-llm-provider-select"
 import type { GeoUploadedDoc } from "@/components/geo/geo-doc-upload-panel"
 import type { GeoEntityData } from "@/lib/geo/entity-types"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
+import {
+  EMPTY_OFFICIAL_CONTACT,
+  firstOfficialContactIssue,
+} from "@/lib/geo/official-contact"
 import {
   addEnterpriseSkill,
   listEnterpriseSkills,
@@ -33,11 +38,18 @@ type Props = {
   entity: GeoEntityData | null
   documents: GeoUploadedDoc[]
   className?: string
+  onContactValidationError?: (fieldId: string) => void
 }
 
-export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) {
+export function GeoSkillGeneratorPanel({
+  entity,
+  documents,
+  className,
+  onContactValidationError,
+}: Props) {
+  const { me } = useLoginRequired()
+  const accountScope = me ? `user-${me.user.id}` : null
   const [skillName, setSkillName] = React.useState("")
-  const [provider, setProvider] = React.useState<LlmProviderId>("deepseek")
   const [generating, setGenerating] = React.useState(false)
   const [preview, setPreview] = React.useState<EnterpriseSkill | null>(null)
   const [previewOpen, setPreviewOpen] = React.useState(true)
@@ -48,8 +60,8 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
   const [editContent, setEditContent] = React.useState("")
 
   const refreshSkills = React.useCallback(() => {
-    setSavedSkills(listEnterpriseSkills())
-  }, [])
+    setSavedSkills(accountScope ? listEnterpriseSkills(accountScope) : [])
+  }, [accountScope])
 
   React.useEffect(() => {
     refreshSkills()
@@ -61,6 +73,21 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
 
   const handleGenerate = async () => {
     if (!canGenerate) return
+    const contactIssue = firstOfficialContactIssue(
+      entity?.officialContact ?? EMPTY_OFFICIAL_CONTACT,
+    )
+    if (contactIssue) {
+      toast({
+        title: "请完善官方联系方式",
+        description: contactIssue.message,
+        variant: "destructive",
+      })
+      onContactValidationError?.(contactIssue.fieldId)
+      window.requestAnimationFrame(() => {
+        document.getElementById(contactIssue.fieldId)?.focus()
+      })
+      return
+    }
     setGenerating(true)
     setPreview(null)
     setEditingId(null)
@@ -70,7 +97,6 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          provider,
           skillName: skillName.trim(),
           entity: entity ?? {
             companyName: "",
@@ -79,6 +105,10 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
             authorityLinks: [],
             authorityPages: [],
             faqs: [],
+            officialContact: {
+              ...EMPTY_OFFICIAL_CONTACT,
+              primary: { ...EMPTY_OFFICIAL_CONTACT.primary },
+            },
           },
           documents: documents.map((d) => ({ name: d.name, text: d.text })),
         }),
@@ -102,7 +132,12 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
       if (!data.skill) throw new Error("响应缺少 skill")
       setPreview(data.skill)
       setPreviewOpen(true)
-      toast({ title: "Skill 已生成", description: "可直接编辑正文后保存" })
+      toast({
+        title: data.skill.quality?.passed ? "Skill 已生成并通过质量验收" : "Skill 已生成",
+        description: data.skill.quality
+          ? `质量分数 ${data.skill.quality.score}，可预览后保存`
+          : "可直接编辑正文后保存",
+      })
     } catch (err) {
       toast({
         title: "生成失败",
@@ -115,14 +150,14 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
   }
 
   const handleSavePreview = () => {
-    if (!preview) return
+    if (!preview || !accountScope) return
     const content = preview.content.trim()
     if (!content) {
       toast({ title: "保存失败", description: "Skill 正文不能为空", variant: "destructive" })
       return
     }
     try {
-      addEnterpriseSkill({ ...preview, content })
+      addEnterpriseSkill(accountScope, { ...preview, content })
       refreshSkills()
       toast({ title: "已保存", description: preview.label })
       setPreview(null)
@@ -151,9 +186,9 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
   }
 
   const handleSaveEdited = () => {
-    if (!editingId) return
+    if (!editingId || !accountScope) return
     try {
-      updateEnterpriseSkill(editingId, {
+      updateEnterpriseSkill(accountScope, editingId, {
         label: editLabel,
         description: editDescription,
         content: editContent,
@@ -171,14 +206,16 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
   }
 
   const handleRemove = (id: string) => {
+    if (!accountScope) return
     if (editingId === id) cancelEditSaved()
-    removeEnterpriseSkill(id)
+    removeEnterpriseSkill(accountScope, id)
     refreshSkills()
     toast({ title: "已删除" })
   }
 
   const handleSetDefault = (id: string) => {
-    setDefaultEnterpriseSkill(id)
+    if (!accountScope) return
+    setDefaultEnterpriseSkill(accountScope, id)
     refreshSkills()
     toast({ title: "已设为默认" })
   }
@@ -207,10 +244,6 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
             placeholder="例：某某科技 GEO 知识库"
             className="h-9 text-[13px]"
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-[11px] font-medium text-slate-500">大模型</label>
-          <GeoLlmProviderSelect value={provider} onChange={setProvider} disabled={generating} />
         </div>
         <Button
           type="button"
@@ -278,15 +311,55 @@ export function GeoSkillGeneratorPanel({ entity, documents, className }: Props) 
             </div>
           </div>
           {previewOpen && (
-            <Textarea
-              value={preview.content}
-              onChange={(e) =>
-                setPreview((p) => (p ? { ...p, content: e.target.value } : p))
-              }
-              className="min-h-64 max-h-96 resize-y rounded-none border-0 bg-transparent p-3 font-mono text-[11px] leading-relaxed text-slate-600 focus-visible:ring-0 dark:text-slate-400"
-              spellCheck={false}
-              aria-label="Skill 正文（可编辑）"
-            />
+            <>
+              {preview.quality && (
+                <div
+                  className={cn(
+                    "border-b px-3 py-2.5 dark:border-white/5",
+                    preview.quality.passed
+                      ? "border-emerald-100 bg-emerald-50/60 dark:bg-emerald-500/10"
+                      : "border-amber-100 bg-amber-50/60 dark:bg-amber-500/10",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    {preview.quality.passed ? (
+                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                    )}
+                    <span className="font-medium text-slate-700 dark:text-slate-200">
+                      {preview.quality.passed ? "质量验收通过" : "质量验收待处理"}
+                    </span>
+                    <span className="text-slate-500">
+                      质量分数 {preview.quality.score}/100
+                    </span>
+                    {preview.quality.repaired && (
+                      <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300">
+                        已自动修复
+                      </span>
+                    )}
+                  </div>
+                  {preview.quality.issues.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-[10px] text-amber-700 dark:text-amber-300">
+                      {preview.quality.issues.map((issue) => (
+                        <li key={issue}>· {issue}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <Textarea
+                value={preview.content}
+                onChange={(e) =>
+                  setPreview((p) => (
+                    p ? { ...p, content: e.target.value, quality: undefined } : p
+                  ))
+                }
+                className="min-h-64 max-h-96 resize-y rounded-none border-0 bg-transparent p-3 font-mono text-[11px] leading-relaxed text-slate-600 focus-visible:ring-0 dark:text-slate-400"
+                spellCheck={false}
+                aria-label="Skill 正文（可编辑）"
+              />
+            </>
           )}
         </div>
       )}

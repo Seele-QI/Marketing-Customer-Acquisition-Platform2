@@ -13,11 +13,56 @@ import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { getMachineId } from './machine-id';
 import logger from './logger';
 
+export type SyncedProvider = {
+  id: number;
+  kind: string;
+  name: string;
+  adapter: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  extra?: Record<string, unknown>;
+  priority: number;
+};
+
+export type SyncedFeature = {
+  feature_id: string;
+  label?: string;
+  category?: string;
+  enabled?: boolean;
+  billing_mode?: string;
+  scene?: string;
+  billing_key?: string;
+  unit_cost?: number | null;
+  economy_cost?: number | null;
+  premium_cost?: number | null;
+  segment_unit_cost?: number | null;
+  price_version?: number;
+  provider_ids?: number[];
+};
+
 export interface CredentialData {
   machine_id: string;
   config_version: string;
   synced_at: number;
   keys: Record<string, string>;
+  /** 结构化渠道列表（可选；旧缓存可能没有） */
+  providers?: SyncedProvider[];
+  /** 功能目录快照（可选） */
+  features?: SyncedFeature[];
+}
+
+export function isValidSyncedProvider(value: unknown): value is SyncedProvider {
+  if (!value || typeof value !== 'object') return false;
+  const provider = value as Record<string, unknown>;
+  return Number.isFinite(provider.id)
+    && typeof provider.kind === 'string' && Boolean(provider.kind.trim())
+    && typeof provider.name === 'string'
+    && typeof provider.adapter === 'string' && Boolean(provider.adapter.trim())
+    && typeof provider.base_url === 'string' && Boolean(provider.base_url.trim())
+    && typeof provider.api_key === 'string' && Boolean(provider.api_key.trim())
+    && typeof provider.model === 'string' && Boolean(provider.model.trim())
+    && Number.isFinite(provider.priority);
 }
 
 function credentialsPath(): string {
@@ -36,14 +81,35 @@ export function loadCredentials(): CredentialData | null {
     const mid = getMachineId();
     const plain = decryptCredentials(blob, mid);
     const data = JSON.parse(plain) as CredentialData;
-    if (!data.keys || typeof data.keys !== 'object' || !Object.keys(data.keys).length) {
-      logger.warn('credential store: missing keys');
+    const keysValid = data.keys === undefined || (
+      data.keys !== null
+      && typeof data.keys === 'object'
+      && !Array.isArray(data.keys)
+      && Object.values(data.keys).every((value) => typeof value === 'string')
+    );
+    const providersValid = data.providers === undefined || (
+      Array.isArray(data.providers) && data.providers.every(isValidSyncedProvider)
+    );
+    const featuresValid = data.features === undefined || (
+      Array.isArray(data.features)
+      && data.features.every((f) => f && typeof f === 'object' && typeof (f as SyncedFeature).feature_id === 'string')
+    );
+    if (!keysValid || !providersValid || !featuresValid) {
+      logger.warn('credential store: invalid credential shape');
+      return null;
+    }
+    data.keys ??= {};
+    const hasKeys = Object.keys(data.keys).length > 0;
+    const hasProviders = Boolean(data.providers?.length);
+    if (!hasKeys && !hasProviders) {
+      logger.warn('credential store: missing keys and providers');
       return null;
     }
     logger.info(
-      'credential store: loaded OK, version=%s synced_at=%s',
+      'credential store: loaded OK, version=%s synced_at=%s providers=%s',
       data.config_version || 'unknown',
       data.synced_at ? new Date(data.synced_at).toISOString() : 'n/a',
+      Array.isArray(data.providers) ? data.providers.length : 0,
     );
     return data;
   } catch (err) {

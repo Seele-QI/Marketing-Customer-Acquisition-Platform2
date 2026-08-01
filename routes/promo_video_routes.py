@@ -69,6 +69,12 @@ async def _safe_run_promo_storyboard(task_id: str, story_req) -> None:
             if not task.get("failed_stage"):
 
                 task["failed_stage"] = task.get("stage") or STAGE_PV_FAILED
+    finally:
+        task = _promo_video_task_store.get(task_id)
+        if task:
+            from main import POST_PROCESS_ROOT
+            from lib.promo_video_service import persist_storyboard_task_to_disk
+            persist_storyboard_task_to_disk(task, POST_PROCESS_ROOT)
 
 
 
@@ -220,6 +226,9 @@ async def promo_video_submit(req: Request):
         "failed_stage": "",
 
     }
+    from main import POST_PROCESS_ROOT
+    from lib.promo_video_service import persist_storyboard_task_to_disk
+    persist_storyboard_task_to_disk(_promo_video_task_store[task_id], POST_PROCESS_ROOT)
 
 
 

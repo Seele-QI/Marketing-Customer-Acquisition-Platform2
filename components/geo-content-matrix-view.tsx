@@ -11,7 +11,6 @@ import { GeoMatrixGrid } from "@/components/geo/matrix/geo-matrix-grid"
 import { GeoMatrixCellDrawer } from "@/components/geo/matrix/geo-matrix-cell-drawer"
 import type { MatrixCell, MatrixProject } from "@/lib/geo/matrix-types"
 import { DEFAULT_MATRIX_PLATFORM_IDS, getMatrixPlatformLabel } from "@/lib/geo/matrix-platforms"
-import type { LlmProviderId } from "@/lib/geo/llm/router"
 import { generateMatrixProject, updateMatrixProject } from "@/lib/geo/matrix-api"
 import { getEnterpriseSkillEntry } from "@/lib/geo/skills-registry"
 import { useLoginRequired } from "@/components/auth/login-required-provider"
@@ -19,10 +18,10 @@ import { useLoginRequired } from "@/components/auth/login-required-provider"
 export function GeoContentMatrixView() {
   const { me, loggedIn, authUnavailable, refreshAuth, promptLogin } = useLoginRequired()
   const authLoading = me === undefined
+  const accountScope = me ? `user-${me.user.id}` : null
   const [project, setProject] = React.useState<MatrixProject | null>(null)
   const [platforms, setPlatforms] = React.useState<string[]>(DEFAULT_MATRIX_PLATFORM_IDS)
   const [activePlatform, setActivePlatform] = React.useState<string | null>(null)
-  const [provider, setProvider] = React.useState<LlmProviderId>("deepseek")
   const [modelSkillId, setModelSkillId] = React.useState<string | null>(null)
   const [viralSkillIds, setViralSkillIds] = React.useState<string[]>([])
   const [enterpriseSkillId, setEnterpriseSkillId] = React.useState<string | null>(null)
@@ -39,7 +38,6 @@ export function GeoContentMatrixView() {
     setModelSkillId(p.modelSkillId)
     setViralSkillIds(p.viralSkillIds ?? [])
     setEnterpriseSkillId(p.enterpriseSkillId)
-    setProvider((p.provider as LlmProviderId) || "deepseek")
     setGenerated(Boolean(p.matrix?.platforms?.length))
     const first = p.platforms?.[0] ?? p.matrix?.platforms?.[0]?.platformId ?? null
     setActivePlatform(first)
@@ -57,9 +55,8 @@ export function GeoContentMatrixView() {
     setGenerating(true)
     setError(null)
     try {
-      const ent = getEnterpriseSkillEntry(enterpriseSkillId)
+      const ent = accountScope ? getEnterpriseSkillEntry(accountScope, enterpriseSkillId) : undefined
       const updated = await generateMatrixProject(project.id, {
-        provider,
         platforms,
         modelSkillId,
         viralSkillIds,
@@ -112,14 +109,13 @@ export function GeoContentMatrixView() {
 
   React.useEffect(() => {
     if (!project || !loggedIn) return
-    const ent = getEnterpriseSkillEntry(enterpriseSkillId)
+    const ent = accountScope ? getEnterpriseSkillEntry(accountScope, enterpriseSkillId) : undefined
     const t = window.setTimeout(() => {
       void updateMatrixProject(project.id, {
         platforms,
         modelSkillId,
         viralSkillIds,
         enterpriseSkillId,
-        provider,
         ...(enterpriseSkillId
           ? { enterpriseSnapshot: ent?.content ?? null }
           : { clearEnterpriseSnapshot: true }),
@@ -133,15 +129,16 @@ export function GeoContentMatrixView() {
     modelSkillId,
     viralSkillIds,
     enterpriseSkillId,
-    provider,
+    accountScope,
   ])
 
   return (
     <GeoWorkflowPage>
+      <div data-tutorial-id="geo-matrix-view">
       <GeoWorkflowHero
         title="内容"
         accentWord="矩阵规划"
-        description="多项目两周 Sprint：选平台、配 AI 引擎与企业知识库，一键生成跨平台关联内容矩阵。"
+        description="多项目两周 Sprint：选平台、配内容策略与企业知识库，云端智能调度生成跨平台关联矩阵。"
       />
 
       {authUnavailable && !authLoading && (
@@ -196,7 +193,7 @@ export function GeoContentMatrixView() {
 
       {loggedIn && !project && (
         <p className="mb-4 rounded-xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 text-[13px] text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
-          请先新建或选择一个矩阵项目，再配置平台与 AI 引擎。
+          请先新建或选择一个矩阵项目，再配置发布平台与内容策略。
         </p>
       )}
 
@@ -205,8 +202,6 @@ export function GeoContentMatrixView() {
           <GeoMatrixConfigPanel
             selectedPlatforms={platforms}
             onPlatformsChange={setPlatforms}
-            provider={provider}
-            onProviderChange={setProvider}
             modelSkillId={modelSkillId}
             onModelChange={setModelSkillId}
             viralSkillIds={viralSkillIds}
@@ -250,6 +245,7 @@ export function GeoContentMatrixView() {
         onCellSave={(cell) => void handleCellSave(cell)}
         saving={cellSaving}
       />
+      </div>
     </GeoWorkflowPage>
   )
 }

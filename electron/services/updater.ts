@@ -6,10 +6,12 @@
  * - Feed：UPDATE_FEED_URL / CENTRAL_UPDATE_URL，或 electron-builder.yml publish
  */
 
-import { ipcMain, app, dialog, BrowserWindow } from 'electron';
+import { ipcMain, app, dialog, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import * as path from 'node:path';
 import logger from './logger';
 import type { TrayController } from './tray-controller';
 import { toFriendlyUpdateError } from '../utils/friendly-update-error';
+import { ensureUpdateConfigPath } from './update-config';
 
 export type UpdateStatus =
   | 'idle'
@@ -36,6 +38,7 @@ let trayRef: TrayController | null = null;
 let autoUpdater: any = null;
 let quietCheck = false;
 let broadcastWin: BrowserWindow | null = null;
+let updateConfigurationError: string | undefined;
 let updateState: UpdateState = {
   status: 'idle',
   currentVersion: '',
@@ -114,6 +117,22 @@ export function setupAutoUpdater(tray: TrayController) {
   }
 
   const feed = resolveFeedUrl();
+  try {
+    const config = ensureUpdateConfigPath({
+      packagedConfigPath: path.join(process.resourcesPath, 'app-update.yml'),
+      fallbackConfigPath: path.join(app.getPath('userData'), 'updater', 'app-update.yml'),
+      feedUrl: feed,
+    });
+    au.updateConfigPath = config.path;
+    updateConfigurationError = undefined;
+    logger.info('updater: config', config.source, config.path);
+  } catch (err) {
+    updateConfigurationError =
+      err instanceof Error ? err.message : '更新配置缺失，请覆盖安装新版客户端';
+    logger.error('updater: config unavailable', updateConfigurationError);
+    setState({ status: 'error', error: updateConfigurationError });
+  }
+
   if (feed && feed !== '/') {
     try {
       au.setFeedURL({ provider: 'generic', url: feed });
@@ -129,6 +148,7 @@ export function setupAutoUpdater(tray: TrayController) {
   au.autoDownload = false;
   au.autoInstallOnAppQuit = true;
   au.allowDowngrade = false;
+  au.disableDifferentialDownload = false;
 
   au.on('checking-for-update', () => {
     logger.info('updater: checking...');
@@ -201,7 +221,7 @@ export function setupAutoUpdater(tray: TrayController) {
 /** 启动时安静检查一次（不打扰「已是最新」） */
 export function checkForUpdatesQuiet() {
   const au = getAutoUpdater();
-  if (!au || !app.isPackaged) return;
+  if (!au || !app.isPackaged || updateConfigurationError) return;
   quietCheck = true;
   au.checkForUpdates()
     .catch((err: Error) => logger.warn('updater quiet check failed', err?.message || err))
@@ -413,26 +433,35 @@ export async function enforceManifestForceUpdate(cloudApiBase: string): Promise<
   }
 }
 
-export function registerUpdaterIpc() {
-  ipcMain.handle('get-app-version', () => app.getVersion());
+export function registerUpdaterIpc(requireTrusted: (event: IpcMainInvokeEvent) => void) {
+  ipcMain.handle('get-app-version', (event) => {
+    requireTrusted(event);
+    return app.getVersion();
+  });
 
-  ipcMain.handle('get-app-info', () => {
+  ipcMain.handle('get-app-info', (event) => {
+    requireTrusted(event);
     const feed = resolveFeedUrl();
     return {
       version: app.getVersion(),
       isPackaged: app.isPackaged,
-      feedConfigured: Boolean(feed && feed !== '/'),
+      feedConfigured: !updateConfigurationError,
     };
   });
 
-  ipcMain.handle('get-update-status', () => ({
-    ...updateState,
-    currentVersion: updateState.currentVersion || app.getVersion(),
-  }));
+  ipcMain.handle('get-update-status', (event) => {
+    requireTrusted(event);
+    return {
+      ...updateState,
+      currentVersion: updateState.currentVersion || app.getVersion(),
+    };
+  });
 
-  ipcMain.handle('check-for-update', async () => {
+  ipcMain.handle('check-for-update', async (event) => {
+    requireTrusted(event);
     const au = getAutoUpdater();
     if (!au) return { ok: false, error: 'electron-updater 未安装' };
+    if (updateConfigurationError) return { ok: false, error: updateConfigurationError };
     if (!app.isPackaged) {
       return { ok: false, error: '开发模式不支持自动更新，请使用打包安装包验收' };
     }
@@ -454,9 +483,11 @@ export function registerUpdaterIpc() {
     }
   });
 
-  ipcMain.handle('download-update', async () => {
+  ipcMain.handle('download-update', async (event) => {
+    requireTrusted(event);
     const au = getAutoUpdater();
     if (!au) return { ok: false, error: 'electron-updater 未安装' };
+    if (updateConfigurationError) return { ok: false, error: updateConfigurationError };
     if (!app.isPackaged) {
       return { ok: false, error: '开发模式不支持自动更新' };
     }
@@ -472,7 +503,8 @@ export function registerUpdaterIpc() {
     }
   });
 
-  ipcMain.handle('install-update', () => {
+  ipcMain.handle('install-update', (event) => {
+    requireTrusted(event);
     const au = getAutoUpdater();
     if (au) au.quitAndInstall(true, true);
     return { ok: Boolean(au) };

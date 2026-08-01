@@ -1,11 +1,12 @@
 /**
- * 宣传视频 — Seedance 2.0 提示词自动生成（ChatGPT / Sonetto GPT）
- * 使用宣传视频专用叙事分镜运镜 skill：lib/promo-video/prompt-system.ts
+ * 宣传视频 — Seedance 2.0 提示词自动生成。
+ * URL、Key、Model 与优先级完全由云端模型配置下发。
  */
 
-import { DEFAULT_NEWAPI_GPT_MODEL } from "@/lib/llm/model-registry"
-import { isSonettoProviderConfigured, sonettoChatCompletion } from "@/lib/llm/sonetto-client"
-import { readServerEnv } from "@/lib/server-env"
+import {
+  completeCloudFeatureChat,
+  listCloudFeatureProviderCandidates,
+} from "@/lib/llm/cloud-feature-completion"
 import {
   PROMO_SEEDANCE_PROMPT_SYSTEM,
   buildPromoAutoPromptUserMessage,
@@ -24,13 +25,8 @@ export type PromoAutoPromptResult =
   | { ok: true; prompt: string }
   | { ok: false; status: number; detail: string }
 
-function gptModelId(): string {
-  return (
-    readServerEnv("NEWAPI_GPT_MODEL") ||
-    readServerEnv("SONETTO_GPT_MODEL") ||
-    DEFAULT_NEWAPI_GPT_MODEL
-  )
-}
+const PROMO_FEATURE_ID = "video.promo.storyboard"
+const PROMO_TIMEOUT_MS = 120_000
 
 export function buildPromoAutoPromptRequest(input: PromoAutoPromptInput): PromoAutoPromptRequest {
   return {
@@ -43,20 +39,19 @@ export function buildPromoAutoPromptRequest(input: PromoAutoPromptInput): PromoA
 }
 
 export function isPromoAutoPromptAvailable(): boolean {
-  return isSonettoProviderConfigured("sonetto_gpt")
+  return listCloudFeatureProviderCandidates(PROMO_FEATURE_ID).length > 0
 }
 
+/** @deprecated 名称保留兼容 */
 export async function generatePromoAutoPromptWithGpt(
   input: PromoAutoPromptInput,
 ): Promise<PromoAutoPromptResult> {
-  if (!isPromoAutoPromptAvailable()) {
-    return {
-      ok: false,
-      status: 503,
-      detail: "未配置 NEWAPI_KEY 或 SONETTO_GPT_API_KEY，无法调用 ChatGPT 生成提示词",
-    }
-  }
+  return generatePromoAutoPrompt(input)
+}
 
+export async function generatePromoAutoPrompt(
+  input: PromoAutoPromptInput,
+): Promise<PromoAutoPromptResult> {
   const script = input.promo_script.trim()
   if (!script) {
     return { ok: false, status: 400, detail: "请填写宣传文案" }
@@ -72,25 +67,27 @@ export async function generatePromoAutoPromptWithGpt(
     return { ok: false, status: 400, detail: "请至少选择 1 张分镜" }
   }
 
+  const providers = listCloudFeatureProviderCandidates(PROMO_FEATURE_ID)
+  if (providers.length === 0) {
+    return {
+      ok: false,
+      status: 503,
+      detail: "云端未给宣传视频分镜功能下发可用模型，请在模型配置中心绑定并启用模型。",
+    }
+  }
+
   const req = buildPromoAutoPromptRequest({ ...input, duration, selected_count: selectedCount })
   const userMessage = buildPromoAutoPromptUserMessage(req)
-
-  const result = await sonettoChatCompletion({
-    modelId: gptModelId(),
+  const result = await completeCloudFeatureChat({
+    providers,
     messages: [
       { role: "system", content: PROMO_SEEDANCE_PROMPT_SYSTEM },
       { role: "user", content: userMessage },
     ],
     maxTokens: 4096,
+    timeoutMs: PROMO_TIMEOUT_MS,
     temperature: 0.85,
   })
-
   if (!result.ok) return result
-
-  const prompt = result.text.trim()
-  if (!prompt) {
-    return { ok: false, status: 502, detail: "AI 返回空提示词" }
-  }
-
-  return { ok: true, prompt }
+  return { ok: true, prompt: result.text }
 }

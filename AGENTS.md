@@ -56,7 +56,9 @@
 |---|---|---|---|
 | `TIANAPI_KEY` | `main.py:fetch_trends` | ✅ | 全网热搜 API |
 | `DEEPSEEK_API_KEY` | `main.py` / `app/api/ai/...` | ✅ | 对话/润色/回退识图 |
-| `RUNNINGHUB_API_KEY` | `main.py:_get_rh_client` | ✅ | 数字人视频生成 |
+| `RUNNINGHUB_API_KEY` | `main.py:_get_rh_client` | ✅ | 国内站数字人视频与音频工作流 |
+| `RUNNINGHUB_IMAGE_API_KEY` | `main.py:_get_rh_client` | 图片生成必填 | 海外站图片工作台、视频封面图与 GEO 文章插图；不得回退国内站密钥 |
+| `RUNNINGHUB_IMAGE_BASE_URL` | `lib/runninghub_client.py` | 可选 | 海外图片服务基址，默认 `https://www.runninghub.ai/openapi/v2` |
 | `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ 生产 | 浏览器直连 API |
 | `FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ Docker/PaaS | Next 服务端 proxy 内网地址 |
 | `EMAIL_HASH_SALT` | `lib/auth.py` | ✅ | 邮箱哈希盐（32 字节 hex）|
@@ -66,6 +68,7 @@
 | `CREDIT_ADMIN_ACCESS_KEY` | `main.py:_require_admin_key` | ✅ | 积分后台管理密钥 |
 | `NEWAPI_BASE_URL` | `lib/llm/sonetto-client.ts` | 可选 | aicost NewAPI 基址，默认 `https://www.aicost.xyz` |
 | `NEWAPI_KEY` | `lib/llm/sonetto-client.ts` | 可选 | GPT + Claude 统一 Key（`SONETTO_*` 为兼容别名） |
+| `DH_V2_PLAN_PROVIDER_TIMEOUT_MS` / `DH_V2_PLAN_TOTAL_TIMEOUT_MS` | `lib/dh-video-v2/plan-script-ai.ts` | 可选 | 分镜 AI 单渠道/整条回退链等待上限，默认 60 秒/150 秒 |
 | `CREDIT_METERED_KEY` | `main.py:consume-metered` | Sonetto 启用时必填 | 计量扣费服务端密钥 |
 | `RESEND_API_KEY` | `lib/email.py` | ✅ | 邮件投递服务 |
 | `RESEND_FROM` | `lib/email.py` | ✅ | 发件人地址（需在 Resend 后台验证）|
@@ -87,6 +90,9 @@
 | `FASTAPI_URL` | 客户端连 FastAPI | 可选 | 默认 `http://127.0.0.1:8000` |
 | `CORS_ALLOW_ORIGINS` | `main.py` | 可选 | 跨域白名单，逗号分隔 |
 | `SHARE_API_TOKEN` | 生产环境 share API | 生产必填 | 分享 API Bearer Token |
+| `COOKIE_ENCRYPTION_KEY` | `lib/crypto_utils.py` / Electron 主进程 | 独立 FastAPI 必填 | 安装版按设备自动生成并加密保存；独立部署时手动配置至少 32 字符 |
+| `PLAYWRIGHT_BROWSERS_PATH` | `lib/playwright_env.py` | 可选 | Chromium 自定义安装或打包目录 |
+| `PUBLISH_TIMEOUT_S` | `lib/publisher/manager.py` | 可选 | 单平台发布超时，默认 900 秒 |
 
 | `CREDIT_DB_OVERRIDE` | `lib/db.py` | 生产推荐 | SQLite 数据库文件路径（默认 `<project>/data/accounts.db`）|
 | `DATA_DIR` | `main.py` | 生产推荐 | 上传文件 / 视频缓存持久化根目录（默认 `<project>/public/video-cache`）|
@@ -105,10 +111,12 @@
 - **生产机推荐**：改为绝对路径，例如 `/opt/agenthub/bgm` 或 `/data/bgm`
 - **配套逻辑**：[lib/video_postprocess.py:_pick_bgm_for_duration](lib/video_postprocess.py) 会按视频裁剪时长选最接近的 BGM；超长则自动 `-c copy` 截断
 
-#### `DEEPSEEK_API_KEY` / `RUNNINGHUB_API_KEY`
+#### `DEEPSEEK_API_KEY` / `RUNNINGHUB_API_KEY` / `RUNNINGHUB_IMAGE_API_KEY`
 
-- 这两个是项目最关键的两个 AI 服务 Key，缺一不可
-- 各自配错会触发 503 错误并在 `main.py` / `app/api/ai/...` 抛 `HTTPException`
+- `RUNNINGHUB_API_KEY` 服务国内站数字人视频与音频工作流。
+- `RUNNINGHUB_IMAGE_API_KEY` 服务海外站图片工作台、视频封面图与 GEO 文章插图，桌面端固定从本地 `resources/.env` 读取。
+- 国内与海外密钥严格分流；图片链路缺少海外密钥时返回产品级配置错误，不回退 `RUNNINGHUB_API_KEY`。
+- 密钥配错会触发 503 或上游鉴权错误，并由浏览器端统一转换为产品级错误文案。
 
 #### `CREDIT_ADMIN_ACCESS_KEY`
 
@@ -129,7 +137,7 @@
 
 **本地 Docker 测试**：
 ```bash
-docker build -f Dockerfile.api -t zhongtai-api . && docker run -p 8000:8000 -v zhongtai-data:/data -e DEEPSEEK_API_KEY=sk-xxx -e RUNNINGHUB_API_KEY=xxx zhongtai-api
+docker build -f Dockerfile.api -t zhongtai-api . && docker run -p 8000:8000 -v zhongtai-data:/data -e DEEPSEEK_API_KEY=sk-xxx -e RUNNINGHUB_API_KEY=xxx -e RUNNINGHUB_IMAGE_API_KEY=xxx -e RUNNINGHUB_IMAGE_BASE_URL=https://www.runninghub.ai/openapi/v2 zhongtai-api
 docker build -f Dockerfile.web -t zhongtai-web . && docker run -p 3000:3000 -e NEXT_PUBLIC_FASTAPI_URL=http://host.docker.internal:8000 zhongtai-web
 ```
 
@@ -143,6 +151,8 @@ docker build -f Dockerfile.web -t zhongtai-web . && docker run -p 3000:3000 -e N
 - [ ] `DEV_EMAIL_MODE=0`（生产必须）
 - [ ] `APP_PUBLIC_BASE` 改为生产域名
 - [ ] `SHARE_API_TOKEN` 配置（如启用一键分享）
+- [ ] 独立部署 FastAPI 时配置强随机 `COOKIE_ENCRYPTION_KEY`；Electron 安装版无需手工配置
+- [ ] 安装 Playwright Chromium：`python -m playwright install chromium`
 - [ ] `CORS_ALLOW_ORIGINS` 配置生产前端域名
 - [ ] `RESEND_FROM` 改为已验证的域名地址
 
@@ -233,3 +243,39 @@ npx tsc --noEmit
 - `_FFMPEG_EXE` / `_FFPROBE_EXE` 优先用 `tools/ffmpeg/bin/`，但仓库内未自带二进制（部署时需补）
 - `burn_subtitle_ffmpeg` 的 3 个 dead 分支已删除，但保留 `has_audio_stream` no-op 调用以兼容旧 test mock
 - BGM 截断后的临时文件保留在 `output_dir/`，未做清理（避免与 ffmpeg 调试产物混淆）
+
+---
+
+## 企业智能体团队
+
+- 角色注册表：`lib/agents/registry.ts`（1 位总协调官、10 个企业部门、4 位行业专家）
+- Skill 与系统合同：`lib/agents/skills.ts`、`lib/agents/prompts.ts`
+- 云模型自动路由：`lib/agents/model-router.ts`，禁止信任客户端模型 ID
+- 主责/会签编排：`lib/agents/orchestrator.ts`，最多 3 位会签
+- 持久化：`lib/agent_team_store.py`、`routes/agent_team_routes.py`
+- 附件：图片最多 6 张、文档最多 5 份、单文件 20MB；支持 PDF/DOCX/XLSX/PPTX/TXT/MD/CSV
+- 工具权限：T0 只读、T1 内部草稿、T2 人工审批、T3 永久阻断
+- 完整运维说明：`docs/agent-team-operations.md`
+
+内部知识检索、运行事件和审批执行证据依赖 `CREDIT_METERED_KEY`。团队智能体接入模型始终由云端同步配置下发，前端不得展示模型选择器。
+
+## 功能工作台与业务助理
+
+- 工作台首页保留 `TopBanner`，核心入口为：视频创作、GEO 创作、图片工作台、抖音截流（预留）、身份定位。
+- 业务助理注册表：`lib/business-assistant/registry.ts`。当前仅启用 `video-creation` 与 `geo-growth`；`douyin-interception` 只预留，身份定位和图片工作台不注册助理。
+- 全局悬浮助理：`lib/business-assistant/context.tsx`、`components/business-assistant-shell.tsx`，在根页面单例挂载，切换业务页面不会重置。
+- 项目、计划和对话持久化：`lib/business_assistant_store.py`、`routes/business_assistant_routes.py`。
+- 视频/GEO 助理均读取 `global + positioning` 共享记忆，并分别追加 `video` 或 `geo` 专业记忆，禁止跨专业范围混用。
+- 助理只允许建议导航和计划变更；生成、积分扣费、发布和外部触达必须在对应业务页面由用户确认。
+- 图片工作台下分“海报图创作”和“图片创作”，共享 `/api/image-workbench/*`、RunningHub G-2 任务管线和双候选图结果；无参考图走文生图，有参考图走图生图。海报最多上传 2 张固定角色参考图（主体图、风格图），图片创作最多上传 4 张可排序参考图并支持主体保持、仅参考风格、融合重绘。两板块分别使用 `poster_image` 与 `image_creation` 云端计费场景，当前均为 20 积分；不注册业务助理，不新增环境变量。旧 `/api/poster/*` 暂保留兼容。
+- 底层图片供应商及模型商品名属于内部运维信息，禁止出现在图片工作台页面、浏览器安全错误、加载状态或帮助文案中；浏览器统一使用“创作服务”“图片生成引擎”“候选图”等产品级名称。
+
+## GEO 文章自动插图
+
+- “深度优化文章创作”在“每组合篇数”旁提供“每篇插图”设置，默认 `0`，范围 `0..5`；选择按矩阵项目持久化。
+- 浏览器仅调用 `/api/geo/article-illustrations/generate|status|retry`。锚点、提示词、平台比例和 `1k` 分辨率均由服务端确定，客户端不得提交模型、供应商或工作流参数。
+- 文章成功后才创建插图任务；文本文章不等待图片完成。单篇文章共用一个可恢复任务，成功图片通过稳定 HTML marker 幂等插入最新 Markdown，失败图片仅显示非阻塞“重试插图”。
+- FastAPI 图片并发全局上限为 `6`，每张图片最多初次调用加 `2` 次重试；缓存位于 `<DATA_DIR>/video-cache/geo-article-illustrations/<user-scope>/<project>/<article>/`，公开路径为 `/static/geo-article-illustrations/...`。
+- 任务状态、计费引用、本地文章和缓存路径均按用户、矩阵项目、文章与插图 ID 隔离。切换页面只停止本地轮询，返回项目后按原 task ID 自动恢复。
+- 桌面端国内/海外 RunningHub 配置固定从本地 `resources/.env` 注入 FastAPI 子进程，云端配置快照不得覆盖 `RUNNINGHUB_API_KEY`、`RUNNINGHUB_IMAGE_API_KEY` 与 `RUNNINGHUB_IMAGE_BASE_URL`。源码、浏览器错误和日志不得包含密钥值。
+- 图片工作台继续保留双候选图合同；GEO 文章插图每个锚点只保留一张最终图，不提供候选图、模型或工作流选择器。

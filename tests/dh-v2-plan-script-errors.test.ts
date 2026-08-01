@@ -3,31 +3,30 @@ import assert from "node:assert/strict"
 import { formatDhVideoV2Error } from "../lib/dh-video-v2/api.ts"
 
 describe("dh-v2 plan-script error formatting", () => {
-  it("preserves PLAN_LLM_NOT_CONFIGURED with actionable desktop hint", () => {
-    const msg = formatDhVideoV2Error("未配置分镜大模型 API Key", 503, {
+  it("preserves the cloud model binding error without replacing it with legacy env hints", () => {
+    const msg = formatDhVideoV2Error("云端未给分镜功能下发可用模型", 503, {
       code: "PLAN_LLM_NOT_CONFIGURED",
-      message: "未配置分镜大模型 API Key",
+      message: "云端未给分镜功能下发可用模型",
     })
-    assert.match(msg, /桌面安装包/)
-    assert.match(msg, /NEWAPI_KEY|DEEPSEEK/)
+    assert.match(msg, /云端/)
+    assert.doesNotMatch(msg, /NEWAPI_KEY|DEEPSEEK_API_KEY/)
     assert.equal(msg.includes("引擎 API 密钥无效"), false)
   })
 
-  it("does not flatten generic API Key failures that mention 分镜", () => {
+  it("does not flatten a cloud plan configuration failure", () => {
     const msg = formatDhVideoV2Error(
-      "未配置分镜大模型 API Key，请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY",
+      "未配置分镜大模型：云端功能未绑定模型",
       503,
     )
-    assert.match(msg, /分镜/)
-    assert.equal(msg, "未配置分镜大模型 API Key。桌面安装包请先登录并等待云端配置同步；开发机请配置 NEWAPI_KEY 或 DEEPSEEK_API_KEY。")
+    assert.equal(msg, "未配置分镜大模型：云端功能未绑定模型")
   })
 
-  it("annotates 502 NewAPI / DeepSeek failures as egress/proxy issues", () => {
+  it("annotates provider network failures as local network or proxy issues", () => {
     const msg = formatDhVideoV2Error(
       "sonetto_gpt: NewAPI(primary) 报错: timeout；deepseek: 调用 AI 模型失败: fetch failed",
       502,
       { code: "PLAN_LLM_ALL_FAILED" },
     )
-    assert.match(msg, /外网不通或代理干扰/)
+    assert.match(msg, /本机网络或代理连接异常/)
   })
 })

@@ -15,7 +15,6 @@ import {
   X,
 } from "lucide-react"
 
-import { AiModelPicker, useAiModels } from "@/components/ai-model-picker"
 import { PositioningQuestionCard } from "@/components/ip-positioning/positioning-question-card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -44,7 +43,6 @@ import {
 } from "@/lib/ip-positioning-store"
 import {
   INTAKE_GROUPS,
-  IP_POSITIONING_ALLOWED_MODELS,
   STAGE_OPTIONS,
   type StageId,
 } from "@/lib/ip-positioning-skill"
@@ -68,21 +66,11 @@ type Props = {
   onSubmit: (payload: {
     intake: IpPositioningIntake
     files: UploadedFile[]
-    modelId: string
   }) => Promise<void>
   analyzing: boolean
 }
 
 export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
-  const { models, modelId, setModelId, loaded } = useAiModels()
-  const ipModels = React.useMemo(
-    () =>
-      models.filter((m) =>
-        (IP_POSITIONING_ALLOWED_MODELS as readonly string[]).includes(m.id),
-      ),
-    [models],
-  )
-
   const [step, setStep] = React.useState(0)
   const [intake, setIntake] = React.useState<IpPositioningIntake>(EMPTY_INTAKE)
   const [files, setFiles] = React.useState<UploadedFile[]>([])
@@ -120,27 +108,13 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
   }, [])
 
   React.useEffect(() => {
-    if (!loaded || ipModels.length === 0 || !hydrated) return
-    const saved = loadIpPositioningSession()?.modelId
-    if (saved && ipModels.some((m) => m.id === saved && m.configured)) {
-      setModelId(saved)
-      return
-    }
-    const preferred = ipModels.find((m) => m.id === "gpt-5.5" && m.configured)
-    const fallback = ipModels.find((m) => m.configured)
-    if (preferred) setModelId(preferred.id)
-    else if (fallback) setModelId(fallback.id)
-  }, [loaded, ipModels, setModelId, hydrated])
-
-  React.useEffect(() => {
     if (!hydrated) return
     saveIpPositioningSession({
       wizardStep: step,
       intake,
-      modelId,
       fileRefs,
     })
-  }, [hydrated, step, intake, modelId, fileRefs])
+  }, [hydrated, step, intake, fileRefs])
 
   const totalSteps = INTAKE_GROUPS.length + 1
   const isStageStep = step === 0
@@ -259,7 +233,7 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
       if (missingBase64) {
         submitFiles = await hydrateIpDocuments(fileRefs)
       }
-      await onSubmit({ intake, files: submitFiles, modelId })
+      await onSubmit({ intake, files: submitFiles })
     } catch (e) {
       const message = e instanceof Error ? e.message : "提交失败"
       setSubmitError(message)
@@ -267,30 +241,22 @@ export function PositioningIntakeWizard({ onSubmit, analyzing }: Props) {
     } finally {
       if (!analyzing) setSubmitting(false)
     }
-  }, [analyzing, fileRefs, files, intake, modelId, onSubmit])
+  }, [analyzing, fileRefs, files, intake, onSubmit])
 
   const isBusy = analyzing || submitting
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          {Array.from({ length: totalSteps }).map((_, i) => (
-            <span
-              key={i}
-              className={cn(
-                "h-2 w-8 rounded-full transition-colors",
-                i <= step ? "bg-amber-500" : "bg-slate-200 dark:bg-white/10",
-              )}
-            />
-          ))}
-        </div>
-        <AiModelPicker
-          modelId={modelId}
-          onChange={setModelId}
-          models={ipModels.length > 0 ? ipModels : models}
-          disabled={analyzing}
-        />
+    <div className="space-y-6" data-tutorial-id="ip-positioning-wizard">
+      <div className="flex items-center gap-2">
+        {Array.from({ length: totalSteps }).map((_, i) => (
+          <span
+            key={i}
+            className={cn(
+              "h-2 w-8 rounded-full transition-colors",
+              i <= step ? "bg-amber-500" : "bg-slate-200 dark:bg-white/10",
+            )}
+          />
+        ))}
       </div>
 
       {isStageStep ? (

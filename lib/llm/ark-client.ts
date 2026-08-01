@@ -3,11 +3,12 @@
  * 密钥不在此文件；见 ARK_API_KEY / ARK_CHAT_MODEL 等环境变量。
  *
  * 桌面端：Key 可由云端 POST /api/config/sync 下发（白名单须含
- * ARK_API_KEY、ARK_CHAT_MODEL、ARK_BASE_URL）。
+ * ARK_API_KEY、ARK_CHAT_MODEL、ARK_BASE_URL）；或 MODEL_PROVIDERS_JSON_B64（ark_chat）。
  */
 
 import { normalizeArkBaseUrl } from "@/lib/ark-images-api"
 import { DOUBAO_SEED_21_MODEL_ID } from "@/lib/llm/model-registry"
+import { listSyncedLlmArk } from "@/lib/llm/synced-providers"
 import { readServerEnv } from "@/lib/server-env"
 
 export const DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
@@ -21,33 +22,82 @@ export type ArkChatMessage = {
   content: string | ArkChatContentPart[]
 }
 
+export type ArkChatEndpoint = {
+  name: string
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
 /** 仅当用户把接入点误写在 ARK_API_KEY 时做推断（ep- 开头）。 */
 export function inferEndpointIdFromRawArkKey(raw: string): string {
   const t = raw.trim()
   return /^ep-/i.test(t) ? t : ""
 }
 
-export function resolveArkBearer(): string {
+/** 结构化 ark_chat 优先（任意数量）；否则回退 ARK_* env。 */
+export function listArkChatEndpoints(): ArkChatEndpoint[] {
+  const synced = listSyncedLlmArk()
+  if (synced.length) {
+    const out: ArkChatEndpoint[] = []
+    const seen = new Set<string>()
+    for (const p of synced) {
+      const baseUrl =
+        normalizeArkBaseUrl(p.base_url) || DEFAULT_ARK_BASE_URL
+      const apiKey = p.api_key.trim()
+      if (!apiKey) continue
+      const sig = `${baseUrl}|${apiKey}`
+      if (seen.has(sig)) continue
+      seen.add(sig)
+      out.push({
+        name: p.name || `ark_${out.length + 1}`,
+        baseUrl,
+        apiKey,
+        model: (p.model || "").trim() || DOUBAO_SEED_21_MODEL_ID,
+      })
+    }
+    return out
+  }
+
   const rawArkKey = readServerEnv("ARK_API_KEY")
   const arkSecret =
     readServerEnv("ARK_API_SECRET") || readServerEnv("VOLCENGINE_API_KEY")
-  return (arkSecret || rawArkKey).trim()
+  const apiKey = (arkSecret || rawArkKey).trim()
+  if (!apiKey) return []
+  const model =
+    readServerEnv("ARK_CHAT_MODEL") ||
+    readServerEnv("ARK_ENDPOINT_ID") ||
+    readServerEnv("ARK_MODEL") ||
+    inferEndpointIdFromRawArkKey(rawArkKey) ||
+    DOUBAO_SEED_21_MODEL_ID
+  return [
+    {
+      name: "primary",
+      baseUrl:
+        normalizeArkBaseUrl(readServerEnv("ARK_BASE_URL") || DEFAULT_ARK_BASE_URL) ||
+        DEFAULT_ARK_BASE_URL,
+      apiKey,
+      model,
+    },
+  ]
+}
+
+function primaryArkEndpoint(): ArkChatEndpoint | null {
+  const eps = listArkChatEndpoints()
+  return eps[0] || null
+}
+
+export function resolveArkBearer(): string {
+  return primaryArkEndpoint()?.apiKey || ""
 }
 
 /**
- * 模型解析顺序：ARK_CHAT_MODEL → ARK_ENDPOINT_ID → ARK_MODEL →
- * 从误写在 Key 上的 ep- 推断 → 默认豆包 Seed 2.1 Pro 预置 ID。
+ * 模型解析顺序：显式 override → 同步/env 首渠 → 默认豆包 Seed 2.1 Pro。
  */
 export function getArkChatModelId(override?: string): string {
   const explicit = (override || "").trim()
   if (explicit) return explicit
-  return (
-    readServerEnv("ARK_CHAT_MODEL") ||
-    readServerEnv("ARK_ENDPOINT_ID") ||
-    readServerEnv("ARK_MODEL") ||
-    inferEndpointIdFromRawArkKey(readServerEnv("ARK_API_KEY")) ||
-    DOUBAO_SEED_21_MODEL_ID
-  )
+  return primaryArkEndpoint()?.model || DOUBAO_SEED_21_MODEL_ID
 }
 
 export function isArkChatConfigured(): boolean {
@@ -55,9 +105,11 @@ export function isArkChatConfigured(): boolean {
 }
 
 export function buildArkChatCompletionsUrl(baseUrl?: string): string {
+  const fromEp = primaryArkEndpoint()?.baseUrl
   const base =
-    normalizeArkBaseUrl(baseUrl || readServerEnv("ARK_BASE_URL") || DEFAULT_ARK_BASE_URL) ||
-    DEFAULT_ARK_BASE_URL
+    normalizeArkBaseUrl(
+      baseUrl || fromEp || readServerEnv("ARK_BASE_URL") || DEFAULT_ARK_BASE_URL,
+    ) || DEFAULT_ARK_BASE_URL
   return `${base}/chat/completions`
 }
 
@@ -130,7 +182,7 @@ export function buildArkStreamChatRequest(input: {
 
 /**
  * 火山方舟 OpenAI 兼容 Chat Completions（非流式）。
- * 支持纯文本与 image_url 多模态。
+ * 支持纯文本与 image_url 多模态；多渠时按 priority 故障切换。
  */
 export async function arkChatCompletionNonStream(input: {
   system: string
@@ -142,10 +194,8 @@ export async function arkChatCompletionNonStream(input: {
 }): Promise<
   { ok: true; text: string } | { ok: false; status: number; detail: string }
 > {
-  const bearer = resolveArkBearer()
-  const modelId = getArkChatModelId(input.modelId)
-
-  if (!bearer) {
+  const endpoints = listArkChatEndpoints()
+  if (!endpoints.length) {
     return {
       ok: false,
       status: 503,
@@ -154,87 +204,104 @@ export async function arkChatCompletionNonStream(input: {
     }
   }
 
-  const url = buildArkChatCompletionsUrl()
   const timeoutMs = input.timeoutMs ?? 120_000
   const userContent =
-    typeof input.userParts === "string"
-      ? input.userParts
-      : input.userParts
+    typeof input.userParts === "string" ? input.userParts : input.userParts
 
-  const body: Record<string, unknown> = {
-    model: modelId,
-    stream: false,
-    messages: [
-      { role: "system", content: input.system },
-      { role: "user", content: userContent },
-    ],
-  }
-  if (input.maxTokens != null) body.max_tokens = input.maxTokens
-  if (input.temperature != null) body.temperature = input.temperature
+  let lastFail: { ok: false; status: number; detail: string } | null = null
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  for (const ep of endpoints) {
+    const modelId = (input.modelId || "").trim() || ep.model
+    const url = buildArkChatCompletionsUrl(ep.baseUrl)
+    const body: Record<string, unknown> = {
+      model: modelId,
+      stream: false,
+      messages: [
+        { role: "system", content: input.system },
+        { role: "user", content: userContent },
+      ],
+    }
+    if (input.maxTokens != null) body.max_tokens = input.maxTokens
+    if (input.temperature != null) body.temperature = input.temperature
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    const rawText = await res.text()
-    let parsed: unknown
     try {
-      parsed = JSON.parse(rawText) as unknown
-    } catch {
-      return {
-        ok: false,
-        status: 502,
-        detail: `AI 平台返回非 JSON（HTTP ${res.status}）：${rawText.slice(0, 400)}`,
-      }
-    }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ep.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
 
-    if (!res.ok) {
-      const msg = extractUpstreamError(parsed, rawText)
-      const status = res.status >= 400 && res.status < 600 ? res.status : 502
-      return {
-        ok: false,
-        status,
-        detail: `AI 识图/对话失败（${res.status}）：${msg}`,
+      const rawText = await res.text()
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(rawText) as unknown
+      } catch {
+        lastFail = {
+          ok: false,
+          status: 502,
+          detail: `AI 平台返回非 JSON（HTTP ${res.status}）：${rawText.slice(0, 400)}`,
+        }
+        if (res.status >= 500 || res.status === 429) continue
+        return lastFail
       }
-    }
 
-    const text = extractArkAssistantText(parsed)
-    if (!text) {
-      return {
-        ok: false,
-        status: 502,
-        detail:
-          "AI 平台返回成功但未解析到助手正文，请确认模型为支持多模态的豆包 Seed 2.1（或对应视觉接入点）。",
+      if (!res.ok) {
+        const msg = extractUpstreamError(parsed, rawText)
+        const status = res.status >= 400 && res.status < 600 ? res.status : 502
+        lastFail = {
+          ok: false,
+          status,
+          detail: `AI 识图/对话失败（${res.status}）：${msg}`,
+        }
+        if (res.status >= 500 || res.status === 429) continue
+        return lastFail
       }
-    }
-    return { ok: true, text }
-  } catch (e) {
-    const aborted =
-      (typeof DOMException !== "undefined" &&
-        e instanceof DOMException &&
-        e.name === "AbortError") ||
-      (e instanceof Error && e.name === "AbortError")
-    if (aborted) {
-      return {
-        ok: false,
-        status: 504,
-        detail: `请求超过 ${timeoutMs / 1000}s 未返回，请缩小参考图后重试。`,
+
+      const text = extractArkAssistantText(parsed)
+      if (!text) {
+        lastFail = {
+          ok: false,
+          status: 502,
+          detail:
+            "AI 平台返回成功但未解析到助手正文，请确认模型为支持多模态的豆包 Seed 2.1（或对应视觉接入点）。",
+        }
+        continue
       }
+      return { ok: true, text }
+    } catch (e) {
+      const aborted =
+        (typeof DOMException !== "undefined" &&
+          e instanceof DOMException &&
+          e.name === "AbortError") ||
+        (e instanceof Error && e.name === "AbortError")
+      if (aborted) {
+        lastFail = {
+          ok: false,
+          status: 504,
+          detail: `请求超过 ${timeoutMs / 1000}s 未返回，请缩小参考图后重试。`,
+        }
+        continue
+      }
+      const msg = e instanceof Error ? e.message : String(e)
+      lastFail = { ok: false, status: 502, detail: `调用 AI 视觉服务失败: ${msg}` }
+    } finally {
+      clearTimeout(timer)
     }
-    const msg = e instanceof Error ? e.message : String(e)
-    return { ok: false, status: 502, detail: `调用 AI 视觉服务失败: ${msg}` }
-  } finally {
-    clearTimeout(timer)
   }
+
+  return (
+    lastFail || {
+      ok: false,
+      status: 502,
+      detail: "所有豆包渠道均调用失败",
+    }
+  )
 }

@@ -3,13 +3,21 @@
  * 后端对应实现：lib/credit.py:list_redeem_code_batches 返回的 dict 结构
  */
 export type LedgerItem = {
-  id: number
+  id: number | string
   type: string
   delta: number
   balance_after: number
   ref_id: string
   note: string
   created_at: number
+  entry_kind?: "ledger" | "business_task"
+  business_type?: string
+  business_task_id?: string
+  breakdown?: Array<{
+    stage: string
+    label: string
+    amount: number
+  }>
 }
 
 export type Batch = {

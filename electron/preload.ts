@@ -5,6 +5,14 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ServiceRuntimeStatus } from './services/service-runtime-status';
+
+type ClientErrorReportPayload = {
+  category: 'network' | 'local_service' | 'cloud_service' | 'timeout' | 'unknown'
+  requestPath: string
+  status?: number
+  timestamp: string
+}
 
 type UpdateProgressPayload = {
   percent?: number
@@ -55,6 +63,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 云端 Key 同步（登录后由渲染进程触发）
   syncConfig: () => ipcRenderer.invoke('config:sync'),
+  getServiceRuntimeStatus: (): Promise<ServiceRuntimeStatus> => (
+    ipcRenderer.invoke('service-runtime:get-status')
+  ),
+  onServiceRuntimeStatus: (handler: (payload: ServiceRuntimeStatus) => void) => {
+    const listener = (_event: unknown, payload: ServiceRuntimeStatus) => handler(payload);
+    ipcRenderer.on('service-runtime:status', listener);
+    return () => ipcRenderer.removeListener('service-runtime:status', listener);
+  },
+  restartApp: () => ipcRenderer.invoke('app:restart'),
+  reportClientError: (payload: ClientErrorReportPayload) => (
+    ipcRenderer.invoke('client-error:report', payload)
+  ),
 
   onAuthRequireLogin: (handler: (payload: { message?: string }) => void) => {
     const listener = (_event: unknown, payload: { message?: string }) => {

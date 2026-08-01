@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 
 import httpx
+from lib.runninghub_network import runninghub_async_transport
 from PIL import Image
 
 logger = logging.getLogger("promo_video")
@@ -141,7 +142,11 @@ RH_TRANSIENT_RETRIES = 3
 
 def _promo_http_client(**kwargs) -> httpx.AsyncClient:
     """直连 RH / COS，避免 Windows 系统代理导致九宫格图下载 ConnectError。"""
-    return httpx.AsyncClient(trust_env=False, **kwargs)
+    return httpx.AsyncClient(
+        trust_env=False,
+        transport=runninghub_async_transport(),
+        **kwargs,
+    )
 
 
 def _is_transient_http_error(exc: BaseException) -> bool:
@@ -764,16 +769,27 @@ def recover_storyboard_task_from_disk(
     tid = (task_id or "").strip()
     if not tid:
         return None
+    task_dir = os.path.join(post_process_root, tid)
+    state_path = os.path.join(task_dir, "task_state.json")
+    state: dict = {}
+    if os.path.isfile(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as sf:
+                loaded = json.load(sf)
+            if isinstance(loaded, dict) and loaded.get("task_id") == tid:
+                state = loaded
+        except (OSError, ValueError):
+            logger.exception("failed to load promo task state: %s", tid)
     frames_dir = os.path.join(post_process_root, tid, "frames")
-    if not os.path.isdir(frames_dir):
+    if not os.path.isdir(frames_dir) and not state:
         return None
 
     names = sorted(
         f
-        for f in os.listdir(frames_dir)
+        for f in (os.listdir(frames_dir) if os.path.isdir(frames_dir) else [])
         if f.lower().startswith("frame_") and f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
     )
-    if not names:
+    if not names and not state:
         return None
 
     frame_paths = [os.path.abspath(os.path.join(frames_dir, n)) for n in names]
@@ -789,18 +805,53 @@ def recover_storyboard_task_from_disk(
         except OSError:
             audio_b64 = ""
 
-    return {
+    recovered = {
+        **state,
         "task_id": tid,
-        "status": "storyboard_ready",
         "frame_paths": frame_paths,
         "frame_urls": frame_urls,
-        "frame_count": len(frame_paths),
-        "promo_script": (promo_script or "").strip(),
-        "duration": max(15, int(duration or 15)),
-        "ratio": (ratio or "adaptive").strip() or "adaptive",
+        "frame_count": len(frame_paths) or int(state.get("frame_count") or 0),
+        "promo_script": (state.get("promo_script") or promo_script or "").strip(),
+        "duration": max(15, int(state.get("duration") or duration or 15)),
+        "ratio": (state.get("ratio") or ratio or "adaptive").strip() or "adaptive",
         "audio_base64": audio_b64,
         "recovered_from_disk": True,
     }
+    if names:
+        recovered.update(status="storyboard_ready", progress=100, error="", failed_stage="")
+    elif recovered.get("status") not in {"storyboard_ready", "storyboard_failed"}:
+        recovered.update(
+            status="storyboard_failed",
+            error="本地生成服务曾重启，分镜任务记录已恢复，请重新生成分镜。",
+            failed_stage=recovered.get("stage") or "pv_failed",
+        )
+    return recovered
+
+
+def persist_storyboard_task_to_disk(task: dict, post_process_root: str) -> None:
+    """Atomically persist lightweight storyboard state and optional audio sample."""
+    tid = str(task.get("task_id") or "").strip()
+    if not tid:
+        return
+    task_dir = os.path.join(post_process_root, tid)
+    os.makedirs(task_dir, exist_ok=True)
+    audio_b64 = str(task.get("audio_base64") or "").strip()
+    if audio_b64:
+        try:
+            encoded = audio_b64.split(",", 1)[1] if ";base64," in audio_b64 else audio_b64
+            with open(os.path.join(task_dir, "reference_audio.bin"), "wb") as af:
+                af.write(base64.b64decode(encoded))
+        except (OSError, ValueError):
+            logger.exception("failed to persist promo audio sample: %s", tid)
+    state = {key: value for key, value in task.items() if key != "audio_base64"}
+    tmp_path = os.path.join(task_dir, f".task_state.{os.getpid()}.tmp")
+    state_path = os.path.join(task_dir, "task_state.json")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as sf:
+            json.dump(state, sf, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, state_path)
+    except (OSError, TypeError, ValueError):
+        logger.exception("failed to persist promo task state: %s", tid)
 
 
 def resolve_frame_paths(

@@ -67,4 +67,18 @@ resources/.env
 app-builder-cache/
 electron-builder-cache/
 
+# Local isolated development worktrees
+.worktrees/
+
 # 用户数据（prod 安装后的 userData/，不入 git）
+# Runtime browser sessions and local publisher state contain cookies/tokens.
+data/profiles/
+data/temp/
+data/*cookies.json
+data/distribution-dev-secret
+
+# Local workflow scratch state and generated desktop bundles.
+.superpowers/
+.build-tools/
+release-new/
+release-run/

@@ -5,11 +5,12 @@ import { cn } from "@/lib/utils"
 import { DashboardSidebar, type MainView } from "@/components/dashboard-sidebar"
 import { TopHeader } from "@/components/top-header"
 import { DashboardView } from "@/components/dashboard-view"
-import { ChatWorkspace } from "@/components/chat-workspace"
+import { TeamChatWorkspace } from "@/components/agents/team-chat-workspace"
 import { CopywritingChatWorkspace } from "@/components/copywriting-chat-workspace"
 import CopywritingExtractView from "@/components/copywriting-extract-view"
 import { VideoWorkspace } from "@/components/video/video-workspace"
 import { GeoWorkspace } from "@/components/geo/geo-workspace"
+import { DistributionWorkspace } from "@/components/distribution/distribution-workspace"
 import {
   VIDEO_VIEWS,
   DEFAULT_VIDEO_VIEW,
@@ -18,6 +19,7 @@ import {
   type VideoView,
 } from "@/lib/video/workspace"
 import { getGeoBreadcrumb, isGeoView } from "@/lib/geo/workspace"
+import { getDistributionBreadcrumb, isDistributionView } from "@/lib/distribution/workspace"
 import { AgentCenter } from "@/components/agent-center"
 import { AccountPositioning } from "@/components/account-positioning"
 import { SettingsView } from "@/components/settings-view"
@@ -26,14 +28,20 @@ import { CreditRechargeView } from "@/components/credit-recharge-view"
 import { AdminCreditView } from "@/components/admin-credit-view"
 import { BackToTop } from "@/components/back-to-top"
 import { TaskRuntimeProvider } from "@/components/task-runtime-provider"
+import { BusinessAssistantProvider } from "@/lib/business-assistant/context"
+import { BusinessAssistantShell } from "@/components/business-assistant-shell"
+import { BusinessAssistantSpotlight } from "@/components/business-assistant-spotlight"
+import { ImageWorkbench } from "@/components/image-workbench/image-workbench"
 import { LoginRequiredProvider } from "@/components/auth/login-required-provider"
-import { TEAM_AGENTS, getTeamAgentByName } from "@/lib/team-agents"
+import { TutorialProvider } from "@/components/tutorial/tutorial-provider"
+import { TutorialDemoHost } from "@/components/tutorial/demo-host"
+import { ModuleTutorialButton } from "@/components/tutorial/module-tutorial-button"
+import { getTeamAgentByName } from "@/lib/team-agents"
 import {
   Store,
   Share2,
   Mic,
   RefreshCw,
-  FileText,
 } from "lucide-react"
 import type { ComponentType } from "react"
 
@@ -113,19 +121,12 @@ function buildCopywritingAgentList(): {
   }))
 }
 
-const teamAgentOptions = TEAM_AGENTS.map((agent) => ({
-  name: agent.name,
-  role: agent.role,
-  avatar: agent.avatar,
-  themeColor: agent.themeColor,
-  quickPrompts: agent.quickPrompts,
-}))
-
 /* ------------------------------------------------------------------ */
 /*  Breadcrumb logic                                                   */
 /* ------------------------------------------------------------------ */
 
 function getBreadcrumb(view: MainView): { parent: string; current: string } {
+  if (isDistributionView(view)) return getDistributionBreadcrumb(view)
   if (isVideoView(view)) {
     return getVideoBreadcrumb(view)
   }
@@ -137,6 +138,8 @@ function getBreadcrumb(view: MainView): { parent: string; current: string } {
       return { parent: "工作台", current: "文案创作" }
     case "身份定位":
       return { parent: "工作台", current: "身份定位" }
+    case "图片工作台":
+      return { parent: "工作台", current: "图片工作台" }
     case "设置":
       return { parent: "更多", current: "设置" }
     case "自动保存图片":
@@ -175,6 +178,10 @@ function ContentArea({
   initialExtractedText: string
   setInitialExtractedText: (text: string) => void
 }) {
+  if (isDistributionView(activeView)) {
+    return <DistributionWorkspace activeView={activeView} onNavigate={onNavigate} />
+  }
+
   // 视频创作工作区（与 GEO 隔离；工作区内切换时保持数字人口播挂载）
   if (isVideoView(activeView)) {
     return (
@@ -211,26 +218,31 @@ function ContentArea({
   // 文案创作 — directly opens chat with default agent
   if (activeView === "文案创作") {
     return (
-      <CopywritingChatWorkspace
-        agentName={inlineCopywritingAgent}
-        agentIcon={agentIconMap[inlineCopywritingAgent] || Mic}
-        themeColor={agentColorMap[inlineCopywritingAgent] || "var(--color-amber-500)"}
-        allAgents={buildCopywritingAgentList()}
-        onAgentSwitch={(name) => setInlineCopywritingAgent(name)}
-        onJumpToVideo={(script) => {
-          setInitialVideoScript(script)
-          onNavigate(getVideoRouteForAgent(inlineCopywritingAgent))
-        }}
-        initialUserMessage={initialExtractedText}
-        welcomePrompts={[
-          "我是做装修的，帮我生成10个抖音爆款选题",
-          "帮我梳理个人IP定位，我擅长互联网运营",
-          "写一条高转化的朋友圈营销文案",
-          "帮我写一段40秒的口播脚本，卖护肤品",
-          "给我的品牌生成5句slogan和传播主题",
-          "分析我的行业适合做哪种类型的短视频",
-        ]}
-      />
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center justify-end border-b border-border/40 px-4 py-2">
+          <ModuleTutorialButton view="文案创作" />
+        </div>
+        <CopywritingChatWorkspace
+          agentName={inlineCopywritingAgent}
+          agentIcon={agentIconMap[inlineCopywritingAgent] || Mic}
+          themeColor={agentColorMap[inlineCopywritingAgent] || "var(--color-amber-500)"}
+          allAgents={buildCopywritingAgentList()}
+          onAgentSwitch={(name) => setInlineCopywritingAgent(name)}
+          onJumpToVideo={(script) => {
+            setInitialVideoScript(script)
+            onNavigate(getVideoRouteForAgent(inlineCopywritingAgent))
+          }}
+          initialUserMessage={initialExtractedText}
+          welcomePrompts={[
+            "我是做装修的，帮我生成10个抖音爆款选题",
+            "帮我梳理个人IP定位，我擅长互联网运营",
+            "写一条高转化的朋友圈营销文案",
+            "帮我写一段40秒的口播脚本，卖护肤品",
+            "给我的品牌生成5句slogan和传播主题",
+            "分析我的行业适合做哪种类型的短视频",
+          ]}
+        />
+      </div>
     )
   }
 
@@ -242,6 +254,10 @@ function ContentArea({
   // 身份定位 — account positioning
   if (activeView === "身份定位") {
     return <AccountPositioning />
+  }
+
+  if (activeView === "图片工作台") {
+    return <ImageWorkbench />
   }
 
   if (activeView === "设置" || activeView === "自动保存图片") {
@@ -272,6 +288,12 @@ function ContentArea({
 
 export default function Page() {
   const [activeView, setActiveView] = useState<MainView>("工作台")
+  const [videoWorkspaceVisited, setVideoWorkspaceVisited] = useState(false)
+  const shouldMountVideoWorkspace = videoWorkspaceVisited || isVideoView(activeView)
+  const navigateToView = (view: MainView) => {
+    if (isVideoView(view)) setVideoWorkspaceVisited(true)
+    setActiveView(view)
+  }
 
   const [activeAgent, setActiveAgent] = useState<ActiveAgent | null>(null)
   /** Distinguish: copywriting agents (no avatar) vs team agents (with avatar) */
@@ -295,6 +317,7 @@ export default function Page() {
     meta?: { avatarUrl?: string; role?: string },
   ) => {
     const teamAgent = meta?.avatarUrl ? getTeamAgentByName(agentName) : undefined
+    if (teamAgent) navigateToView("智能体中心")
     setAgentChatEntryNonce((n) => n + 1)
     setActiveAgent({
       name: agentName,
@@ -312,103 +335,152 @@ export default function Page() {
     setAgentChatOpen(false)
   }
 
+  const handleNavigate = (view: MainView) => {
+    if (agentChatOpen && !isCopywritingMode) setAgentChatOpen(false)
+    navigateToView(view)
+  }
+
   return (
     <LoginRequiredProvider>
-    <div className="relative flex min-h-screen bg-background">
-      {activeAgent != null ? (
+    <TutorialProvider
+      onNavigate={navigateToView}
+      onOpenAgent={(name, meta) => {
+        if (meta?.copywriting) {
+          setInlineCopywritingAgent(name)
+          navigateToView("文案创作")
+          return
+        }
+        handleOpenAgent(name, meta)
+      }}
+    >
+    <div
+      className={cn(
+        "relative flex bg-background",
+        activeView === "文案创作"
+          ? "h-dvh min-h-0 overflow-hidden"
+          : "min-h-screen",
+      )}
+    >
+      {activeAgent != null && isCopywritingMode ? (
         <div
           className={
             agentChatOpen
-              ? "fixed inset-0 z-50 flex min-h-screen flex-col bg-background"
+              ? "fixed inset-0 z-50 flex h-dvh min-h-0 flex-col overflow-hidden bg-background"
               : "hidden"
           }
           aria-hidden={!agentChatOpen}
         >
-          {isCopywritingMode ? (
-            <CopywritingChatWorkspace
-              key={activeAgent.name}
-              agentName={activeAgent.name}
-              agentIcon={activeAgent.icon}
-              themeColor={activeAgent.themeColor}
-              onBack={handleBackFromChat}
-              allAgents={buildCopywritingAgentList()}
-              onAgentSwitch={(name) => {
-                setActiveAgent({
-                  name,
-                  icon: agentIconMap[name] || Mic,
-                  themeColor: agentColorMap[name] || "var(--color-blue-500)",
-                })
-                setIsCopywritingMode(true)
-              }}
-              onJumpToVideo={(script) => {
-                setInitialVideoScript(script)
-                setAgentChatOpen(false)
-                setActiveView(getVideoRouteForAgent(activeAgent.name))
-              }}
-            />
-          ) : (
-            <ChatWorkspace
-              key={activeAgent.name}
-              agentName={activeAgent.name}
-              agentIcon={activeAgent.icon}
-              themeColor={activeAgent.themeColor}
-              agentAvatarUrl={activeAgent.avatarUrl}
-              agentRole={activeAgent.role}
-              allAgents={teamAgentOptions}
-              onAgentSwitch={(name) => {
-                const target = getTeamAgentByName(name)
-                if (!target) return
-                setActiveAgent({
-                  name: target.name,
-                  icon: agentIconMap[target.name] || Mic,
-                  themeColor: target.themeColor,
-                  avatarUrl: target.avatar,
-                  role: target.role,
-                })
-                setIsCopywritingMode(false)
-              }}
-              entryNonce={agentChatEntryNonce}
-              onBack={handleBackFromChat}
-            />
-          )}
+          <CopywritingChatWorkspace
+            key={activeAgent.name}
+            agentName={activeAgent.name}
+            agentIcon={activeAgent.icon}
+            themeColor={activeAgent.themeColor}
+            onBack={handleBackFromChat}
+            allAgents={buildCopywritingAgentList()}
+            onAgentSwitch={(name) => {
+              setActiveAgent({
+                name,
+                icon: agentIconMap[name] || Mic,
+                themeColor: agentColorMap[name] || "var(--color-blue-500)",
+              })
+              setIsCopywritingMode(true)
+            }}
+            onJumpToVideo={(script) => {
+              setInitialVideoScript(script)
+              setAgentChatOpen(false)
+              navigateToView(getVideoRouteForAgent(activeAgent.name))
+            }}
+          />
         </div>
       ) : null}
 
-      <TaskRuntimeProvider activeView={activeView} onNavigate={setActiveView}>
+      <TaskRuntimeProvider activeView={activeView} onNavigate={navigateToView}>
+        <BusinessAssistantProvider
+          activeView={activeView}
+          onNavigate={navigateToView}
+        >
         <div
           className={cn(
-            "flex min-h-screen w-full min-w-0 flex-1 bg-background",
-            agentChatOpen && "hidden",
+            "flex w-full min-w-0 flex-1 bg-background",
+            activeView === "文案创作"
+              ? "h-full min-h-0 overflow-hidden"
+              : "min-h-screen",
+            agentChatOpen && isCopywritingMode && "hidden",
           )}
         >
-          <DashboardSidebar active={activeView} onSelect={setActiveView} />
+          <DashboardSidebar active={activeView} onSelect={handleNavigate} />
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <TopHeader
               currentPage={`${breadcrumb.parent} / ${breadcrumb.current}`}
-              onNavigate={setActiveView}
+              onNavigate={handleNavigate}
               onOpenAgent={handleOpenAgent}
             />
 
+            <TutorialDemoHost activeView={activeView} />
+
             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden animate-in fade-in duration-200">
-              <ContentArea
-                activeView={activeView}
-                onOpenAgent={handleOpenAgent}
-                onNavigate={setActiveView}
-                inlineCopywritingAgent={inlineCopywritingAgent}
-                setInlineCopywritingAgent={setInlineCopywritingAgent}
-                initialVideoScript={initialVideoScript}
-                setInitialVideoScript={setInitialVideoScript}
-                initialExtractedText={initialExtractedText}
-                setInitialExtractedText={setInitialExtractedText}
-              />
+              {shouldMountVideoWorkspace ? (
+                <div
+                  className={cn(
+                    "min-h-0 flex-1 flex-col",
+                    isVideoView(activeView) && !(agentChatOpen && activeAgent && !isCopywritingMode)
+                      ? "flex"
+                      : "hidden",
+                  )}
+                  aria-hidden={!isVideoView(activeView)}
+                >
+                  <VideoWorkspace
+                    activeView={isVideoView(activeView) ? activeView : DEFAULT_VIDEO_VIEW}
+                    initialScript={initialVideoScript}
+                  />
+                </div>
+              ) : null}
+
+              {agentChatOpen && activeAgent && !isCopywritingMode ? (
+                <TeamChatWorkspace
+                  key={`${activeAgent.name}:${agentChatEntryNonce}`}
+                  agentName={activeAgent.name}
+                  agentAvatarUrl={activeAgent.avatarUrl}
+                  agentRole={activeAgent.role}
+                  onAgentSwitch={(name) => {
+                    const target = getTeamAgentByName(name)
+                    if (!target) return
+                    setActiveAgent({
+                      name: target.name,
+                      icon: agentIconMap[target.name] || Mic,
+                      themeColor: target.themeColor,
+                      avatarUrl: target.avatar,
+                      role: target.role,
+                    })
+                    setIsCopywritingMode(false)
+                  }}
+                  onBack={handleBackFromChat}
+                />
+              ) : !isVideoView(activeView) ? (
+                <ContentArea
+                  activeView={activeView}
+                  onOpenAgent={handleOpenAgent}
+                  onNavigate={handleNavigate}
+                  inlineCopywritingAgent={inlineCopywritingAgent}
+                  setInlineCopywritingAgent={setInlineCopywritingAgent}
+                  initialVideoScript={initialVideoScript}
+                  setInitialVideoScript={setInitialVideoScript}
+                  initialExtractedText={initialExtractedText}
+                  setInitialExtractedText={setInitialExtractedText}
+                />
+              ) : null}
             </div>
           </div>
 
           <BackToTop />
         </div>
+        <BusinessAssistantSpotlight />
+        <BusinessAssistantShell />
+        </BusinessAssistantProvider>
       </TaskRuntimeProvider>
     </div>
+    </TutorialProvider>
     </LoginRequiredProvider>
   )
 }

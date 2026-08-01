@@ -24,8 +24,15 @@ export const PLAN_LLM_KEY_CANDIDATES = [
   'DEEPSEEK_API_KEY',
 ] as const;
 
+const LOCAL_RUNNINGHUB_KEYS = new Set([
+  'RUNNINGHUB_API_KEY',
+  'RUNNINGHUB_IMAGE_API_KEY',
+  'RUNNINGHUB_IMAGE_BASE_URL',
+]);
+
 export function hasPlanLlmKeys(env: Record<string, string | undefined>): boolean {
-  return PLAN_LLM_KEY_CANDIDATES.some((k) => Boolean((env[k] || '').trim()));
+  if (PLAN_LLM_KEY_CANDIDATES.some((k) => Boolean((env[k] || '').trim()))) return true
+  return Boolean((env.MODEL_PROVIDERS_JSON_B64 || '').trim())
 }
 
 export function presentPlanLlmKeyNames(env: Record<string, string | undefined>): string[] {
@@ -52,11 +59,40 @@ export async function injectApiKeys(baseEnv: Record<string, string>): Promise<Re
   const creds = loadCredentials();
   if (creds && creds.keys) {
     for (const [k, v] of Object.entries(creds.keys)) {
+      // RunningHub 工作流与图片密钥固定读取本地 resources/.env，
+      // 不接受云端快照覆盖，避免本地任务在配置同步后切换供应商账号。
+      if (LOCAL_RUNNINGHUB_KEYS.has(k)) continue;
       if (v && typeof v === 'string') {
         merged[k] = v;
       }
     }
   }
+
+  // 若 sync 返回了 providers 数组但 keys 缺 B64，现场补一份供业务代码读取
+  const credentialProvidesEncodedProviders = Boolean(
+    (creds?.keys?.MODEL_PROVIDERS_JSON_B64 || '').trim(),
+  );
+  if (creds?.providers?.length && !credentialProvidesEncodedProviders) {
+    const payload = JSON.stringify({
+      providers: creds.providers,
+      version: creds.config_version || '',
+    });
+    merged.MODEL_PROVIDERS_JSON_B64 = Buffer.from(payload, 'utf8').toString('base64');
+  }
+
+  const credentialProvidesEncodedFeatures = Boolean(
+    (creds?.keys?.FEATURE_CATALOG_JSON_B64 || '').trim(),
+  );
+  if (creds?.features?.length && !credentialProvidesEncodedFeatures) {
+    const payload = JSON.stringify({
+      features: creds.features,
+      version: creds.config_version || '',
+    });
+    merged.FEATURE_CATALOG_JSON_B64 = Buffer.from(payload, 'utf8').toString('base64');
+  }
+
+  // 仅 Electron 子进程经过此注入器；服务端据此禁止桌面端静默回退机器本地模型。
+  merged.DESKTOP_RUNTIME = '1';
 
   const planKeys = presentPlanLlmKeyNames(merged);
   if (planKeys.length) {

@@ -65,7 +65,7 @@ type Props = {
 
 export function DashboardQuickActions({ onNavigate, onOpenAgent }: Props) {
   return (
-    <section>
+    <section data-tutorial-id="dashboard-quick-actions">
       <h2 className="mb-3 text-[16px] font-bold text-foreground">快速创作</h2>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {ACTIONS.map((a) => (

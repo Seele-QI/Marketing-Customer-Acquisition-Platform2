@@ -782,6 +782,7 @@ export function ImageVideoWorkflow() {
 
   return (
     <VideoWorkflowPage>
+      <div data-tutorial-id="image-video-workflow">
       <WorkflowHero
         accentColor="emerald"
         title="AI"
@@ -847,6 +848,7 @@ export function ImageVideoWorkflow() {
           )}
         </>
       )}
+      </div>
     </VideoWorkflowPage>
   )
 }

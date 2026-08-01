@@ -18,6 +18,7 @@ import {
 } from "@/lib/publish-time"
 import { buildInsightArticleText } from "@/lib/hotspot-insight-variants"
 import { HOTSPOT_REWRITE_SYSTEM } from "@/lib/prompts/hotspot-rewrite-system"
+import { parseApiErrorResponse } from "@/lib/api/parse-detail"
 
 /** 与热点列表行数据字段一致，便于点击传入 */
 export type VideoDetailTrendItem = {
@@ -228,21 +229,16 @@ export function VideoDetailModal({ isOpen, onClose, trendItem }: VideoDetailModa
         const preview = rawText.slice(0, 2500)
         console.warn("[handleRewrite] 非 JSON 响应, status:", response.status, preview)
         setArticleText(
-          `⚠️ 响应不是合法 JSON（HTTP ${response.status}）\n\n常见原因：Next 或 uvicorn 返回了 HTML 报错页、或代理截断了正文。下方为原始片段便于排查：\n\n${preview || "（空响应体）"}\n\n原始标题：${trendItem.title}`
+          `⚠️ ${parseApiErrorResponse(response.status, {}, "AI 爆改暂时不可用，请稍后重试。")}\n\n原始标题：${trendItem.title}`
         )
         return
       }
 
       if (!response.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : Array.isArray(data.detail)
-              ? JSON.stringify(data.detail)
-              : `HTTP ${response.status}`
+        const detail = parseApiErrorResponse(response.status, { detail: data.detail }, "AI 爆改暂时不可用")
         console.warn("[handleRewrite] 后端返回错误:", detail)
         setArticleText(
-          `⚠️ AI 爆改暂时不可用\n\n${detail}${usedFallback ? "\n\n（已尝试智能体接口与爆改接口）" : ""}\n\n请确认 .env 中 AI 服务密钥 有效并已重启 next dev。\n\n原始标题：${trendItem.title}`
+          `⚠️ AI 爆改暂时不可用\n\n${detail}${usedFallback ? "\n\n（已尝试备用服务）" : ""}\n\n原始标题：${trendItem.title}`
         )
         return
       }

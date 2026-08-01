@@ -5,6 +5,7 @@ import {
   DRAFT_STORAGE_KEY,
   clearDraft,
   defaultImageVideoDraft,
+  defaultDhVideoEconomyDraft,
   loadDraft,
   saveDraft,
 } from "../lib/workflow-draft-store.ts"
@@ -71,4 +72,13 @@ test("workflow draft store isolates kinds", () => {
     assert.equal(loadDraft("image-video")?.script, "iv")
     assert.equal(loadDraft("mashup")?.script, "mv")
   })
+})
+
+test("economy digital-human draft has independent defaults", () => {
+  const draft = defaultDhVideoEconomyDraft()
+  assert.equal(draft.script, "")
+  assert.equal(draft.motionPreset, "natural")
+  assert.equal(draft.coverAspectRatio, "9:16")
+  assert.deepEqual(draft.imageRefs, [])
+  assert.equal(draft.audioRef, null)
 })

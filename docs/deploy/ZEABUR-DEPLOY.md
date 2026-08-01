@@ -67,6 +67,8 @@ Zeabur 若自动识别为 **PREBUILT_V2**，会用 **Caddy** 托管 `/usr/share/
 | `CREDIT_ADMIN_ACCESS_KEY` | 见 generate 脚本 |
 | `DEEPSEEK_API_KEY` | 你的 Key |
 | `RUNNINGHUB_API_KEY` | 你的 Key |
+| `RUNNINGHUB_IMAGE_API_KEY` | 海外图片工作台与封面图 Key |
+| `RUNNINGHUB_IMAGE_BASE_URL` | `https://www.runninghub.ai/openapi/v2` |
 | `CORS_ALLOW_ORIGINS` | `https://<web域名>.zeabur.app` |
 | `APP_PUBLIC_BASE` | `https://<web域名>.zeabur.app` |
 | `CENTRAL_SIGNING_PRIVATE_KEY` | 见 generate-central-signing-keys |

@@ -29,7 +29,7 @@ export const POST = withAuth(async (req) => {
     }
     if (!isSupportedDocumentName(name)) {
       return NextResponse.json(
-        { error: "暂不支持该格式，请上传 Word (.docx) / PDF / TXT / MD" },
+        { error: "暂不支持该格式，请上传 Word / PDF / TXT / MD / CSV / XLSX / PPTX" },
         { status: 400 },
       )
     }

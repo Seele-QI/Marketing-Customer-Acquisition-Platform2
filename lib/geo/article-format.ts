@@ -2,15 +2,19 @@
  * GEO 文章创作·纯文本格式化与硬约束。
  *
  * 目标（用户需求）：
- *  1. 所有平台文章字数不超过 1000 字（非空白字符计数，含标点与标签）。
+ *  1. 正常文章目标 900–1100 字，成功文章硬上限 1200 字（由生成校验负责）。
  *  2. 纯文本，不出现 Markdown 标记与 emoji / 装饰性奇异字符。
  *  3. 文末带话题标签（「标签：#a #b …」）；模型未给出时按标题/平台兜底生成。
  *
- * 该模块为确定性后处理，无论模型是否遵循提示词都能保证产出符合上述约束。
+ * 该模块只做非破坏性格式化；不得通过字符级截断伪造合格成稿。
  */
 
-/** 单篇文章字数上限（与前端 articleWordCount 一致：非空白字符计数） */
-export const ARTICLE_MAX_CHARS = 1000
+/** 篇幅口径与前端 articleWordCount 一致：非空白字符计数。 */
+export const ARTICLE_TARGET_MIN_CHARS = 900
+export const ARTICLE_TARGET_MAX_CHARS = 1100
+export const ARTICLE_HARD_MAX_CHARS = 1200
+/** 兼容只读取单一上限的现有调用方。 */
+export const ARTICLE_MAX_CHARS = ARTICLE_HARD_MAX_CHARS
 
 /** 标签行前缀 */
 const TAG_PREFIX = "标签："
@@ -26,8 +30,6 @@ export function countChars(text: string): number {
  */
 const STRIP_WEIRD =
   /[\u200B-\u200D\uFEFF\uFE00-\uFE0F\u20E3\u2190-\u21FF\u2300-\u23FF\u2460-\u24FF\u2500-\u257F\u2580-\u259F\u25A0-\u25FF\u2600-\u26FF\u2700-\u27BF\u2B00-\u2BFF\u2022]|[\u{1F000}-\u{1FAFF}]|[\u{1F1E6}-\u{1F1FF}]/gu
-
-const SENTENCE_TERMINATORS = ["。", "！", "？", "!", "?", "…", "\n"]
 
 /** 去掉一段文本里的 Markdown 语法，转为纯文本（不动话题标签里的 #）。 */
 export function stripMarkdown(input: string): string {
@@ -177,40 +179,14 @@ function buildTagLine(tags: string[]): string {
   return `${TAG_PREFIX}${tags.map((t) => `#${t}`).join(" ")}`
 }
 
-/** 按字数预算截断正文：优先在句子边界处收尾。 */
-function truncateToBudget(text: string, budget: number): string {
-  if (budget <= 0) return ""
-  if (countChars(text) <= budget) return text
-
-  let nonWs = 0
-  let cut = text.length
-  for (let i = 0; i < text.length; i++) {
-    if (!/\s/.test(text[i]!)) nonWs++
-    if (nonWs > budget) {
-      cut = i
-      break
-    }
-  }
-
-  let slice = text.slice(0, cut)
-  let best = -1
-  for (const t of SENTENCE_TERMINATORS) {
-    best = Math.max(best, slice.lastIndexOf(t))
-  }
-  // 只有当句子边界不过分靠前时才回退，避免把正文砍掉大半
-  if (best >= 0 && best >= slice.length * 0.5) {
-    slice = slice.slice(0, best + 1)
-  }
-  return slice.trim()
-}
-
 export type EnforceArticleContext = {
   title?: string
   platformLabel?: string
 }
 
 /**
- * 对模型产出施加全部硬约束：纯文本 + ≤1000 字 + 带规范化标签。
+ * 对模型产出做非破坏性规范化：纯文本 + 规范化标签。
+ * 篇幅、结构和合规是否允许进入成功状态由生成流程统一校验。
  */
 export function enforceArticleFormat(
   raw: string,
@@ -223,13 +199,9 @@ export function enforceArticleFormat(
     tags.length > 0 ? tags : deriveFallbackTags(ctx.title ?? "", ctx.platformLabel)
   const tagLine = finalTags.length > 0 ? buildTagLine(finalTags) : ""
 
-  // 预算 = 上限 - 标签行字数 - 分隔缓冲
-  const tagChars = tagLine ? countChars(tagLine) : 0
-  const budget = ARTICLE_MAX_CHARS - tagChars
+  const normalizedBody = body.trim()
 
-  const trimmedBody = truncateToBudget(body.trim(), budget)
-
-  if (!tagLine) return trimmedBody
-  if (!trimmedBody) return tagLine
-  return `${trimmedBody}\n\n${tagLine}`
+  if (!tagLine) return normalizedBody
+  if (!normalizedBody) return tagLine
+  return `${normalizedBody}\n\n${tagLine}`
 }

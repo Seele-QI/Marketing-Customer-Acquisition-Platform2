@@ -8,7 +8,17 @@ import {
   extractSkillDescription,
   type EnterpriseDocInput,
 } from "@/lib/geo/enterprise-skill-prompt"
-import { completeText, type LlmProviderId } from "@/lib/geo/llm/router"
+import { generateEnterpriseSkillContent } from "@/lib/geo/enterprise-skill-generation"
+import { completeCloudCopywritingText } from "@/lib/geo/cloud-copywriting-completion"
+import {
+  sanitizeOfficialContact,
+  validateOfficialContact,
+} from "@/lib/geo/official-contact"
+import {
+  listCopywritingProviderCandidates,
+  type CopywritingProviderCandidate,
+  type CopywritingProviderFailure,
+} from "@/lib/llm/copywriting-router"
 import {
   fetchHtmlTextMany,
   HTMLTEXT_MAX_URLS,
@@ -16,15 +26,6 @@ import {
 
 export const runtime = "nodejs"
 export const maxDuration = 300
-
-const VALID_PROVIDERS = new Set<LlmProviderId>([
-  "deepseek",
-  "doubao",
-  "kimi",
-  "gpt",
-  "claude",
-  "gemini",
-])
 
 function sanitizeAuthorityPages(raw: unknown): AuthorityPage[] {
   if (!Array.isArray(raw)) return []
@@ -43,7 +44,7 @@ function sanitizeAuthorityPages(raw: unknown): AuthorityPage[] {
     .filter((p) => p.url)
 }
 
-function sanitizeEntity(raw: unknown): GeoEntityData {
+export function sanitizeEntity(raw: unknown): GeoEntityData {
   const e = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>
   return {
     companyName: String(e.companyName ?? "").trim(),
@@ -64,6 +65,7 @@ function sanitizeEntity(raw: unknown): GeoEntityData {
           })
           .filter((f) => f.question || f.answer)
       : [],
+    officialContact: sanitizeOfficialContact(e.officialContact),
   }
 }
 
@@ -133,36 +135,60 @@ async function resolveAuthorityPages(entity: GeoEntityData): Promise<AuthorityPa
 export const POST = withAuth(async (req, { userId, cookieHeader }) => {
   try {
     const body = (await req.json()) as {
-      provider?: string
       skillName?: string
       entity?: unknown
       documents?: unknown
     }
 
-    const provider = String(body.provider ?? "deepseek") as LlmProviderId
     const skillName = String(body.skillName ?? "").trim()
     const entity = sanitizeEntity(body.entity)
     const documents = sanitizeDocuments(body.documents)
 
-    if (!VALID_PROVIDERS.has(provider)) {
-      return NextResponse.json({ error: "不支持的模型 provider" }, { status: 400 })
-    }
     if (!skillName) {
       return NextResponse.json({ error: "请填写 Skill 名称" }, { status: 400 })
     }
-    if (!entity.companyName && documents.length === 0) {
+    const requiredEnterpriseFields = [
+      ["企业名称", entity.companyName],
+      ["所属行业", entity.industry],
+      ["核心产品或服务", entity.coreProduct],
+    ] as const
+    const missingEnterpriseField = requiredEnterpriseFields.find(([, value]) => !value)
+    if (missingEnterpriseField) {
       return NextResponse.json(
-        { error: "请至少填写公司名称或上传一份文档" },
+        { error: `请填写${missingEnterpriseField[0]}` },
         { status: 400 },
       )
     }
 
-    const refId = `geo-skill:${userId}:${crypto.randomUUID()}`
+    const contactIssue = validateOfficialContact(entity.officialContact)[0]
+    if (contactIssue) {
+      return NextResponse.json({ error: contactIssue.message }, { status: 400 })
+    }
+
+    // 旧客户端即使继续提交 provider 也不会影响服务端路由；这里只接受云端下发渠道。
+    const cloudProviders = listCopywritingProviderCandidates({ hasImages: false }).filter(
+      (candidate) => candidate.source === "cloud",
+    )
+    if (cloudProviders.length === 0) {
+      const message = "云端模型配置尚未同步，请稍后重试"
+      return NextResponse.json(
+        { error: message, detail: { code: "CLOUD_MODEL_NOT_READY", message } },
+        { status: 503 },
+      )
+    }
+
+    const businessTaskId = crypto.randomUUID()
+    const refId = `geo-skill:${userId}:${businessTaskId}`
     try {
       await chargeCredit({
         cookieHeader,
         scene: "geo_skill_gen",
         refId,
+        businessTask: {
+          businessTaskId,
+          businessType: "geo_enterprise_skill",
+          billingStage: "llm_generation",
+        },
       })
     } catch (e) {
       return chargeErrorResponse(e)
@@ -178,13 +204,32 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
       authorityPages,
     )
 
-    let content: string
+    let generated: Awaited<ReturnType<typeof generateEnterpriseSkillContent>>
+    let selectedProvider: CopywritingProviderCandidate | undefined
     try {
-      content = await completeText({
-        provider,
+      generated = await generateEnterpriseSkillContent({
         system,
         user,
-        maxTokens: 4096,
+        contact: entity.officialContact,
+        complete: async (input) => {
+          const completion = await completeCloudCopywritingText({
+            providers: cloudProviders,
+            messages: [
+              { role: "system", content: input.system },
+              { role: "user", content: input.user },
+            ],
+            maxTokens: input.maxTokens,
+          })
+          if (!completion.ok) {
+            throw Object.assign(new Error("云端模型渠道暂时不可用，请稍后重试"), {
+              statusCode: 502,
+              code: "CLOUD_MODEL_UNAVAILABLE",
+              failures: completion.failures,
+            })
+          }
+          selectedProvider = completion.provider
+          return completion.text
+        },
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : "生成失败"
@@ -192,26 +237,36 @@ export const POST = withAuth(async (req, { userId, cookieHeader }) => {
         err && typeof err === "object" && "statusCode" in err && typeof (err as { statusCode: number }).statusCode === "number"
           ? (err as { statusCode: number }).statusCode
           : 502
-      return NextResponse.json({ error: message }, { status: statusCode })
+      const code =
+        err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string"
+          ? (err as { code: string }).code
+          : "GENERATION_FAILED"
+      const attempts =
+        err && typeof err === "object" && "failures" in err && Array.isArray((err as { failures: unknown }).failures)
+          ? ((err as { failures: CopywritingProviderFailure[] }).failures)
+          : undefined
+      return NextResponse.json(
+        { error: message, detail: { code, message, ...(attempts ? { attempts } : {}) } },
+        { status: statusCode },
+      )
     }
 
-    // 去除模型可能包裹的 ```markdown 代码块
-    const cleaned = content
-      .replace(/^```(?:markdown|md)?\s*\n/i, "")
-      .replace(/\n```\s*$/i, "")
-      .trim()
+    const finalized = generated.content
 
     const id = `ent-${crypto.randomUUID()}`
-    const description = extractSkillDescription(cleaned)
+    const description = extractSkillDescription(finalized)
 
     return NextResponse.json({
       skill: {
         id,
         label: skillName,
         description,
-        content: cleaned,
-        provider,
+        content: finalized,
+        provider: selectedProvider
+          ? `${selectedProvider.name} / ${selectedProvider.model}`
+          : "cloud",
         createdAt: new Date().toISOString(),
+        quality: generated.quality,
       },
     })
   } catch (err) {
