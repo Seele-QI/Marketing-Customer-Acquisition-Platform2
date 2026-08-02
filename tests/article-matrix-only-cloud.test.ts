@@ -114,6 +114,71 @@ test("article cloud completion fails over and bills only the successful channel"
   assert.deepEqual(billed, ["backup-model"])
 })
 
+test("article cloud completion retries the full cloud chain after transient saturation", async () => {
+  const providers: CopywritingProviderCandidate[] = [
+    {
+      source: "cloud",
+      name: "primary",
+      adapter: "openai_chat",
+      url: "https://primary.test/v1/chat/completions",
+      apiKey: "secret-primary",
+      model: "primary-model",
+      timeoutMs: 1_000,
+    },
+    {
+      source: "cloud",
+      name: "backup",
+      adapter: "openai_chat",
+      url: "https://backup.test/v1/chat/completions",
+      apiKey: "secret-backup",
+      model: "backup-model",
+      timeoutMs: 1_000,
+    },
+  ]
+  const calls: string[] = []
+  const text = await completeCloudArticleText({
+    providers,
+    system: "system",
+    user: "user",
+    retryDelayMs: 0,
+    maxRounds: 2,
+    fetchImpl: async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (calls.length <= 2) {
+        return Response.json({ error: { message: "busy" } }, { status: 503 })
+      }
+      return Response.json({ choices: [{ message: { content: "恢复后的有效文章" } }] })
+    },
+  })
+
+  assert.equal(text, "恢复后的有效文章")
+  assert.deepEqual(calls, [providers[0].url, providers[1].url, providers[0].url])
+})
+
+test("article routes use the exact cloud feature binding and bounded concurrency", async () => {
+  const [batchRoute, retryRoute, scoreRoute] = await Promise.all([
+    read("../app/api/geo/articles/batch-generate/route.ts"),
+    read("../app/api/geo/articles/retry/route.ts"),
+    read("../app/api/geo/articles/score/route.ts"),
+  ])
+
+  for (const route of [batchRoute, retryRoute, scoreRoute]) {
+    assert.match(route, /featureId:\s*["']geo\.article\.generate["']/)
+  }
+  assert.match(batchRoute, /GEO_ARTICLE_GENERATION_CONCURRENCY/)
+  assert.match(batchRoute, /GEO_ARTICLE_PROVIDER_TIMEOUT_MS/)
+  assert.match(retryRoute, /GEO_ARTICLE_PROVIDER_TIMEOUT_MS/)
+  assert.match(batchRoute, /:\s*keepalive\\n\\n/)
+  assert.doesNotMatch(batchRoute, /concurrency:\s*20/)
+})
+
+test("article matrix UI retains the last valid project during transient refresh errors", async () => {
+  const panel = await read("../components/geo/article/geo-article-batch-panel.tsx")
+  assert.doesNotMatch(panel, /\.catch\(\(\) => \{\s*if \(!cancelled\) setProjects\(\[\]\)/)
+  assert.doesNotMatch(panel, /\.catch\(\(\) => \{\s*if \(!cancelled\) setProjectDetail\(null\)/)
+})
+
 test("article cloud completion reports stable codes when cloud candidates are absent", async () => {
   await assert.rejects(
     () => completeCloudArticleText({ providers: [], system: "s", user: "u" }),
@@ -121,6 +186,7 @@ test("article cloud completion reports stable codes when cloud candidates are ab
       const actual = error as Error & { code?: string; statusCode?: number }
       assert.equal(actual.code, "CLOUD_MODEL_NOT_READY")
       assert.equal(actual.statusCode, 503)
+      assert.doesNotMatch(actual.message, /CLOUD_MODEL_NOT_READY/)
       return true
     },
   )

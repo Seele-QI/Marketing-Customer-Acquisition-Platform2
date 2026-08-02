@@ -138,6 +138,22 @@ def get_all_platforms(user_id: int) -> List[Dict[str, Any]]:
     return out
 
 
+def mark_platform_login_expired(user_id: int, platform: str) -> None:
+    """Invalidate a previously verified binding after the live creator page
+    proves that the platform session has expired."""
+    _init_accounts_db()
+    conn = sqlite3.connect(_ACCOUNTS_DB)
+    try:
+        conn.execute(
+            "UPDATE accounts SET login_status='login_expired', verified_at=NULL, updated_at=? "
+            "WHERE user_id=? AND platform=?",
+            (time.time(), user_id, platform.strip().lower()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 _COOKIE_DOMAINS = {
     "douyin": ".douyin.com",
     "xiaohongshu": ".xiaohongshu.com",

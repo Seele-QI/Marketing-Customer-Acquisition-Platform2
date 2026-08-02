@@ -18,6 +18,10 @@ export const maxDuration = 120
 
 const CLOUD_MODEL_NOT_READY = "CLOUD_MODEL_NOT_READY"
 const CLOUD_MODEL_UNAVAILABLE = "CLOUD_MODEL_UNAVAILABLE"
+const GEO_ARTICLE_PROVIDER_TIMEOUT_MS = Math.max(
+  15_000,
+  Math.min(90_000, Number(process.env.GEO_ARTICLE_PROVIDER_TIMEOUT_MS) || 45_000),
+)
 
 async function fetchProject(
   projectId: string,
@@ -80,9 +84,15 @@ async function handleRetry(
     return NextResponse.json({ error: "任务不属于当前内容矩阵" }, { status: 400 })
   }
 
-  const providers = listCopywritingProviderCandidates({ hasImages: false }).filter(
-    (candidate) => candidate.source === "cloud",
-  )
+  const providers = listCopywritingProviderCandidates({
+    hasImages: false,
+    featureId: "geo.article.generate",
+  })
+    .filter((candidate) => candidate.source === "cloud")
+    .map((candidate) => ({
+      ...candidate,
+      timeoutMs: Math.min(candidate.timeoutMs, GEO_ARTICLE_PROVIDER_TIMEOUT_MS),
+    }))
   if (providers.length === 0) {
     return NextResponse.json(
       { code: CLOUD_MODEL_NOT_READY, error: "云端模型配置尚未同步，请稍后重试" },
@@ -117,7 +127,7 @@ async function handleRetry(
   })
 
   if (article.status === "failed") {
-    const code = article.error?.includes(CLOUD_MODEL_UNAVAILABLE)
+    const code = /CLOUD_MODEL_UNAVAILABLE|云端生成服务繁忙/.test(article.error ?? "")
       ? CLOUD_MODEL_UNAVAILABLE
       : "ARTICLE_GENERATION_FAILED"
     return NextResponse.json(

@@ -28,13 +28,38 @@ import {
 } from "@/lib/distribution/platforms"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
+import { matchGeoArticlesByPlatform } from "@/lib/distribution/geo-platform-articles"
 
-type Adaptation = { platform: string; title: string; body: string; tags: string[] }
-type JobItem = { platform: string; status: string; error?: string; result?: { url?: string } }
+type Adaptation = {
+  platform: string
+  articleId?: string
+  title: string
+  body: string
+  tags: string[]
+}
+type JobItem = {
+  platform: string
+  status: string
+  error?: string
+  result?: { url?: string; metadata?: { state?: string } }
+}
 type Job = { jobId: string; status: string; items: JobItem[] }
 
 const ACTIVE_JOB_STORAGE_KEY = "zhongtai.geo-distribution.active-job.v1"
 const TERMINAL_JOB_STATUSES = new Set(["success", "failed", "cancelled", "waiting_user"])
+
+const JOB_STATUS_LABELS: Record<string, string> = {
+  queued: "排队中",
+  running: "发布中",
+  success: "已完成",
+  failed: "发布失败",
+  cancelled: "已停止",
+  waiting_user: "等待处理",
+}
+
+function jobStatusLabel(status: string) {
+  return JOB_STATUS_LABELS[status] || "处理中"
+}
 
 function platformName(platformId: string) {
   return getDistributionPlatformBrand(platformId)?.name || platformId
@@ -63,6 +88,7 @@ export function GeoArticleDistribute({
   const [accountsLoading, setAccountsLoading] = React.useState(false)
   const [submitMode, setSubmitMode] = React.useState<"manual_confirm" | "auto_submit">("manual_confirm")
   const publishInFlightRef = React.useRef(false)
+  const expiredBindingsRef = React.useRef(new Set<string>())
 
   const loadAccounts = React.useCallback(async () => {
     setAccountsLoading(true)
@@ -100,6 +126,16 @@ export function GeoArticleDistribute({
       setAccountsLoading(false)
     }
   }, [])
+
+  React.useEffect(() => {
+    const expired = (job?.items ?? [])
+      .filter((item) => item.result?.metadata?.state === "login_required")
+      .map((item) => item.platform)
+      .filter((platform) => !expiredBindingsRef.current.has(platform))
+    if (!expired.length) return
+    expired.forEach((platform) => expiredBindingsRef.current.add(platform))
+    void loadAccounts()
+  }, [job, loadAccounts])
 
   React.useEffect(() => {
     const list = loadArticleBatch().articles.filter((article) => article.status === "success")
@@ -185,6 +221,10 @@ export function GeoArticleDistribute({
   }, [job?.jobId, job?.status])
 
   const selected = articles.find((article) => article.id === articleId)
+  const platformArticleMatches = React.useMemo(
+    () => matchGeoArticlesByPlatform({ articles, anchor: selected, platforms }),
+    [articles, selected, platforms],
+  )
   const needsPoi = platforms.some((platform) => platform === "dianping" || platform === "ctrip")
   const connectedCount = accountPlatforms.filter((item) => item.connected).length
 
@@ -207,6 +247,14 @@ export function GeoArticleDistribute({
       toast({ title: "请选择文章和至少一个已绑定平台", variant: "destructive" })
       return
     }
+    if (platformArticleMatches.missing.length) {
+      toast({
+        title: "部分平台没有对应的矩阵文章",
+        description: platformArticleMatches.missing.map(platformName).join("、"),
+        variant: "destructive",
+      })
+      return
+    }
     if (needsPoi && (!poiName.trim() || !city.trim() || !poiReference.trim())) {
       toast({ title: "点评/携程需要真实门店或目的地信息", variant: "destructive" })
       return
@@ -225,6 +273,17 @@ export function GeoArticleDistribute({
             title: selected.title,
             markdown: selected.markdown,
             media: [],
+            projectId: selected.projectId,
+            date: selected.date,
+            platformArticles: platformArticleMatches.matches.map(({ platform, article }) => ({
+              platform,
+              articleId: article.id,
+              projectId: article.projectId,
+              date: article.date,
+              title: article.title,
+              markdown: article.markdown,
+              media: [],
+            })),
             poiName,
             cityOrDestination: city,
             poiReference,
@@ -437,7 +496,7 @@ export function GeoArticleDistribute({
             ) : null}
 
             <button
-              disabled={busy || !selected || !platforms.length}
+              disabled={busy || !selected || !platforms.length || platformArticleMatches.missing.length > 0}
               onClick={createPreview}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-700 py-3 text-sm font-semibold text-white disabled:opacity-40"
             >
@@ -466,6 +525,9 @@ export function GeoArticleDistribute({
                         <strong className="text-sm">{platformName(adaptation.platform)}</strong>
                         <span className="rounded-full bg-cyan-50 px-2 py-1 text-[10px] text-cyan-700">待确认</span>
                       </div>
+                      <p className="mt-2 text-[10px] font-medium text-emerald-600">
+                        已匹配该平台的矩阵原文
+                      </p>
                       <h3 className="mt-3 text-sm font-semibold">{adaptation.title}</h3>
                       <p className="mt-2 line-clamp-5 whitespace-pre-wrap text-xs leading-5 text-slate-500">{adaptation.body}</p>
                     </article>
@@ -501,7 +563,7 @@ export function GeoArticleDistribute({
                     停止后续发布
                   </button>
                 ) : null}
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs">{job.status}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs">{jobStatusLabel(job.status)}</span>
               </div>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -510,12 +572,12 @@ export function GeoArticleDistribute({
                   <div className="flex items-center gap-2">
                     {item.status === "success" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <Clock3 className="h-4 w-4 text-amber-600" />}
                     <strong className="text-sm">{platformName(item.platform)}</strong>
-                    <span className="ml-auto text-xs">{item.status}</span>
+                    <span className="ml-auto text-xs">{jobStatusLabel(item.status)}</span>
                   </div>
                   {item.error ? <p className="mt-2 text-xs text-red-600">{item.error}</p> : null}
                   {["failed", "waiting_user"].includes(item.status) ? (
                     <button disabled={Boolean(retryingPlatform)} onClick={() => retry(item.platform)} className="mt-3 rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50">
-                      {retryingPlatform === item.platform ? "提交中…" : "处理后重试"}
+                      {retryingPlatform === item.platform ? "重新定位中…" : "重新尝试发布"}
                     </button>
                   ) : null}
                 </div>

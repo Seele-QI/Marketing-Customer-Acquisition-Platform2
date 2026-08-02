@@ -145,7 +145,9 @@ export function GeoArticleBatchPanel({
         }
       })
       .catch(() => {
-        if (!cancelled) setProjects([])
+        // Keep the last verified project list during a transient network
+        // failure. Clearing it here made an in-flight batch lose its matrix
+        // context and wiped the visible task cards.
       })
       .finally(() => {
         if (!cancelled) setProjectsLoading(false)
@@ -160,14 +162,14 @@ export function GeoArticleBatchPanel({
       setProjectDetail(null)
       return
     }
-    setProjectDetail(null)
     let cancelled = false
     void getMatrixProject(projectId)
       .then((p) => {
         if (!cancelled) setProjectDetail(p)
       })
       .catch(() => {
-        if (!cancelled) setProjectDetail(null)
+        // Retain the last loaded detail. The next successful refresh replaces
+        // it; a temporary FastAPI timeout must not detach the active batch.
       })
     return () => {
       cancelled = true

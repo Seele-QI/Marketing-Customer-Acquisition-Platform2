@@ -1,4 +1,4 @@
-﻿# 中央激活服务部署指南
+# 中央激活服务部署指南
 
 桌面 Electron 客户端首次启动需联网调用中央 FastAPI 的 `/api/central/*` 路由，校验激活码并下发 API Key。服务端逻辑已在仓库根 [`main.py`](../../main.py) 内，无需单独代码仓库。
 
@@ -25,7 +25,7 @@ python scripts/generate-central-signing-keys.py
 
 ```env
 # AI Key 池（按 plan 名称分组，与激活码 plan 字段对应）
-CENTRAL_KEY_POOL_JSON={"RUNNINGHUB_API_KEY":"replace-me"}
+CENTRAL_KEY_POOL_JSON={"standard":{"DEEPSEEK_API_KEY":"sk-...","RUNNINGHUB_API_KEY":"..."}}
 
 CENTRAL_SIGNING_PRIVATE_KEY=<Ed25519 seed base64 或 PEM>
 CENTRAL_SIGNING_KEY_ID=v1

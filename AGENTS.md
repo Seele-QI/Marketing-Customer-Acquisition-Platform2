@@ -59,6 +59,7 @@
 | `RUNNINGHUB_API_KEY` | `main.py:_get_rh_client` | ✅ | 国内站数字人视频与音频工作流 |
 | `RUNNINGHUB_IMAGE_API_KEY` | `main.py:_get_rh_client` | 图片生成必填 | 海外站图片工作台、视频封面图与 GEO 文章插图；不得回退国内站密钥 |
 | `RUNNINGHUB_IMAGE_BASE_URL` | `lib/runninghub_client.py` | 可选 | 海外图片服务基址，默认 `https://www.runninghub.ai/openapi/v2` |
+| `GEO_ARTICLE_GENERATION_CONCURRENCY` | GEO 文章批量生成 Route | 可选 | 云模型并发上限，默认 `3`，允许 `1..8`；避免批量生成触发渠道限流 |
 | `NEXT_PUBLIC_FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ 生产 | 浏览器直连 API |
 | `FASTAPI_URL` | `lib/fastapi-base.ts` | ✅ Docker/PaaS | Next 服务端 proxy 内网地址 |
 | `EMAIL_HASH_SALT` | `lib/auth.py` | ✅ | 邮箱哈希盐（32 字节 hex）|
@@ -93,6 +94,7 @@
 | `COOKIE_ENCRYPTION_KEY` | `lib/crypto_utils.py` / Electron 主进程 | 独立 FastAPI 必填 | 安装版按设备自动生成并加密保存；独立部署时手动配置至少 32 字符 |
 | `PLAYWRIGHT_BROWSERS_PATH` | `lib/playwright_env.py` | 可选 | Chromium 自定义安装或打包目录 |
 | `PUBLISH_TIMEOUT_S` | `lib/publisher/manager.py` | 可选 | 单平台发布超时，默认 900 秒 |
+| `GEO_ARTICLE_PROVIDER_TIMEOUT_MS` | GEO 文章生成路由 | 可选 | 单个云模型渠道等待上限，默认 45000ms；超时后切换备用渠道 |
 
 | `CREDIT_DB_OVERRIDE` | `lib/db.py` | 生产推荐 | SQLite 数据库文件路径（默认 `<project>/data/accounts.db`）|
 | `DATA_DIR` | `main.py` | 生产推荐 | 上传文件 / 视频缓存持久化根目录（默认 `<project>/public/video-cache`）|
@@ -273,9 +275,13 @@ npx tsc --noEmit
 ## GEO 文章自动插图
 
 - “深度优化文章创作”在“每组合篇数”旁提供“每篇插图”设置，默认 `0`，范围 `0..5`；选择按矩阵项目持久化。
+- 批量文章 SSE 每 10 秒发送保活注释；矩阵项目列表短暂加载失败时保留最后一次有效状态，不清空进行中的任务。
 - 浏览器仅调用 `/api/geo/article-illustrations/generate|status|retry`。锚点、提示词、平台比例和 `1k` 分辨率均由服务端确定，客户端不得提交模型、供应商或工作流参数。
 - 文章成功后才创建插图任务；文本文章不等待图片完成。单篇文章共用一个可恢复任务，成功图片通过稳定 HTML marker 幂等插入最新 Markdown，失败图片仅显示非阻塞“重试插图”。
 - FastAPI 图片并发全局上限为 `6`，每张图片最多初次调用加 `2` 次重试；缓存位于 `<DATA_DIR>/video-cache/geo-article-illustrations/<user-scope>/<project>/<article>/`，公开路径为 `/static/geo-article-illustrations/...`。
 - 任务状态、计费引用、本地文章和缓存路径均按用户、矩阵项目、文章与插图 ID 隔离。切换页面只停止本地轮询，返回项目后按原 task ID 自动恢复。
 - 桌面端国内/海外 RunningHub 配置固定从本地 `resources/.env` 注入 FastAPI 子进程，云端配置快照不得覆盖 `RUNNINGHUB_API_KEY`、`RUNNINGHUB_IMAGE_API_KEY` 与 `RUNNINGHUB_IMAGE_BASE_URL`。源码、浏览器错误和日志不得包含密钥值。
 - 图片工作台继续保留双候选图合同；GEO 文章插图每个锚点只保留一张最终图，不提供候选图、模型或工作流选择器。
+- GEO 文章一键分发以所选文章作为“项目+日期”锚点，按 `platformId` 为每个目标平台匹配其自己的矩阵原文；禁止把一篇文章复制到全部平台，也禁止跨矩阵项目或跨日期混合发布。
+- GEO 文章生成严格读取云端功能 `geo.article.generate` 的模型绑定顺序；单轮先切备用渠道，瞬时网络错误、`408/409/425/429/5xx` 或空响应最多执行三轮退避恢复。批量请求默认并发 `3`，不得恢复为无界或 20 路突发调用。
+- GEO 一键分发的文章编辑器探测必须覆盖主页面与 iframe，并按可见面积选择正文编辑器；平台入口、图片上传控件、富文本编辑器和多步骤发布按钮均采用等待与兜底定位，禁止依赖裸 `textarea` 作为正文编辑器。

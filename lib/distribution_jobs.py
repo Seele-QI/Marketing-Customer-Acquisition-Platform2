@@ -27,18 +27,63 @@ def build_adaptations(content_type: str, source: Dict[str, Any], platforms: List
     allowed = VIDEO_PLATFORMS if content_type == "video" else ARTICLE_PLATFORMS
     targets = [platform for platform in platforms if platform in allowed]
     if not targets:
-        raise ValueError("至少选择一个受支持的平台")
-    title = str(source.get("title") or "").strip()
-    body = str(source.get("markdown") or source.get("description") or "").strip()
-    tags = [str(tag).strip().lstrip("#") for tag in source.get("tags", []) if str(tag).strip()]
-    if not title or not body:
-        raise ValueError("标题和内容不能为空")
+        raise ValueError("\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u53d7\u652f\u6301\u7684\u5e73\u53f0")
+
+    platform_articles = {
+        str(item.get("platform") or "").strip(): item
+        for item in source.get("platformArticles", [])
+        if isinstance(item, dict) and str(item.get("platform") or "").strip()
+    }
+    if content_type == "geo_article" and platform_articles:
+        missing = [platform for platform in targets if platform not in platform_articles]
+        if missing:
+            raise ValueError("\u6240\u9009\u5e73\u53f0\u7f3a\u5c11\u5bf9\u5e94\u7684\u77e9\u9635\u6587\u7ae0")
+        expected_project = str(source.get("projectId") or "").strip()
+        expected_date = str(source.get("date") or "").strip()
+        for platform, article in platform_articles.items():
+            if str(article.get("platform") or "").strip() != platform:
+                raise ValueError("\u5e73\u53f0\u6587\u7ae0\u6620\u5c04\u65e0\u6548")
+            if expected_project and str(article.get("projectId") or "").strip() != expected_project:
+                raise ValueError("\u7981\u6b62\u8de8\u5185\u5bb9\u77e9\u9635\u9879\u76ee\u6df7\u5408\u53d1\u5e03")
+            if expected_date and str(article.get("date") or "").strip() != expected_date:
+                raise ValueError("\u7981\u6b62\u8de8\u77e9\u9635\u65e5\u671f\u6df7\u5408\u53d1\u5e03")
+
     output = []
     for platform in targets:
+        platform_source = platform_articles.get(platform, source)
+        title = str(platform_source.get("title") or "").strip()
+        body = str(
+            platform_source.get("markdown")
+            or platform_source.get("description")
+            or ""
+        ).strip()
+        raw_tags = platform_source.get("tags", source.get("tags", []))
+        tags = [
+            str(tag).strip().lstrip("#")
+            for tag in raw_tags
+            if str(tag).strip()
+        ]
+        if not title or not body:
+            raise ValueError(f"{platform} \u5bf9\u5e94\u6587\u7ae0\u7684\u6807\u9898\u548c\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a")
+
         limits = VIDEO_TITLE_LIMITS if content_type == "video" else ARTICLE_TITLE_LIMITS
-        item = {"platform": platform, "title": title[:limits[platform]], "body": _plain_markdown(body) if content_type == "geo_article" and platform in {"weibo", "xiaohongshu"} else body, "tags": tags[:10], "media": source.get("media", [])}
+        item = {
+            "platform": platform,
+            "articleId": str(platform_source.get("articleId") or ""),
+            "title": title[:limits[platform]],
+            "body": _plain_markdown(body)
+            if content_type == "geo_article" and platform in {"weibo", "xiaohongshu"}
+            else body,
+            "tags": tags[:10],
+            "media": platform_source.get("media", source.get("media", [])),
+        }
         if platform in {"dianping", "ctrip"}:
-            item.update({"poiName": str(source.get("poiName") or "").strip(), "cityOrDestination": str(source.get("cityOrDestination") or "").strip(), "poiReference": str(source.get("poiReference") or "").strip(), "contentDisclosure": "官方攻略/笔记"})
+            item.update({
+                "poiName": str(source.get("poiName") or "").strip(),
+                "cityOrDestination": str(source.get("cityOrDestination") or "").strip(),
+                "poiReference": str(source.get("poiReference") or "").strip(),
+                "contentDisclosure": "\u5b98\u65b9\u653b\u7565/\u7b14\u8bb0",
+            })
         output.append(item)
     return output
 
@@ -166,7 +211,10 @@ async def run_job(user_id: int, job_id: str):
                     from lib.publisher.article import publish_geo_article
                     result = await publish_geo_article(platform=item["platform"],user_id=user_id,adaptation=adaptation,project_root=str(Path(__file__).resolve().parent.parent),submit_mode=job["submitMode"])
                 data, state = result.to_dict(), (result.metadata or {}).get("state")
-                status = "success" if result.success else ("waiting_user" if state == "waiting_user" else "failed")
+                if state == "login_required":
+                    from lib.connector_service import mark_platform_login_expired
+                    mark_platform_login_expired(user_id, item["platform"])
+                status = "success" if result.success else ("waiting_user" if state in {"waiting_user", "login_required"} else "failed")
                 store.set_item(item["id"],status,result=data,error=result.error)
             except asyncio.CancelledError:
                 raise

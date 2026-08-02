@@ -12,7 +12,7 @@ function cloudError(
   message: string,
   failures?: ArticleCloudCompletionError["failures"],
 ): ArticleCloudCompletionError {
-  const error = new Error(`${code}: ${message}`) as ArticleCloudCompletionError
+  const error = new Error(message) as ArticleCloudCompletionError
   error.code = code
   error.statusCode = code === "CLOUD_MODEL_NOT_READY" ? 503 : 502
   error.failures = failures
@@ -28,6 +28,8 @@ export async function completeCloudArticleText(input: {
   validateText?: (text: string) => boolean
   signal?: AbortSignal
   fetchImpl?: typeof fetch
+  maxRounds?: number
+  retryDelayMs?: number
   settleBilling?: (provider: CopywritingProviderCandidate) => Promise<void>
 }): Promise<string> {
   if (input.providers.length === 0) {
@@ -47,6 +49,8 @@ export async function completeCloudArticleText(input: {
     validateText: input.validateText,
     signal: input.signal,
     fetchImpl: input.fetchImpl,
+    maxRounds: input.maxRounds ?? 3,
+    retryDelayMs: input.retryDelayMs,
   })
 
   if (!result.ok) {

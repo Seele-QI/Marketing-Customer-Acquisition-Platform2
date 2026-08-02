@@ -3,6 +3,7 @@ import { listArkChatEndpoints } from "@/lib/llm/ark-client"
 import { DEFAULT_MAX_TOKENS } from "@/lib/llm/model-registry"
 import { listNewApiRelayEndpoints, sonettoTimeoutMs } from "@/lib/llm/sonetto-client"
 import { loadSyncedProviders } from "@/lib/llm/synced-providers"
+import { getSyncedFeature } from "@/lib/llm/feature-catalog-sync"
 import { getDeepseekApiKey, readServerEnv } from "@/lib/server-env"
 
 export type CopywritingContentPart =
@@ -59,8 +60,18 @@ function arkChatCompletionsUrl(raw: string): string {
   return `${base}/chat/completions`
 }
 
-function listCloudProviders(): CopywritingProviderCandidate[] {
-  return loadSyncedProviders()
+function listCloudProviders(featureId?: string): CopywritingProviderCandidate[] {
+  const allProviders = loadSyncedProviders()
+  const feature = featureId ? getSyncedFeature(featureId) : null
+  if (feature && !feature.enabled) return []
+  const providers = feature?.provider_ids?.length
+    ? feature.provider_ids
+        .map((id) => allProviders.find((provider) => provider.id === id))
+        .filter((provider): provider is (typeof allProviders)[number] =>
+          Boolean(provider),
+        )
+    : allProviders
+  return providers
     .filter((provider) => {
       const kind = provider.kind.trim().toLowerCase()
       const adapter = provider.adapter.trim().toLowerCase()
@@ -146,8 +157,9 @@ function listDevelopmentFallbacks(hasImages: boolean): CopywritingProviderCandid
 
 export function listCopywritingProviderCandidates(input: {
   hasImages: boolean
+  featureId?: string
 }): CopywritingProviderCandidate[] {
-  const cloudProviders = listCloudProviders()
+  const cloudProviders = listCloudProviders(input.featureId)
   if (cloudProviders.length > 0) return cloudProviders
   if (readServerEnv("DESKTOP_RUNTIME") === "1") return []
   return listDevelopmentFallbacks(input.hasImages)

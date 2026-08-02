@@ -56,7 +56,10 @@ async function handleScore(req: Request, cookieHeader: string): Promise<Response
   )
     ? requestedPlatformId
     : null
-  const providers = listCopywritingProviderCandidates({ hasImages: false }).filter(
+  const providers = listCopywritingProviderCandidates({
+    hasImages: false,
+    featureId: "geo.article.generate",
+  }).filter(
     (candidate) => candidate.source === "cloud",
   )
   if (providers.length === 0) {

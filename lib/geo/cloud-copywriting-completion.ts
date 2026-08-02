@@ -44,79 +44,113 @@ export async function completeCloudCopywritingText(input: {
   validateText?: (text: string) => boolean
   signal?: AbortSignal
   fetchImpl?: typeof fetch
+  maxRounds?: number
+  retryDelayMs?: number
 }): Promise<CloudCopywritingCompletion> {
   const failures: CopywritingProviderFailure[] = []
   const fetchImpl = input.fetchImpl ?? fetch
+  const maxRounds = Math.max(1, Math.min(3, input.maxRounds ?? 1))
+  const retryDelayMs = Math.max(0, input.retryDelayMs ?? 800)
+  const permanentlyFailed = new Set<string>()
 
-  for (const provider of input.providers) {
-    if (input.signal?.aborted) {
-      failures.push({
-        name: provider.name,
-        model: provider.model,
-        reason: "client_aborted",
-      })
-      break
-    }
+  const providerKey = (provider: CopywritingProviderCandidate) =>
+    `${provider.url}\n${provider.model}`
+  const transientStatus = (status: number) =>
+    status === 408 || status === 409 || status === 425 || status === 429 || status >= 500
 
-    const timeoutSignal = AbortSignal.timeout(provider.timeoutMs)
-    const signal = input.signal
-      ? AbortSignal.any([input.signal, timeoutSignal])
-      : timeoutSignal
-    let response: Response
-    try {
-      response = await fetchImpl(provider.url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
+  for (let round = 0; round < maxRounds; round += 1) {
+    let sawTransientFailure = false
+
+    for (const provider of input.providers) {
+      if (permanentlyFailed.has(providerKey(provider))) continue
+      if (input.signal?.aborted) {
+        failures.push({
+          name: provider.name,
           model: provider.model,
-          stream: false,
-          messages: input.messages,
-          max_tokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
-        }),
-        signal,
-      })
-    } catch {
-      failures.push({
-        name: provider.name,
-        model: provider.model,
-        reason: input.signal?.aborted ? "client_aborted" : "network_error",
-      })
-      if (input.signal?.aborted) break
-      continue
+          reason: "client_aborted",
+        })
+        return { ok: false, failures }
+      }
+
+      const timeoutSignal = AbortSignal.timeout(provider.timeoutMs)
+      const signal = input.signal
+        ? AbortSignal.any([input.signal, timeoutSignal])
+        : timeoutSignal
+      let response: Response
+      try {
+        response = await fetchImpl(provider.url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            stream: false,
+            messages: input.messages,
+            max_tokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
+          }),
+          signal,
+        })
+      } catch {
+        failures.push({
+          name: provider.name,
+          model: provider.model,
+          reason: input.signal?.aborted ? "client_aborted" : "network_error",
+        })
+        if (input.signal?.aborted) return { ok: false, failures }
+        sawTransientFailure = true
+        if (timeoutSignal.aborted) permanentlyFailed.add(providerKey(provider))
+        continue
+      }
+
+      if (!response.ok) {
+        failures.push({
+          name: provider.name,
+          model: provider.model,
+          status: response.status,
+          reason: "http_error",
+        })
+        if (transientStatus(response.status)) sawTransientFailure = true
+        else permanentlyFailed.add(providerKey(provider))
+        await response.body?.cancel().catch(() => {})
+        continue
+      }
+
+      let text = ""
+      try {
+        text = extractMessageText(await response.json())
+      } catch {
+        // 无法解析的成功响应与空响应使用同一可恢复故障分类。
+      }
+      if (!text || (input.validateText && !input.validateText(text))) {
+        failures.push({
+          name: provider.name,
+          model: provider.model,
+          status: response.status,
+          reason: "missing_body",
+        })
+        sawTransientFailure = true
+        continue
+      }
+
+      return { ok: true, text, provider, failures }
     }
 
-    if (!response.ok) {
-      failures.push({
-        name: provider.name,
-        model: provider.model,
-        status: response.status,
-        reason: "http_error",
-      })
-      await response.body?.cancel().catch(() => {})
+    if (
+      round + 1 < maxRounds &&
+      sawTransientFailure &&
+      permanentlyFailed.size < input.providers.length
+    ) {
+      if (retryDelayMs > 0) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, retryDelayMs * (round + 1)),
+        )
+      }
       continue
     }
-
-    let text = ""
-    try {
-      text = extractMessageText(await response.json())
-    } catch {
-      // 无法解析的成功响应与空响应使用同一可恢复故障分类。
-    }
-    if (!text || (input.validateText && !input.validateText(text))) {
-      failures.push({
-        name: provider.name,
-        model: provider.model,
-        status: response.status,
-        reason: "missing_body",
-      })
-      continue
-    }
-
-    return { ok: true, text, provider, failures }
+    break
   }
 
   return { ok: false, failures }

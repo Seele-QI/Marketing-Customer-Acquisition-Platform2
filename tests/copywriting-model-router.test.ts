@@ -10,6 +10,7 @@ import {
 
 const ENV_KEYS = [
   "MODEL_PROVIDERS_JSON_B64",
+  "FEATURE_CATALOG_JSON_B64",
   "DESKTOP_RUNTIME",
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_CHAT_MODEL",
@@ -42,6 +43,13 @@ function setSyncedProviders(providers: unknown[]) {
   setEnv(
     "MODEL_PROVIDERS_JSON_B64",
     Buffer.from(JSON.stringify({ providers }), "utf8").toString("base64"),
+  )
+}
+
+function setSyncedFeatures(features: unknown[]) {
+  setEnv(
+    "FEATURE_CATALOG_JSON_B64",
+    Buffer.from(JSON.stringify({ features }), "utf8").toString("base64"),
   )
 }
 
@@ -115,6 +123,49 @@ describe("copywriting provider candidates", () => {
     setEnv("DEEPSEEK_API_KEY", "sk-local")
 
     assert.deepEqual(listCopywritingProviderCandidates({ hasImages: false }), [])
+  })
+
+  it("uses the exact provider order bound to GEO article generation", () => {
+    clearRoutingEnv()
+    setSyncedProviders([
+      {
+        id: 1,
+        kind: "llm",
+        name: "global-first",
+        adapter: "openai_chat",
+        base_url: "https://first.example",
+        api_key: "sk-first",
+        model: "first-model",
+        priority: 1,
+      },
+      {
+        id: 2,
+        kind: "llm",
+        name: "geo-primary",
+        adapter: "ark_chat",
+        base_url: "https://geo.example/api/v3",
+        api_key: "sk-geo",
+        model: "geo-model",
+        priority: 2,
+      },
+    ])
+    setSyncedFeatures([
+      {
+        feature_id: "geo.article.generate",
+        enabled: true,
+        provider_ids: [2, 1],
+      },
+    ])
+
+    const providers = listCopywritingProviderCandidates({
+      hasImages: false,
+      featureId: "geo.article.generate",
+    })
+
+    assert.deepEqual(providers.map((provider) => provider.name), [
+      "geo-primary",
+      "global-first",
+    ])
   })
 
   it("keeps DeepSeek env fallback for ordinary development", () => {
