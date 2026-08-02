@@ -1,0 +1,57 @@
+<style>
+  .stage{position:relative;min-height:650px;border:1px solid #dbe4ef;border-radius:20px;overflow:hidden;background:#f4f7fb;color:#172033}
+  .app{display:grid;grid-template-columns:155px 1fr;height:650px}.nav{background:#fff;border-right:1px solid #dfe7f0;padding:15px}.logo{height:45px;border-radius:10px;background:#fff7df;display:grid;place-items:center;font-size:12px;font-weight:800;color:#80611c}.nav-item{padding:9px;border-radius:8px;font-size:9px;margin-top:6px;color:#526178}.nav-item.on{background:#e6f1ff;color:#1b5aa6;font-weight:800}.content{padding:15px 345px 15px 16px}.top{height:34px;border-radius:10px;background:#fff;border:1px solid #e2e8f0;padding:9px 12px;font-size:9px;color:#64748b}.page-card{margin-top:12px;border-radius:16px;background:#fff;border:1px solid #e0e7f0;padding:15px}.page-card h3{font-size:16px;margin:0 0 5px}.page-card p{font-size:9px;color:#64748b}.steps{display:flex;gap:6px;margin-top:14px}.step{flex:1;border-radius:9px;background:#eef3f8;padding:9px;font-size:8px}.step.done{background:#e8f7ef;color:#087554}.step.active{background:#e6f0ff;color:#1d5ba8;font-weight:800}.form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.field{height:70px;border-radius:10px;border:1px solid #dfe6ef;padding:9px;font-size:8px;color:#64748b}.field b{display:block;color:#26364d;font-size:9px;margin-bottom:7px}
+  .drawer{position:absolute;right:0;top:0;bottom:0;width:335px;background:#fff;border-left:1px solid #dce5ef;box-shadow:-12px 0 34px rgba(15,23,42,.12);display:flex;flex-direction:column}.drawer-head{padding:13px;border-bottom:1px solid #e5ebf2}.head-row{display:flex;align-items:center;gap:8px}.avatar{width:33px;height:33px;border-radius:50%;background:linear-gradient(145deg,#246ac0,#22b3bd);border:3px solid #eaf4ff}.head-row strong{display:block;font-size:11px}.head-row span{font-size:8px;color:#64748b}.head-actions{margin-left:auto;font-size:11px;color:#64748b}.switcher{display:flex;gap:5px;margin-top:9px}.chip{font-size:7px;border-radius:99px;padding:4px 7px;background:#edf4ff;color:#285ca1}.chip.live{background:#e7f8ef;color:#087554}.tabs{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid #e5ebf2}.tab{text-align:center;padding:9px;font-size:9px;color:#64748b}.tab.on{color:#1d5fab;font-weight:800;border-bottom:2px solid #2b70c4}.drawer-body{flex:1;min-height:0;overflow:auto;padding:12px}.context{border-radius:9px;background:#f4f7fb;padding:8px;font-size:8px;color:#64748b}.context strong{color:#27364a}.message{margin-top:9px;border-radius:11px;background:#edf5ff;padding:10px;font-size:9px;line-height:1.55}.plan-card{margin-top:9px;border:1px solid #dce6f1;border-radius:11px;padding:10px}.plan-top{display:flex;justify-content:space-between;font-size:9px}.plan-top strong{font-size:10px}.pct{color:#1d5fab}.progress{height:5px;background:#e6ecf3;border-radius:99px;margin:7px 0 9px;overflow:hidden}.progress i{display:block;width:42%;height:100%;background:linear-gradient(90deg,#2469bc,#20a8b7)}.plan-step{display:flex;gap:7px;padding:6px 0;border-bottom:1px solid #edf0f5;font-size:8px}.plan-step:last-child{border:0}.dot{width:14px;height:14px;border-radius:50%;background:#e6ecf3;display:grid;place-items:center;font-size:7px}.done .dot{background:#d9f5e6;color:#087554}.active .dot{background:#dceaff;color:#1d5fab}.active{color:#1d5fab;font-weight:700}
+  .suggestions{display:grid;gap:6px;margin-top:9px}.suggestion{border:1px solid #dce5ef;border-radius:9px;padding:8px;font-size:8px;background:#fff}.suggestion strong{display:block;font-size:9px;margin-bottom:3px}.suggestion button{margin-top:6px;border:0;border-radius:6px;background:#1e5ea9;color:#fff;padding:5px 7px;font-size:7px}.suggestion button.ghost{background:#eef2f7;color:#34435a;margin-left:4px}.composer{border-top:1px solid #e5ebf2;padding:10px}.input{border:1px solid #d9e3ef;border-radius:10px;padding:9px;font-size:8px;color:#94a3b8}.composer-note{font-size:7px;color:#94a3b8;margin-top:6px}
+  .orb-demo{display:flex;align-items:center;gap:14px;margin-top:18px}.orb{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#1765b9,#1db5bd);color:#fff;font-size:10px;font-weight:800;border:4px solid #fff;box-shadow:0 10px 28px rgba(25,89,164,.38)}.orb-note{font-size:12px;color:#64748b;line-height:1.6}.behavior{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}.rule{border:1px solid #dce5ef;border-radius:12px;background:#fff;padding:12px}.rule strong{font-size:11px}.rule p{font-size:10px;color:#64748b;line-height:1.5;margin:5px 0 0}
+  @media(max-width:950px){.content{padding-right:15px}.drawer{position:relative;width:100%;height:620px}.stage{overflow:auto}.app{display:block;height:auto}.nav{display:none}.behavior{grid-template-columns:1fr 1fr}}
+</style>
+
+<h2>全局悬浮助理 · 交互设计</h2>
+<p class="subtitle">示例场景：用户正在“数字人视频创作”页面填写脚本，视频助理从右侧展开，但原页面仍可操作。</p>
+
+<div class="stage">
+  <div class="app">
+    <aside class="nav"><div class="logo">招财猫 AI 中台</div><div class="nav-item">工作台</div><div class="nav-item">身份定位</div><div class="nav-item on">视频创作</div><div class="nav-item">GEO 优化</div><div class="nav-item">海报图创作</div><div class="nav-item">抖音截流</div></aside>
+    <main class="content">
+      <div class="top">视频创作 / 数字人口播　　当前项目：30 天餐饮获客增长计划</div>
+      <div class="page-card">
+        <h3>数字人口播视频创作</h3><p>从脚本规划到成片生成，由视频助理陪你完成。</p>
+        <div class="steps"><div class="step done">✓ 1. 规划脚本</div><div class="step active">2. 形象与素材</div><div class="step">3. 生成视频</div><div class="step">4. 后期与导出</div></div>
+        <div class="form"><div class="field"><b>口播脚本</b>餐饮老板做短视频，不要先追求播放量……</div><div class="field"><b>数字人形象</b>尚未选择</div><div class="field"><b>声音</b>温和专业女声</div><div class="field"><b>画面比例</b>9:16 竖屏</div></div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="drawer">
+    <div class="drawer-head">
+      <div class="head-row"><div class="avatar"></div><div><strong>许卓 · 视频创作助理</strong><span>专业流程已加载 · 跨页面持续在线</span></div><div class="head-actions">—　×</div></div>
+      <div class="switcher"><span class="chip live">● 当前页面匹配</span><span class="chip">切换助理⌄</span><span class="chip">已用 8 条记忆</span></div>
+    </div>
+    <div class="tabs"><div class="tab on">对话</div><div class="tab">计划</div><div class="tab">记忆</div></div>
+    <div class="drawer-body">
+      <div class="context">正在观察：<strong>数字人口播 / 形象与素材</strong><br>当前项目：30 天餐饮获客增长计划</div>
+      <div class="message">你的脚本已经完成，但还没有选择数字人形象。根据身份定位中的“本地餐饮获客教练”和“稳重、接地气”风格，我建议先确定形象，再生成视频，避免反复扣积分。</div>
+      <div class="plan-card">
+        <div class="plan-top"><strong>项目计划</strong><span class="pct">42%</span></div><div class="progress"><i></i></div>
+        <div class="plan-step done"><span class="dot">✓</span><span>完成账号身份定位</span></div>
+        <div class="plan-step done"><span class="dot">✓</span><span>确定首批 3 个选题</span></div>
+        <div class="plan-step active"><span class="dot">3</span><span>制作首条数字人口播</span></div>
+        <div class="plan-step"><span class="dot">4</span><span>审核并分发到抖音</span></div>
+      </div>
+      <div class="suggestions">
+        <div class="suggestion"><strong>建议操作：匹配数字人形象</strong>我可以根据定位档案生成 3 个形象方向，并预填到当前步骤。<br><button>生成形象建议</button><button class="ghost">先跳过</button></div>
+      </div>
+    </div>
+    <div class="composer"><div class="input">问助理，或输入“帮我继续下一步”　　　　　　　　　➤</div><div class="composer-note">低风险操作可直接完成 · 扣积分、生成与发布前会明确确认</div></div>
+  </aside>
+</div>
+
+<div class="orb-demo"><div class="orb">AI 助理</div><div class="orb-note"><strong>收起态：</strong>固定在程序右下角，可拖动位置；页面切换不消失。仅在需要用户处理或计划有更新时显示角标，不用弹窗打断用户。</div></div>
+
+<div class="behavior">
+  <div class="rule"><strong>跨页面保持</strong><p>助理面板挂在应用根布局，不随业务页面卸载；对话、当前项目和展开状态持续保留。</p></div>
+  <div class="rule"><strong>专业助理切换</strong><p>进入业务模块时推荐匹配的助理；正在进行的对话不会被静默替换，用户可以固定或手动切换。</p></div>
+  <div class="rule"><strong>三层上下文</strong><p>共享身份定位与企业记忆；叠加专业模块记忆；最后读取当前项目、页面步骤和表单状态。</p></div>
+  <div class="rule"><strong>受控操作</strong><p>导航和预填可直接执行；扣积分、启动生成、发布和外部联系按照现有权限与审批规则确认。</p></div>
+</div>

@@ -1,0 +1,65 @@
+<style>
+  .org-shell { max-width: 1180px; margin: 0 auto; }
+  .org-top { display: grid; grid-template-columns: 1fr; gap: 14px; margin: 22px 0 16px; }
+  .org-card { border: 1px solid #dbe3ee; border-radius: 14px; padding: 15px 16px; background: #fff; box-shadow: 0 4px 18px rgba(15,23,42,.05); }
+  .org-card.lead { border-color: #1d4ed8; background: linear-gradient(135deg,#eff6ff,#fff); }
+  .org-card h4 { margin: 0 0 5px; color: #0f172a; font-size: 15px; }
+  .org-card p { margin: 0; color: #64748b; font-size: 12px; line-height: 1.55; }
+  .dept-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 11px; }
+  .expert-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 11px; }
+  .badge { display:inline-block; padding:3px 7px; border-radius:999px; background:#e2e8f0; color:#334155; font-size:10px; margin-bottom:8px; }
+  .expert { border-color:#c4b5fd; background:linear-gradient(180deg,#faf5ff,#fff); }
+  .flow { margin: 18px 0; padding: 14px; border-radius: 12px; background:#f8fafc; color:#334155; text-align:center; font-size:13px; }
+  .arrow { color:#2563eb; padding:0 8px; font-weight:700; }
+  @media (max-width:900px){ .dept-grid{grid-template-columns:repeat(2,1fr)} .expert-grid{grid-template-columns:repeat(2,1fr)} }
+</style>
+
+<div class="org-shell">
+  <h2>企业智能体团队 · 组织结构评审</h2>
+  <p class="subtitle">通用企业部门负责经营治理；AI 内容行业专家作为可装卸角色包，不改变公司基础组织。</p>
+
+  <div class="org-top">
+    <div class="org-card lead">
+      <span class="badge">总协调与任务分派</span>
+      <h4>总协调官 · 纪衡</h4>
+      <p>识别任务、确定主责部门、邀请会签、汇总分歧与风险。无权替代法定代表人或专业人员批准高风险事项。</p>
+    </div>
+  </div>
+
+  <div class="flow">用户任务 <span class="arrow">→</span> 纪衡分诊 <span class="arrow">→</span> 一个主责部门 <span class="arrow">→</span> 0–3 个会签部门 <span class="arrow">→</span> 人工审批 / 最终交付</div>
+
+  <div class="section">
+    <div class="label">10 个通用部门负责人</div>
+    <div class="dept-grid">
+      <div class="org-card"><h4>战略管理 · 沈策</h4><p>战略拆解、经营目标、项目组合与决策备忘录。</p></div>
+      <div class="org-card"><h4>法务合规 · 顾正</h4><p>合同审阅、法规检索、知识产权、隐私与合规会签。</p></div>
+      <div class="org-card"><h4>财务内控 · 周谨</h4><p>预算、现金流、经营分析、对账与内控检查。</p></div>
+      <div class="org-card"><h4>组织人事 · 林序</h4><p>岗位设计、招聘、绩效、制度与员工沟通底稿。</p></div>
+      <div class="org-card"><h4>产品管理 · 陆研</h4><p>需求分析、路线图、PRD、用户研究与验收标准。</p></div>
+      <div class="org-card"><h4>技术数据 · 陈卓</h4><p>技术方案、数据分析、系统风险与工程交付建议。</p></div>
+      <div class="org-card"><h4>品牌营销 · 程远</h4><p>品牌定位、市场研究、内容策略与营销复盘。</p></div>
+      <div class="org-card"><h4>销售商务 · 赵锐</h4><p>商机判断、方案报价、销售材料与成交推进。</p></div>
+      <div class="org-card"><h4>公共事务 · 宋和</h4><p>合作伙伴、媒体沟通、政府事务与舆情预案。</p></div>
+      <div class="org-card"><h4>运营服务 · 方宁</h4><p>交付运营、客户成功、SOP、工单与服务质量。</p></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">AI 内容中台行业角色包 · 4 位专家</div>
+    <div class="expert-grid">
+      <div class="org-card expert"><h4>内容策略专家 · 叶文</h4><p>选题、口播文案、内容矩阵与品牌一致性。</p></div>
+      <div class="org-card expert"><h4>视频生产专家 · 许卓</h4><p>分镜、数字人、素材、剪辑与成片质检。</p></div>
+      <div class="org-card expert"><h4>GEO 增长专家 · 韩拓</h4><p>实体、知识库、问答覆盖与生成式搜索优化。</p></div>
+      <div class="org-card expert"><h4>渠道分发专家 · 郑达</h4><p>平台适配、排期、账号健康、发布验证与回传。</p></div>
+    </div>
+  </div>
+
+  <div class="options">
+    <div class="option" data-choice="approve-org" onclick="toggleSelect(this)">
+      <div class="letter">A</div><div class="content"><h3>认可当前组织结构</h3><p>继续评审角色专业度、语言风格、Skill 与工具权限。</p></div>
+    </div>
+    <div class="option" data-choice="revise-org" onclick="toggleSelect(this)">
+      <div class="letter">B</div><div class="content"><h3>需要调整部门或姓名</h3><p>在对话中告诉我需要增加、合并、删除或改名的部分。</p></div>
+    </div>
+  </div>
+</div>

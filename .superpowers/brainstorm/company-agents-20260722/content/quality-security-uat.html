@@ -1,0 +1,56 @@
+<style>
+  .qa-shell{max-width:1120px;margin:0 auto}.stateflow{display:flex;align-items:center;gap:6px;overflow-x:auto;margin:18px 0}.state{min-width:105px;padding:10px;border-radius:10px;border:1px solid #dbe3ee;background:#fff;text-align:center;font-size:10px;color:#475569}.state b{display:block;color:#0f172a;margin-bottom:3px}.state.approval{background:#fff7ed;border-color:#fdba74}.state.good{background:#ecfdf5;border-color:#a7f3d0}.state.partial{background:#fefce8;border-color:#fde047}.state.bad{background:#fef2f2;border-color:#fca5a5}.arrow{color:#2563eb;font-weight:800}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:14px 0}.panel{padding:14px;border:1px solid #dbe3ee;border-radius:12px;background:#fff}.panel h3{font-size:13px;color:#0f172a;margin:0 0 8px}.panel ul{margin:0;padding-left:17px}.panel li{font-size:11px;line-height:1.65;color:#475569}.gate{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dbe3ee}.gate th{background:#f1f5f9;text-align:left;color:#475569;font-size:10px;padding:9px}.gate td{padding:9px;border-top:1px solid #e2e8f0;color:#475569;font-size:10px;line-height:1.5}.gate td:first-child{font-weight:700;color:#0f172a}.yes{color:#047857;font-weight:700}.no{color:#b91c1c;font-weight:700}.accept{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:14px 0}.item{padding:10px;border-radius:9px;background:#f8fafc;font-size:10px;color:#475569}.item b{color:#0f172a}@media(max-width:850px){.grid3,.accept{grid-template-columns:1fr}.stateflow{display:grid;grid-template-columns:1fr}.arrow{text-align:center;transform:rotate(90deg)}}
+</style>
+
+<div class="qa-shell">
+  <h2>安全、失败处理与验收门槛</h2>
+  <p class="subtitle">任何任务都必须落到明确状态；“模型回答了”不等于“任务完成了”。</p>
+
+  <div class="stateflow">
+    <div class="state"><b>queued</b>已进入队列</div><span class="arrow">→</span>
+    <div class="state"><b>preparing</b>附件与权限预检</div><span class="arrow">→</span>
+    <div class="state"><b>running</b>主责/会签执行</div><span class="arrow">→</span>
+    <div class="state approval"><b>needs_review</b>等待人工审批</div><span class="arrow">→</span>
+    <div class="state good"><b>completed</b>产物与证据齐全</div>
+  </div>
+  <div class="stateflow">
+    <div class="state partial"><b>partial</b>已有可用结果，但会签、解析或外部步骤不完整</div>
+    <div class="state bad"><b>failed</b>无可交付结果，记录明确错误与重试建议</div>
+    <div class="state"><b>cancelled</b>用户取消；停止后续调用并保留审计记录</div>
+  </div>
+
+  <div class="grid3">
+    <div class="panel"><h3>附件与知识安全</h3><ul><li>按文件签名识别真实类型，不只信扩展名</li><li>大小、页数、压缩比和解析时限封顶</li><li>上传资料视为不可信数据，阻断其中的提示注入</li><li>个人信息、合同、财务、人事资料按租户/部门/任务隔离</li><li>默认临时保存，到期删除；入库必须明确选择并留版本</li></ul></div>
+    <div class="panel"><h3>模型与工具安全</h3><ul><li>云端配置只下发模型与策略，密钥不进入前端</li><li>模型路由、角色、Skill、知识范围按任务保存快照</li><li>工具使用严格参数校验、超时、重试上限和幂等键</li><li>T2 动作绑定审批参数哈希；任何内容变化都重新审批</li><li>密钥、内部系统提示词和无关会话不得进入模型上下文</li></ul></div>
+    <div class="panel"><h3>业务风险控制</h3><ul><li>法务/财务输出始终标注工作底稿和复核要求</li><li>跨部门只传最小必要摘要与获准附件</li><li>引用保留来源、时间、文件页码/表格位置</li><li>供应商失败可降级，但不得绕过权限或扩大知识范围</li><li>外部发送、发布、写入必须返回可核验结果证明</li></ul></div>
+  </div>
+
+  <table class="gate">
+    <thead><tr><th>场景</th><th>系统行为</th><th>允许标记 completed？</th></tr></thead>
+    <tbody>
+      <tr><td>一个附件解析失败</td><td>其余附件继续；指出失败文件及影响，任务保持 partial</td><td class="no">否</td></tr>
+      <tr><td>会签部门超时</td><td>主责结果可交付；标明缺少哪项会签及重试入口</td><td class="no">否</td></tr>
+      <tr><td>首选模型不可用</td><td>在同权限、预算和能力等级内切换云端降级模型并记录</td><td class="yes">可，但必须记录降级</td></tr>
+      <tr><td>用户未批准外发</td><td>保存草稿并停在 needs_review，不调用外部连接器</td><td class="no">否</td></tr>
+      <tr><td>平台返回“已提交”</td><td>继续查询发布结果或读取平台证明；提交不等于成功</td><td class="no">否</td></tr>
+      <tr><td>输出、引用、会签和所需动作全部通过</td><td>保存最终产物、费用、模型/Skill 快照和执行证明</td><td class="yes">是</td></tr>
+    </tbody>
+  </table>
+
+  <div class="label" style="margin-top:16px">阶段 1 验收清单</div>
+  <div class="accept">
+    <div class="item"><b>角色：</b>14 张新卡、原创头像、严肃姓名、角色契约与快捷任务一一对应。</div>
+    <div class="item"><b>路由：</b>用户不选模型；管理员可查看任务实际模型、降级和费用快照。</div>
+    <div class="item"><b>附件：</b>图片与首版文件类型可上传、解析、删除，并明确临时/知识库范围。</div>
+    <div class="item"><b>Skill：</b>每次激活可追踪；未匹配的 Skill 不加载；来源与版本可查看。</div>
+    <div class="item"><b>协作：</b>单部门任务不滥用会签；复杂任务为一个主责、最多三个会签。</div>
+    <div class="item"><b>审批：</b>高风险动作无法绕过，拒绝/过期/修改后均有正确状态。</div>
+    <div class="item"><b>评测：</b>每个角色至少覆盖正常、缺资料、越权诱导和提示注入四类用例。</div>
+    <div class="item"><b>端到端：</b>浏览器完成选角色、上传、运行、会签、审批与任务历史恢复。</div>
+  </div>
+
+  <div class="options">
+    <div class="option" data-choice="approve-quality" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>认可安全与验收标准</h3><p>完成设计评审，写入正式设计文档。</p></div></div>
+    <div class="option" data-choice="revise-quality" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>需要调整</h3><p>请指出状态、安全控制或验收标准需要修改的位置。</p></div></div>
+  </div>
+</div>

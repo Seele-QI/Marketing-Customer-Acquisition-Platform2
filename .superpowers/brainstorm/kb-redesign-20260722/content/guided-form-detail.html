@@ -1,0 +1,41 @@
+<style>
+  .shell{margin-top:20px;border:1px solid #dfe8ef;border-radius:20px;background:#f8fbfd;overflow:hidden;box-shadow:0 18px 50px rgba(15,23,42,.07)}.top{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;background:white;border-bottom:1px solid #e8eef3}.brand h3{margin:0;color:#182235;font-size:19px}.brand p{margin:4px 0 0;color:#718096;font-size:12px}.meta{display:flex;gap:7px}.pill{font-size:10px;padding:6px 9px;border-radius:99px;background:#eefbfc;color:#087f92}.body{display:grid;grid-template-columns:220px minmax(0,1fr) 250px;min-height:510px}.steps{padding:22px 16px;border-right:1px solid #e4ebf0;background:white}.step{display:flex;gap:11px;padding:12px;border-radius:12px;margin-bottom:7px}.step.active{background:#ecfbfd}.step.done .num{background:#10b5c9;color:white}.num{width:27px;height:27px;border-radius:9px;background:#edf2f6;display:grid;place-items:center;font-size:11px;font-weight:800;color:#728096}.step.active .num{background:#08a9bf;color:white}.stxt b{display:block;font-size:12px;color:#263448}.stxt span{font-size:10px;color:#94a3b8}.focus{padding:27px 30px}.eyebrow{font-size:10px;font-weight:800;color:#0891b2;letter-spacing:.08em}.focus h3{margin:7px 0 5px;font-size:20px;color:#19263a}.focus>p{margin:0 0 18px;font-size:12px;color:#64748b}.auto{display:flex;gap:9px;align-items:center;background:#ecfdf5;border:1px solid #b8ead2;border-radius:12px;padding:10px 12px;margin-bottom:15px;font-size:11px;color:#16704b}.formrow{margin-bottom:14px}.formrow label{display:flex;justify-content:space-between;font-size:11px;font-weight:700;color:#39475a;margin-bottom:6px}.formrow label em{font-style:normal;color:#0b93a8;font-weight:500}.input{height:38px;border:1px solid #dce5eb;background:#fff;border-radius:10px;padding:0 12px;display:flex;align-items:center;font-size:12px;color:#1f2937}.input.multi{height:68px;align-items:flex-start;padding-top:10px;line-height:1.5}.actions{display:flex;justify-content:space-between;align-items:center;margin-top:22px;padding-top:17px;border-top:1px solid #e7edf2}.back{color:#64748b;font-size:11px}.next{background:#08a4ba;color:white;border-radius:10px;padding:10px 16px;font-size:11px;font-weight:700}.preview{padding:22px 17px;border-left:1px solid #e4ebf0;background:#fbfdfe}.preview h4{margin:0 0 4px;font-size:13px;color:#334155}.preview>p{margin:0 0 14px;font-size:10px;color:#94a3b8}.health{display:flex;align-items:center;justify-content:space-between;border:1px solid #dce7ed;background:white;border-radius:12px;padding:11px;margin-bottom:9px}.health div b{display:block;font-size:10px;color:#405064}.health div span{font-size:9px;color:#94a3b8}.ok{width:18px;height:18px;border-radius:50%;background:#dff8e9;color:#059669;display:grid;place-items:center;font-size:10px}.pending{background:#eef2f6;color:#94a3b8}.note{margin-top:15px;border-radius:12px;background:#fff9e9;border:1px solid #f4df9a;padding:11px;font-size:10px;line-height:1.55;color:#846517}.choicebar{display:flex;gap:10px;margin-top:18px}.choicebar .option{flex:1;margin:0}@media(max-width:980px){.body{grid-template-columns:180px 1fr}.preview{display:none}}@media(max-width:700px){.body{grid-template-columns:1fr}.steps{display:flex;overflow:auto;border-right:0;border-bottom:1px solid #e4ebf0}.step{min-width:145px}.focus{padding:20px}.meta{display:none}}
+</style>
+
+<h2>B 版细化：资料优先的四步轻向导</h2>
+<p class="subtitle">先上传资料自动提取，再让客户确认少量关键字段；没有资料时才手填企业名称、行业和核心产品。</p>
+
+<div class="shell">
+  <div class="top"><div class="brand"><h3>企业知识库搭建</h3><p>把企业资料整理为内容创作可按需引用的官方知识 Skill</p></div><div class="meta"><span class="pill">自动保存</span><span class="pill">预计 2 分钟</span></div></div>
+  <div class="body">
+    <aside class="steps">
+      <div class="step done"><div class="num">✓</div><div class="stxt"><b>导入企业资料</b><span>上传文件或跳过</span></div></div>
+      <div class="step active"><div class="num">2</div><div class="stxt"><b>确认企业信息</b><span>核对自动提取结果</span></div></div>
+      <div class="step"><div class="num">3</div><div class="stxt"><b>官方联系方式</b><span>仅姓名 + 一种方式</span></div></div>
+      <div class="step"><div class="num">4</div><div class="stxt"><b>预览并生成</b><span>确认后云端生成</span></div></div>
+    </aside>
+    <main class="focus">
+      <div class="eyebrow">第 2 步 / 共 4 步</div>
+      <h3>这些企业信息是否准确？</h3>
+      <p>已根据上传资料自动整理，只需要检查高亮字段，不要求重新抄写。</p>
+      <div class="auto">✓ 已从 3 份资料中识别企业事实，建议核对后继续</div>
+      <div class="formrow"><label>企业名称 <em>已从营业执照提取</em></label><div class="input">吉林省精诚法税企业管理有限公司</div></div>
+      <div class="formrow"><label>所属行业 <em>已自动归纳</em></label><div class="input">企业财税、法律风险管理与企业管理咨询</div></div>
+      <div class="formrow"><label>核心产品或服务 <em>可直接修改</em></label><div class="input multi">企业财税合规咨询、税务风险排查、企业法律风险管理</div></div>
+      <div class="actions"><span class="back">← 返回上传资料</span><span class="next">信息准确，继续 →</span></div>
+    </main>
+    <aside class="preview">
+      <h4>知识库完成度</h4><p>系统自动检查，不让客户面对复杂规则</p>
+      <div class="health"><div><b>企业主体</b><span>3 项事实已确认</span></div><span class="ok">✓</span></div>
+      <div class="health"><div><b>资料可信度</b><span>已导入 3 份资料</span></div><span class="ok">✓</span></div>
+      <div class="health"><div><b>官方联系方式</b><span>下一步填写</span></div><span class="ok pending">3</span></div>
+      <div class="health"><div><b>知识库 Skill</b><span>等待生成</span></div><span class="ok pending">4</span></div>
+      <div class="note">联系方式只在内容明确涉及咨询、预约或购买时引用，不会自动插入普通文章。</div>
+    </aside>
+  </div>
+</div>
+
+<div class="choicebar options">
+  <div class="option" data-choice="approve-four-step" onclick="toggleSelect(this)"><div class="letter">✓</div><div class="content"><h3>认可这套四步结构</h3><p>继续完善最终确认页和异常处理</p></div></div>
+  <div class="option" data-choice="revise-four-step" onclick="toggleSelect(this)"><div class="letter">↺</div><div class="content"><h3>需要调整</h3><p>告诉我希望减少、增加或调换哪一步</p></div></div>
+</div>

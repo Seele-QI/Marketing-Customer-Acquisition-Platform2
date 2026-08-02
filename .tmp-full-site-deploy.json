@@ -1,0 +1,37 @@
+{
+  "summary": {
+    "at": "2026-07-17T08:14:33.199Z",
+    "fullApi": {
+      "id": "6a59dda7f947b6cb3450f7dc",
+      "name": "zhongtai-full-api",
+      "domain": "https://mcap-full-api.preview.aliyun-zeabur.cn"
+    },
+    "fullWeb": {
+      "id": "6a59ddbef947b6cb3450f7e3",
+      "name": "zhongtai-full-web",
+      "domain": "https://mcap-full-web.preview.aliyun-zeabur.cn"
+    },
+    "cloudUntouched": {
+      "api": "https://mcap-cloud-api.preview.aliyun-zeabur.cn",
+      "web": "https://mcap-cloud-web.preview.aliyun-zeabur.cn"
+    }
+  },
+  "checks": {
+    "fullApiHealth": {
+      "status": 200,
+      "body": "{\"status\":\"ok\",\"checks\":{\"api\":\"ok\",\"ffmpeg\":\"ok\",\"ffprobe\":\"ok\",\"data_dir_writable\":\"ok\"}}"
+    },
+    "fullWeb": {
+      "status": 200,
+      "body": "<!DOCTYPE html><html lang=\"zh-CN\" class=\"inter_5901b7c6-module__ec5Qua__variable bg-background\"><head><meta charSet=\"utf"
+    },
+    "cloudHealth": {
+      "status": 200,
+      "body": "{\"status\":\"ok\",\"service\":\"zhongtai-cloud-api\"}"
+    },
+    "cloudSync": {
+      "status": 405,
+      "body": "{\"detail\":\"Method Not Allowed\"}"
+    }
+  }
+}

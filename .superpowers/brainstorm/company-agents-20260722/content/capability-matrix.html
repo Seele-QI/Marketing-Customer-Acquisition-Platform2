@@ -1,0 +1,60 @@
+<style>
+  .cap-shell{max-width:1220px;margin:0 auto}.principles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
+  .principle{padding:14px;border-radius:12px;border:1px solid #dbe3ee;background:#fff}.principle b{display:block;color:#0f172a;margin-bottom:5px}.principle p{font-size:12px;line-height:1.5;color:#64748b;margin:0}
+  .matrix{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dbe3ee;border-radius:12px;overflow:hidden}.matrix th{background:#f1f5f9;color:#475569;text-align:left;font-size:11px;padding:9px}.matrix td{border-top:1px solid #e2e8f0;padding:9px;font-size:11px;color:#334155;vertical-align:top;line-height:1.5}.matrix td:first-child{font-weight:700;color:#0f172a;white-space:nowrap}.skill{color:#1d4ed8}.kb{color:#6d28d9}.perm{color:#047857}
+  .perm-row{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:14px 0}.perm-box{padding:11px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;font-size:11px;color:#475569}.perm-box b{display:block;margin-bottom:4px;color:#0f172a}
+  .ingest{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:15px 0}.ingest>div{padding:14px;border:1px solid #dbe3ee;border-radius:12px;background:#fff}.ingest h4{margin:0 0 7px;color:#0f172a}.ingest p,.ingest li{font-size:12px;color:#475569;line-height:1.55}
+  .source-note{padding:12px 14px;border-left:4px solid #2563eb;background:#eff6ff;color:#334155;font-size:12px;line-height:1.6;margin:16px 0}
+  @media(max-width:900px){.principles,.perm-row,.ingest{grid-template-columns:1fr}.matrix{display:block;overflow-x:auto}}
+</style>
+
+<div class="cap-shell">
+  <h2>Skill、知识库、工具与权限矩阵</h2>
+  <p class="subtitle">Skill 教模型“怎样做”；知识库提供“依据什么做”；工具决定“能实际做什么”。三者分离配置。</p>
+
+  <div class="principles">
+    <div class="principle"><b>Skill 渐进加载</b><p>先加载名称与适用场景，命中任务后再加载完整操作步骤，最后按需读取模板、脚本和参考资料。</p></div>
+    <div class="principle"><b>三层知识库</b><p>平台权威资料 → 公司私有资料 → 当前任务附件。法务、财务、人事默认禁止跨部门检索。</p></div>
+    <div class="principle"><b>最小工具权限</b><p>只读工具可自动执行；内部写入留版本；外发、发布、付款、合同定稿、生产变更必须人工批准。</p></div>
+  </div>
+
+  <div class="source-note"><b>选型原则：</b>文档、PDF、表格、演示文稿采用成熟 Agent Skills 结构；财务建模参考公开金融服务 Skill，但改造成经营财务与内控版本；法务、HR、营销及中国平台规则不直接安装来源不明的社区 Skill，而是用官方法规、公司制度和真实流程构建并做任务级评测。</div>
+
+  <table class="matrix">
+    <thead><tr><th>智能体</th><th>核心 Skill 包</th><th>主要知识库</th><th>可用工具</th><th>敏感动作</th></tr></thead>
+    <tbody>
+      <tr><td>纪衡</td><td class="skill">task-triage · delegation · decision-memo · conflict-resolution</td><td class="kb">组织目录、权限矩阵、任务状态；只接收会签摘要</td><td class="perm">任务编排、内部消息、状态查询</td><td>不能读取无关敏感原文；不能替人批准</td></tr>
+      <tr><td>沈策</td><td class="skill">strategy-diagnosis · market-research · scenario-planning · portfolio-priority</td><td class="kb">公司战略、经营指标、行业报告、竞品证据</td><td class="perm">联网检索、表格、报告、演示文稿</td><td>对外战略材料需审批</td></tr>
+      <tr><td>顾正</td><td class="skill">cn-legal-research · contract-review-cn · privacy-impact · ip-content-compliance</td><td class="kb">国家法律法规库、网信办、市场监管合同范本、公司合同与授权制度</td><td class="perm">法规检索、PDF/Word 批注、条款对比</td><td>签署、盖章、发送合同一律人工；最终意见需律师复核</td></tr>
+      <tr><td>周谨</td><td class="skill">budget-cashflow · management-accounting · internal-control · spreadsheet-audit</td><td class="kb">财政部准则、科目口径、预算、流水、发票与经营报表</td><td class="perm">Excel/CSV、公式复算、图表、对账</td><td>禁止直接入账、付款、改原始凭证</td></tr>
+      <tr><td>林序</td><td class="skill">org-design · jd-interview · performance-system · hr-policy-review</td><td class="kb">劳动法规、组织架构、岗位库、员工手册；候选人资料单独隔离</td><td class="perm">文档、日历草拟、表格、内部通知草稿</td><td>录用、淘汰、薪酬变更与外发需审批</td></tr>
+      <tr><td>陆研</td><td class="skill">discovery-synthesis · prd-authoring · roadmap · experiment-design</td><td class="kb">用户研究、需求池、产品指标、历史 PRD、发布记录</td><td class="perm">文档、原型附件理解、任务系统草稿</td><td>路线图发布与需求状态变更需确认</td></tr>
+      <tr><td>陈卓</td><td class="skill">architecture-review · data-analysis · security-review · systematic-debugging</td><td class="kb">代码、架构、API、日志、数据字典、安全基线</td><td class="perm">只读代码、SQL 沙箱、日志、测试与诊断</td><td>生产部署、删改数据、密钥访问需审批与审计</td></tr>
+      <tr><td>程远</td><td class="skill">brand-positioning · campaign-plan · growth-analysis · content-brief</td><td class="kb">品牌规范、用户画像、市场研究、投放与内容效果</td><td class="perm">联网检索、图像理解、文档、表格、创意草稿</td><td>广告投放、预算消耗和公开发布需审批</td></tr>
+      <tr><td>赵锐</td><td class="skill">lead-qualification · solution-proposal · pricing-draft · negotiation-prep</td><td class="kb">CRM、产品能力、价格政策、案例与合同边界</td><td class="perm">CRM 只读、报价草稿、邮件草稿、会议准备</td><td>报价确认、CRM 写入、邮件发送和承诺需审批</td></tr>
+      <tr><td>宋和</td><td class="skill">stakeholder-map · external-brief · media-response · crisis-playbook</td><td class="kb">合作方档案、政策信息、媒体记录、统一对外口径</td><td class="perm">联网检索、邮件/日历草稿、舆情摘要</td><td>任何对外发送、邀约与公开回应需审批</td></tr>
+      <tr><td>方宁</td><td class="skill">sop-authoring · delivery-plan · customer-success · service-quality</td><td class="kb">SOP、SLA、工单、客户档案、服务复盘</td><td class="perm">工单查询、任务草稿、报表、内部通知</td><td>客户通知、工单关闭和补偿方案需审批</td></tr>
+      <tr><td>叶文</td><td class="skill">topic-research · content-matrix · spoken-script · brand-style-check</td><td class="kb">品牌语料、选题库、爆款结构、历史内容与平台规范</td><td class="perm">联网检索、图片/文件理解、文案与内容矩阵</td><td>抄袭/无来源数字阻断；发布需审批</td></tr>
+      <tr><td>许卓</td><td class="skill">storyboard · digital-human-workflow · media-qc · video-postprocess</td><td class="kb">视频模板、素材规范、RunningHub 流程、剪辑参数与质检标准</td><td class="perm">生图、视频生成、ffmpeg、素材读取、任务轮询</td><td>消耗积分前确认；只有下载并质检通过才可完成</td></tr>
+      <tr><td>韩拓</td><td class="skill">entity-modeling · geo-content-gap · evidence-citation · visibility-monitoring</td><td class="kb">企业实体、产品事实、可信来源、问答簇、历史分析</td><td class="perm">联网检索、企业知识库、批量分析、报告</td><td>无证据内容不得进入权威知识库；失败项保持 partial</td></tr>
+      <tr><td>郑达</td><td class="skill">platform-adaptation · account-health · publish-workflow · sent-verification</td><td class="kb">平台规则、账号状态、素材映射、发布记录与失败原因</td><td class="perm">账号检测、排期、发布预检、受控发布与结果回传</td><td>外发必须审批；未获得平台结果证明不得标记成功</td></tr>
+    </tbody>
+  </table>
+
+  <div class="perm-row">
+    <div class="perm-box"><b>T0 · 自动只读</b>知识库检索、联网查证、附件解析、状态查询。</div>
+    <div class="perm-box"><b>T1 · 自动生成</b>草稿、分析、内部临时文件；保留版本和来源。</div>
+    <div class="perm-box"><b>T2 · 人工批准</b>邮件、日历邀请、平台发布、CRM/工单写入、生产变更。</div>
+    <div class="perm-box"><b>T3 · 禁止代办</b>付款、盖章、合同签署、录用解雇、法律/审计最终签字。</div>
+  </div>
+
+  <div class="ingest">
+    <div><h4>图片上传</h4><p>支持 PNG、JPG/JPEG、WEBP。先做文件签名与大小校验，再进行 OCR、版面理解和多模态分析；保存原图、提取文本、页块坐标和来源关系。</p></div>
+    <div><h4>文件上传</h4><p>首版支持 PDF、DOCX、XLSX、PPTX、TXT、MD、CSV。执行恶意文件检查、格式解析、敏感信息识别、部门权限判断；默认只进入任务临时区，用户明确选择后才沉淀到公司或部门知识库。</p></div>
+  </div>
+
+  <div class="options">
+    <div class="option" data-choice="approve-capabilities" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>认可能力与权限矩阵</h3><p>继续评审云端模型下发、任务编排、知识检索和审批的数据流。</p></div></div>
+    <div class="option" data-choice="revise-capabilities" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>需要调整</h3><p>请指出需要增加的 Skill、资料类型、工具或权限。</p></div></div>
+  </div>
+</div>

@@ -17,10 +17,11 @@ import {
 import { GEO_VIEWS } from "@/lib/geo/workspace"
 import { loadArticleBatch } from "@/lib/geo/article-batch-store"
 import type { GeneratedArticle } from "@/lib/geo/article-types"
+import { listMatrixProjects } from "@/lib/geo/matrix-api"
+import type { MatrixProject } from "@/lib/geo/matrix-types"
 import type { MainView } from "@/components/dashboard-sidebar"
 import {
   DISTRIBUTION_ACCOUNTS_CHANGED_EVENT,
-  GEO_ARTICLE_PLATFORM_IDS,
   getDistributionPlatformBrand,
   mergeDistributionPlatforms,
   readDistributionApiResponse,
@@ -28,7 +29,11 @@ import {
 } from "@/lib/distribution/platforms"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
-import { matchGeoArticlesByPlatform } from "@/lib/distribution/geo-platform-articles"
+import {
+  GEO_DISTRIBUTION_UNDATED,
+  listGeoDistributionBatches,
+  matchGeoArticlesByProjectDate,
+} from "@/lib/distribution/geo-platform-articles"
 
 type Adaptation = {
   platform: string
@@ -46,6 +51,7 @@ type JobItem = {
 type Job = { jobId: string; status: string; items: JobItem[] }
 
 const ACTIVE_JOB_STORAGE_KEY = "zhongtai.geo-distribution.active-job.v1"
+const DISTRIBUTION_SELECTION_STORAGE_KEY = "zhongtai.geo-distribution.selection.v2"
 const TERMINAL_JOB_STATUSES = new Set(["success", "failed", "cancelled", "waiting_user"])
 
 const JOB_STATUS_LABELS: Record<string, string> = {
@@ -73,9 +79,10 @@ export function GeoArticleDistribute({
   onNavigateToBinding: () => void
 }) {
   const [articles, setArticles] = React.useState<GeneratedArticle[]>([])
-  const [articleId, setArticleId] = React.useState("")
+  const [matrixProjects, setMatrixProjects] = React.useState<MatrixProject[]>([])
+  const [projectId, setProjectId] = React.useState("")
+  const [publishDate, setPublishDate] = React.useState("")
   const [accountPlatforms, setAccountPlatforms] = React.useState<DistributionPlatform[]>([])
-  const [platforms, setPlatforms] = React.useState<string[]>([])
   const [poiName, setPoiName] = React.useState("")
   const [city, setCity] = React.useState("")
   const [poiReference, setPoiReference] = React.useState("")
@@ -99,7 +106,6 @@ export function GeoArticleDistribute({
       })
       if (response.status === 401) {
         setAccountPlatforms(mergeDistributionPlatforms([], "geo_article", false))
-        setPlatforms([])
         return
       }
       const result = await readDistributionApiResponse<{ platforms?: DistributionPlatform[] }>(
@@ -108,15 +114,9 @@ export function GeoArticleDistribute({
       )
       if (!result.ok) throw new Error(result.message)
       const merged = mergeDistributionPlatforms(result.data?.platforms ?? [], "geo_article", false)
-      const connected = merged.filter((item) => item.connected).map((item) => item.platform_id)
       setAccountPlatforms(merged)
-      setPlatforms((current) => {
-        const retained = current.filter((id) => connected.includes(id))
-        return retained.length ? retained : connected
-      })
     } catch (reason) {
       setAccountPlatforms(mergeDistributionPlatforms([], "geo_article", true))
-      setPlatforms([])
       toast({
         title: "账号状态读取失败",
         description: reason instanceof Error ? reason.message : "请稍后重试",
@@ -139,13 +139,17 @@ export function GeoArticleDistribute({
 
   React.useEffect(() => {
     const list = loadArticleBatch().articles.filter((article) => article.status === "success")
-    setArticles(list)
-    if (list[0]) setArticleId(list[0].id)
-    void loadAccounts()
+    const articleTimer = window.setTimeout(() => setArticles(list), 0)
+    void listMatrixProjects()
+      .then(setMatrixProjects)
+      .catch(() => setMatrixProjects([]))
+    const accountTimer = window.setTimeout(() => void loadAccounts(), 0)
     const refresh = () => void loadAccounts()
     window.addEventListener(DISTRIBUTION_ACCOUNTS_CHANGED_EVENT, refresh)
     window.addEventListener("focus", refresh)
     return () => {
+      window.clearTimeout(articleTimer)
+      window.clearTimeout(accountTimer)
       window.removeEventListener(DISTRIBUTION_ACCOUNTS_CHANGED_EVENT, refresh)
       window.removeEventListener("focus", refresh)
     }
@@ -220,37 +224,93 @@ export function GeoArticleDistribute({
     }
   }, [job?.jobId, job?.status])
 
-  const selected = articles.find((article) => article.id === articleId)
-  const platformArticleMatches = React.useMemo(
-    () => matchGeoArticlesByPlatform({ articles, anchor: selected, platforms }),
-    [articles, selected, platforms],
+  const batches = React.useMemo(() => listGeoDistributionBatches(articles), [articles])
+  const projectOptions = React.useMemo(() => {
+    const names = new Map(matrixProjects.map((project) => [project.id, project.name]))
+    const latestByProject = new Map<string, number>()
+    for (const batch of batches) {
+      latestByProject.set(
+        batch.projectId,
+        Math.max(latestByProject.get(batch.projectId) ?? 0, batch.latestCreatedAt),
+      )
+    }
+    return [...latestByProject.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => ({ id, name: names.get(id) || `矩阵项目 ${id.slice(-6)}` }))
+  }, [batches, matrixProjects])
+  const dateOptions = React.useMemo(
+    () => batches.filter((batch) => batch.projectId === projectId),
+    [batches, projectId],
   )
+  const connectedPlatformIds = React.useMemo(
+    () => accountPlatforms.filter((item) => item.connected).map((item) => item.platform_id),
+    [accountPlatforms],
+  )
+  const platformArticleMatches = React.useMemo(
+    () => matchGeoArticlesByProjectDate({
+      articles,
+      projectId,
+      date: publishDate,
+      connectedPlatforms: connectedPlatformIds,
+    }),
+    [articles, connectedPlatformIds, projectId, publishDate],
+  )
+  const platforms = React.useMemo(
+    () => platformArticleMatches.matches.map(({ platform }) => platform),
+    [platformArticleMatches.matches],
+  )
+  const selected = platformArticleMatches.matches[0]?.article
   const needsPoi = platforms.some((platform) => platform === "dianping" || platform === "ctrip")
   const connectedCount = accountPlatforms.filter((item) => item.connected).length
 
-  const toggle = (platform: DistributionPlatform) => {
-    if (!platform.connected) {
-      toast({ title: `${platform.platform_name}尚未绑定`, description: "请在左侧账号矩阵点击平台完成绑定" })
-      return
+  React.useEffect(() => {
+    if (!batches.length) return
+    let saved: { projectId?: string; publishDate?: string } = {}
+    try {
+      saved = JSON.parse(window.localStorage.getItem(DISTRIBUTION_SELECTION_STORAGE_KEY) || "{}")
+    } catch {
+      // Ignore a corrupt legacy selection and fall back to the newest batch.
     }
-    setPlatforms((current) =>
-      current.includes(platform.platform_id)
-        ? current.filter((item) => item !== platform.platform_id)
-        : [...current, platform.platform_id],
+    const preferred = batches.find(
+      (batch) => batch.projectId === saved.projectId && batch.date === saved.publishDate,
+    ) || batches[0]
+    const timer = window.setTimeout(() => {
+      setProjectId((current) => current || preferred.projectId)
+      setPublishDate((current) => current || preferred.date)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [batches])
+
+  React.useEffect(() => {
+    if (!projectId) return
+    const validDates = batches.filter((batch) => batch.projectId === projectId)
+    if (!validDates.length) return
+    if (!validDates.some((batch) => batch.date === publishDate)) {
+      const timer = window.setTimeout(() => setPublishDate(validDates[0].date), 0)
+      return () => window.clearTimeout(timer)
+    }
+    window.localStorage.setItem(
+      DISTRIBUTION_SELECTION_STORAGE_KEY,
+      JSON.stringify({ projectId, publishDate }),
     )
+  }, [batches, projectId, publishDate])
+
+  const resetPreview = () => {
     setPreviewToken("")
     setAdaptations([])
   }
 
   const createPreview = async () => {
-    if (!selected || !platforms.length) {
-      toast({ title: "请选择文章和至少一个已绑定平台", variant: "destructive" })
+    if (!projectId || !publishDate) {
+      toast({ title: "请选择项目和发布日期", variant: "destructive" })
       return
     }
-    if (platformArticleMatches.missing.length) {
+    if (!selected || !platforms.length) {
       toast({
-        title: "部分平台没有对应的矩阵文章",
-        description: platformArticleMatches.missing.map(platformName).join("、"),
+        title: "当前日期没有可发布的平台文章",
+        description: platformArticleMatches.unbound.length
+          ? `对应文章已生成，但账号尚未绑定：${platformArticleMatches.unbound.map(platformName).join("、")}`
+          : "请先在内容矩阵生成文章，或检查平台账号绑定状态",
         variant: "destructive",
       })
       return
@@ -386,7 +446,7 @@ export function GeoArticleDistribute({
           <div>
             <div className="mb-3 h-1 w-12 rounded-full bg-cyan-500" />
             <h1 className="text-4xl font-bold tracking-tight">GEO 文章<span className="text-cyan-600">一键分发</span></h1>
-            <p className="mt-2 text-sm text-slate-500">选择文章，生成八个平台适配稿，确认一次后按顺序打开创作后台。</p>
+            <p className="mt-2 text-sm text-slate-500">选择矩阵项目和发布日期，系统自动匹配当天各平台文章并生成发布计划。</p>
           </div>
           <button
             type="button"
@@ -402,43 +462,29 @@ export function GeoArticleDistribute({
           <section className="space-y-5 rounded-3xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/5">
             <div>
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-semibold">1. 选择文章来源</h2>
-                <span className="text-xs text-slate-400">{articles.length} 篇可分发</span>
+                <h2 className="font-semibold">1. 选择矩阵项目</h2>
+                <span className="text-xs text-slate-400">{projectOptions.length} 个可分发项目</span>
               </div>
-              {articles.length ? (
-                <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
-                  {articles.map((article) => {
-                    const active = article.id === articleId
-                    return (
-                      <button
-                        key={article.id}
-                        type="button"
-                        onClick={() => {
-                          setArticleId(article.id)
-                          setPreviewToken("")
-                          setAdaptations([])
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-3 rounded-2xl border p-3 text-left transition",
-                          active ? "border-cyan-300 bg-cyan-50/70" : "border-slate-200 hover:border-cyan-200",
-                        )}
-                      >
-                        <FileText className={cn("mt-0.5 h-5 w-5 shrink-0", active ? "text-cyan-600" : "text-slate-300")} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold">{article.title}</span>
-                          <span className="mt-1 block line-clamp-2 text-xs leading-5 text-slate-500">
-                            {article.markdown.replace(/[#*_>`~-]/g, "").slice(0, 100)}
-                          </span>
-                        </span>
-                        {active ? <Check className="mt-1 h-4 w-4 text-cyan-600" /> : null}
-                      </button>
-                    )
-                  })}
-                </div>
+              {projectOptions.length ? (
+                <select
+                  value={projectId}
+                  onChange={(event) => {
+                    const nextProjectId = event.target.value
+                    const firstDate = batches.find((batch) => batch.projectId === nextProjectId)?.date || ""
+                    setProjectId(nextProjectId)
+                    setPublishDate(firstDate)
+                    resetPreview()
+                  }}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium outline-none transition focus:border-cyan-400 focus:ring-4 focus:ring-cyan-50"
+                >
+                  {projectOptions.map((project) => (
+                    <option key={project.id} value={project.id}>{project.name}</option>
+                  ))}
+                </select>
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center">
                   <FileText className="mx-auto h-8 w-8 text-slate-300" />
-                  <p className="mt-3 text-sm">暂无可分发文章</p>
+                  <p className="mt-3 text-sm">暂无已完成文章的矩阵项目</p>
                   <button onClick={() => onNavigate(GEO_VIEWS.ARTICLE_EDITOR)} className="mt-4 rounded-xl bg-cyan-700 px-4 py-2 text-sm text-white">
                     前往 GEO 文章创作 <ArrowRight className="inline h-4 w-4" />
                   </button>
@@ -446,43 +492,68 @@ export function GeoArticleDistribute({
               )}
             </div>
 
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-semibold">2. 选择目标平台</h2>
-                {connectedCount === 0 ? (
-                  <button type="button" onClick={onNavigateToBinding} className="text-xs font-medium text-cyan-700">先绑定账号</button>
+            {projectOptions.length ? (
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="font-semibold">2. 选择发布日期</h2>
+                  <span className="text-xs text-slate-400">仅显示该项目已有文章的日期</span>
+                </div>
+                <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto pr-1">
+                  {dateOptions.map((batch) => {
+                    const active = publishDate === batch.date
+                    return (
+                      <button
+                        key={batch.date}
+                        type="button"
+                        onClick={() => {
+                          setPublishDate(batch.date)
+                          resetPreview()
+                        }}
+                        className={cn(
+                          "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition",
+                          active
+                            ? "border-cyan-400 bg-cyan-50 font-semibold text-cyan-800"
+                            : "border-slate-200 bg-white text-slate-600 hover:border-cyan-200",
+                        )}
+                      >
+                        {active ? <Check className="h-3.5 w-3.5" /> : null}
+                        {batch.date === GEO_DISTRIBUTION_UNDATED ? "未标注日期" : batch.date}
+                        <span className="text-[10px] text-slate-400">{batch.platformIds.length} 平台</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {projectId && publishDate ? (
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-900">已自动匹配 {platforms.length} 个发布平台</h2>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">每个平台使用本项目、本日期下自己的矩阵文章，不会跨平台复用。</p>
+                  </div>
+                  {connectedCount === 0 ? (
+                    <button type="button" onClick={onNavigateToBinding} className="shrink-0 text-xs font-medium text-cyan-700">绑定账号</button>
+                  ) : null}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {platformArticleMatches.matches.map(({ platform }) => (
+                    <span key={platform} className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-medium text-cyan-800">
+                      {platformName(platform)} · 已匹配
+                    </span>
+                  ))}
+                  {platformArticleMatches.unbound.map((platform) => (
+                    <button key={platform} type="button" onClick={onNavigateToBinding} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+                      {platformName(platform)} · 待绑定
+                    </button>
+                  ))}
+                </div>
+                {!platforms.length && !platformArticleMatches.unbound.length ? (
+                  <p className="mt-3 text-xs text-amber-700">该项目在此日期下尚无可分发的成功文章。</p>
                 ) : null}
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {GEO_ARTICLE_PLATFORM_IDS.map((id) => {
-                  const account = accountPlatforms.find((item) => item.platform_id === id)
-                  const brand = getDistributionPlatformBrand(id)
-                  const connected = Boolean(account?.connected)
-                  const active = platforms.includes(id)
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => account && toggle(account)}
-                      className={cn(
-                        "relative rounded-xl border px-3 py-3 text-left transition",
-                        active
-                          ? "border-cyan-400 bg-cyan-50 text-cyan-900"
-                          : connected
-                            ? "border-slate-200 bg-white hover:border-cyan-200"
-                            : "border-slate-100 bg-slate-50 text-slate-400",
-                      )}
-                    >
-                      <span className="block text-sm font-semibold">{brand?.name || id}</span>
-                      <span className="mt-1 block truncate text-[10px]">
-                        {connected ? account?.account_info?.nickname || "已连接" : "未绑定"}
-                      </span>
-                      {active ? <Check className="absolute right-2 top-2 h-3.5 w-3.5 text-cyan-600" /> : null}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
+            ) : null}
 
             {needsPoi ? (
               <div className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-3">
@@ -496,18 +567,18 @@ export function GeoArticleDistribute({
             ) : null}
 
             <button
-              disabled={busy || !selected || !platforms.length || platformArticleMatches.missing.length > 0}
+              disabled={busy || !selected || !platforms.length}
               onClick={createPreview}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-700 py-3 text-sm font-semibold text-white disabled:opacity-40"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              生成八平台适配预览
+              生成 {platforms.length || "当前"} 平台发布计划
             </button>
           </section>
 
           <section className="rounded-3xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/5">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">3. 平台适配预览</h2>
+              <h2 className="font-semibold">3. 平台发布计划</h2>
               <span className="text-xs text-slate-400">{adaptations.length ? `${adaptations.length} 个平台` : "等待生成"}</span>
             </div>
             {!adaptations.length ? (

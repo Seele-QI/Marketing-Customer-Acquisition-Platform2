@@ -1,0 +1,68 @@
+<style>
+  .arch-shell{max-width:1180px;margin:0 auto}.layers{display:grid;grid-template-columns:1.15fr 1.7fr 1.15fr;gap:12px;margin:18px 0}.layer{padding:14px;border:1px solid #dbe3ee;border-radius:14px;background:#fff}.layer h3{font-size:14px;margin:0 0 10px;color:#0f172a}.node{padding:9px 10px;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;margin:7px 0;font-size:11px;color:#475569}.node.core{background:#eff6ff;border-color:#93c5fd;color:#1e3a8a}.node.safe{background:#ecfdf5;border-color:#a7f3d0;color:#065f46}.node.warn{background:#fff7ed;border-color:#fed7aa;color:#9a3412}
+  .runflow{display:flex;align-items:stretch;gap:7px;overflow-x:auto;padding:8px 0 15px}.step{min-width:125px;flex:1;padding:12px;border-radius:11px;background:#fff;border:1px solid #dbe3ee;font-size:11px;color:#475569}.step b{display:block;color:#0f172a;margin-bottom:4px}.arr{align-self:center;color:#2563eb;font-weight:800}
+  .phase-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:15px 0}.phase{padding:14px;border-radius:12px;border:1px solid #dbe3ee;background:#fff}.phase.now{border-color:#2563eb;background:#eff6ff}.phase h4{margin:0 0 7px;color:#0f172a}.phase ul{margin:0;padding-left:17px;color:#475569;font-size:11px;line-height:1.65}
+  .rules{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:15px 0}.rule{padding:11px;border-radius:10px;background:#f8fafc;color:#475569;font-size:11px}.rule b{display:block;color:#0f172a;margin-bottom:4px}
+  @media(max-width:850px){.layers,.phase-grid,.rules{grid-template-columns:1fr}.runflow{display:grid;grid-template-columns:1fr}.arr{text-align:center;transform:rotate(90deg)}}
+</style>
+
+<div class="arch-shell">
+  <h2>增量架构与一次任务的真实数据流</h2>
+  <p class="subtitle">首版不新建独立 Agent 平台；在当前双服务中增加边界清晰的 Agent Runtime，未来再拆服务。</p>
+
+  <div class="layers">
+    <div class="layer">
+      <h3>Next.js · 用户与控制面</h3>
+      <div class="node">智能体中心 / 对话工作台</div>
+      <div class="node">图片与文件上传、引用预览</div>
+      <div class="node">会签进度、审批卡、任务历史</div>
+      <div class="node safe">登录、积分、租户与部门权限</div>
+    </div>
+    <div class="layer">
+      <h3>Agent Runtime · 首版新增核心</h3>
+      <div class="node core">Agent Registry：14 个角色契约与版本</div>
+      <div class="node core">Orchestrator：主责 + 0–3 个会签部门</div>
+      <div class="node core">Skill Loader：目录 → 指令 → 按需资源</div>
+      <div class="node core">Policy Engine：知识 ACL、工具权限、审批规则</div>
+      <div class="node core">Model Router：云端模型快照、预算、降级链</div>
+      <div class="node">Run Store：事件、引用、费用、错误、审批与结果</div>
+    </div>
+    <div class="layer">
+      <h3>FastAPI / Electron · 能力面</h3>
+      <div class="node">PDF/DOCX/表格/PPT/OCR 解析</div>
+      <div class="node">公司、部门、任务级知识检索</div>
+      <div class="node">视频生成、ffmpeg、GEO 与数据工具</div>
+      <div class="node warn">邮件、日历、CRM、发布等受控连接器</div>
+    </div>
+  </div>
+
+  <div class="label">一次任务如何运行</div>
+  <div class="runflow">
+    <div class="step"><b>1. 接收</b>用户选角色或交给纪衡；附件进入任务临时区。</div><div class="arr">→</div>
+    <div class="step"><b>2. 预检</b>鉴权、文件签名/大小、敏感信息、积分预算。</div><div class="arr">→</div>
+    <div class="step"><b>3. 分诊</b>确定主责、会签、所需 Skill、知识域和工具。</div><div class="arr">→</div>
+    <div class="step"><b>4. 锁定</b>保存角色/Skill/模型路由版本快照，保证可复盘。</div><div class="arr">→</div>
+    <div class="step"><b>5. 执行</b>主责智能体工作；会签只收到最小必要上下文。</div><div class="arr">→</div>
+    <div class="step"><b>6. 审批</b>T2 动作暂停，展示对象、内容、成本与影响。</div><div class="arr">→</div>
+    <div class="step"><b>7. 交付</b>汇总结论、分歧、来源、状态和未完成事项。</div>
+  </div>
+
+  <div class="rules">
+    <div class="rule"><b>模型对用户隐身</b>云端下发候选模型与策略；任务开始时保存实际模型快照。</div>
+    <div class="rule"><b>任务预算封顶</b>限制模型调用数、会签数和工具费用；超预算前停止并说明。</div>
+    <div class="rule"><b>失败不伪装</b>单部门失败可输出 partial；外部动作必须有结果证明才算成功。</div>
+    <div class="rule"><b>审批可恢复</b>审批记录绑定参数哈希与版本；内容变化后必须重新审批。</div>
+  </div>
+
+  <div class="label">三阶段交付边界</div>
+  <div class="phase-grid">
+    <div class="phase now"><h4>阶段 1 · 可用团队</h4><ul><li>14 角色与原创头像</li><li>Agent Runtime 与自动模型路由</li><li>图片/文件临时附件</li><li>Skill 目录与主责/会签</li><li>引用、风险、预算与基础审计</li></ul></div>
+    <div class="phase"><h4>阶段 2 · 企业知识与审批</h4><ul><li>三层知识库与部门 ACL</li><li>安全解析、入库审核与版本</li><li>统一审批中心和恢复执行</li><li>角色与 Skill 评测后台</li></ul></div>
+    <div class="phase"><h4>阶段 3 · 外部执行</h4><ul><li>邮件、日历、CRM 等连接器</li><li>各平台发布与结果回传</li><li>逐渠道真实账号 UAT</li><li>仅验证通过后标记可用</li></ul></div>
+  </div>
+
+  <div class="options">
+    <div class="option" data-choice="approve-architecture" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>认可架构与分期</h3><p>继续评审智能体中心、对话、附件与审批界面。</p></div></div>
+    <div class="option" data-choice="revise-architecture" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>需要调整</h3><p>请指出数据流、服务边界或阶段范围需要修改的位置。</p></div></div>
+  </div>
+</div>

@@ -1,0 +1,58 @@
+<style>
+  .page{position:relative;max-width:1180px;margin:0 auto;border:1px solid #dce5ef;border-radius:20px;background:#f5f8fc;padding:15px;color:#152238;box-shadow:0 18px 50px rgba(15,23,42,.09)}
+  .topbar{height:34px;border-radius:10px;background:#fff;border:1px solid #e2e8f0;padding:9px 14px;font-size:10px;color:#64748b}
+  .brand-banner{display:grid;grid-template-columns:1.05fr 1fr .82fr;align-items:center;gap:18px;margin-top:12px;min-height:225px;border:1px solid #d9e8fb;border-radius:18px;padding:18px 26px;background:radial-gradient(circle at 18% 25%,rgba(92,180,247,.30),transparent 38%),radial-gradient(circle at 92% 90%,rgba(125,118,255,.25),transparent 40%),linear-gradient(135deg,#eaf6ff,#fbfdff 53%,#eef0ff)}
+  .figure{position:relative;height:185px}.figure:before{content:"保留现有品牌人物";position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:122px;height:165px;border-radius:60px 60px 18px 18px;background:linear-gradient(160deg,#2d456d,#91b6d7);display:grid;place-items:center;color:#fff;font-size:9px;box-shadow:0 18px 30px rgba(38,83,129,.18)}.figure:after{content:"";position:absolute;left:50%;top:5px;transform:translateX(-50%);width:70px;height:70px;border-radius:50%;background:linear-gradient(145deg,#f7d8c5,#9b6b55);border:7px solid #29364c}
+  .banner-copy .tag{display:inline-block;border:1px solid #86bdf5;border-radius:99px;padding:5px 9px;font-size:9px;color:#1371cf;background:rgba(152,207,255,.2)}.banner-copy h2{margin:10px 0 8px;font-size:25px;line-height:1.17}.banner-copy p{font-size:11px;line-height:1.7;color:#637187;margin:0}
+  .clock{border:1px solid rgba(255,255,255,.8);border-radius:22px;padding:18px;background:rgba(238,249,255,.66);box-shadow:inset 0 0 24px rgba(255,255,255,.75)}.live{font-size:8px;color:#3d9f93}.time{font-size:34px;font-weight:800;color:#0646b6;margin:16px 0 10px;letter-spacing:-.04em}.date{display:flex;justify-content:space-between;border-radius:12px;background:rgba(255,255,255,.72);padding:9px;font-size:9px;color:#66758b}
+  .continue{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px;margin-top:12px;border:1px solid #d8e5f5;border-radius:14px;background:#fff;padding:13px 16px}.continue .kicker{font-size:8px;color:#2563eb;font-weight:700}.continue strong{display:block;font-size:14px;margin:3px 0}.continue p{font-size:9px;color:#64748b;margin:0}.continue button{border:0;border-radius:9px;background:#1e5da8;color:#fff;padding:9px 12px;font-size:9px;font-weight:700}
+  .heading{display:flex;justify-content:space-between;align-items:end;margin:16px 0 8px}.heading strong{font-size:13px}.heading span{font-size:9px;color:#64748b}
+  .directions{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.direction{min-height:116px;border-radius:14px;background:#fff;border:1px solid #dce5ef;padding:12px;box-shadow:0 5px 16px rgba(30,64,175,.05)}.icon{width:30px;height:30px;border-radius:10px;background:#e5efff;margin-bottom:12px}.direction:nth-child(2) .icon{background:#def6ee}.direction:nth-child(3) .icon{background:#f1e7ff}.direction:nth-child(4) .icon{background:#ffeadf}.direction:nth-child(5) .icon{background:#e8edf4}.direction strong{display:block;font-size:11px}.direction p{font-size:8px;color:#64748b;line-height:1.5;margin:5px 0 10px}.go{font-size:8px;color:#1d5fab;font-weight:700}
+  .projects{display:grid;grid-template-columns:1fr 1fr;gap:9px}.project{border-radius:13px;background:#fff;border:1px solid #dce5ef;padding:12px;font-size:9px}.project-top{display:flex;justify-content:space-between}.project strong{font-size:10px}.status{color:#2563eb}.progress{height:5px;background:#e7edf5;border-radius:99px;margin:9px 0 5px;overflow:hidden}.progress i{display:block;height:100%;width:42%;background:linear-gradient(90deg,#2267bc,#28a5be)}.project small{color:#64748b}
+  .orb{position:absolute;right:18px;bottom:18px;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#1765b9,#1db5bd);color:#fff;font-size:13px;font-weight:800;border:4px solid #fff;box-shadow:0 10px 28px rgba(25,89,164,.38)}.orb:after{content:"1";position:absolute;right:-2px;top:-2px;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;background:#ef4444;color:#fff;font-size:8px;border:2px solid #fff}
+  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}.note{border-radius:13px;background:#fff;border:1px solid #dce5ef;padding:14px}.note strong{font-size:12px}.note p{font-size:11px;line-height:1.55;color:#64748b;margin:6px 0 0}
+  @media(max-width:900px){.brand-banner{grid-template-columns:1fr}.figure{display:none}.directions{grid-template-columns:1fr 1fr}.notes{grid-template-columns:1fr}}
+</style>
+
+<h2>方案 A · 保留品牌 Banner 的组合版</h2>
+<p class="subtitle">原 Banner 完整保留并继续承担品牌欢迎、平台定位与日期时间展示；新增功能从 Banner 下方开始。</p>
+
+<div class="page">
+  <div class="topbar">工作台　/　业务总览　　　　　　　　　搜索业务、项目、知识与智能体</div>
+  <section class="brand-banner">
+    <div class="figure"></div>
+    <div class="banner-copy">
+      <span class="tag">全链路营销获客 · AI 超级中台</span>
+      <h2>晚上好，<br>营销获客全链路，<br>一个中台就够了</h2>
+      <p>从定位、文案、数字人口播到混剪成片与 GEO 获客，内容当天出、线索每天进。</p>
+    </div>
+    <div class="clock"><span class="live">● SYS_TIME / BJT_LIVE</span><div class="time">23:02:04</div><div class="date"><span>2026-07-25</span><strong>星期六</strong></div></div>
+  </section>
+
+  <section class="continue">
+    <div><span class="kicker">当前业务项目 · 跨页面持续保存</span><strong>继续「30 天餐饮获客增长计划」</strong><p>已完成身份定位与内容矩阵 · 下一步：生成首批 3 条视频并准备分发</p></div>
+    <button>继续当前步骤 →</button>
+  </section>
+
+  <div class="heading"><strong>选择业务方向</strong><span>每个方向都有专属助理、专业流程和项目计划</span></div>
+  <section class="directions">
+    <div class="direction"><div class="icon"></div><strong>视频创作</strong><p>脚本、素材、数字人、剪辑到成片</p><span class="go">进入视频创作 →</span></div>
+    <div class="direction"><div class="icon"></div><strong>GEO 创作</strong><p>企业知识、矩阵规划、文章与评分</p><span class="go">进入 GEO 创作 →</span></div>
+    <div class="direction"><div class="icon"></div><strong>海报图创作</strong><p>营销海报、内容配图、批量导出</p><span class="go">进入海报创作 →</span></div>
+    <div class="direction"><div class="icon"></div><strong>抖音截流</strong><p>线索发现、智能触达、跟进复盘</p><span class="go">进入抖音截流 →</span></div>
+    <div class="direction"><div class="icon"></div><strong>身份定位</strong><p>企业档案、账号定位、受众与风格</p><span class="go">维护身份定位 →</span></div>
+  </section>
+
+  <div class="heading"><strong>最近业务项目</strong><span>查看全部项目 →</span></div>
+  <section class="projects">
+    <div class="project"><div class="project-top"><strong>餐饮获客增长计划</strong><span class="status">42%</span></div><div class="progress"><i></i></div><small>视频助理正在等待你确认首批脚本</small></div>
+    <div class="project"><div class="project-top"><strong>品牌 GEO 基建</strong><span class="status">68%</span></div><div class="progress"><i style="width:68%"></i></div><small>GEO 助理建议补充 2 份产品资料</small></div>
+  </section>
+  <div class="orb">AI 助理</div>
+</div>
+
+<div class="notes">
+  <div class="note"><strong>Banner 保留</strong><p>保留截图中的人物、欢迎语、营销获客定位、时钟与日期，不塞入任务和运营数据。</p></div>
+  <div class="note"><strong>项目推进独立成条</strong><p>当前计划压缩为 Banner 下方的单行继续卡，避免首页顶部过高，又能让用户马上接着做。</p></div>
+  <div class="note"><strong>五大业务明确跳转</strong><p>首页只展示大功能方向；小功能由进入工作室后再选择，悬浮助理始终跨页保留。</p></div>
+</div>

@@ -1,0 +1,45 @@
+<style>
+  .kb-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:22px}.kb-card{border:1px solid #dbe5ee;border-radius:18px;background:#fff;overflow:hidden;cursor:pointer;transition:.2s;box-shadow:0 8px 28px rgba(15,23,42,.05)}.kb-card:hover{transform:translateY(-3px);border-color:#59c8da;box-shadow:0 14px 36px rgba(8,145,178,.12)}.kb-card.selected{outline:3px solid rgba(6,182,212,.22);border-color:#06b6d4}.kb-head{padding:16px 17px 12px;border-bottom:1px solid #edf2f7}.kb-badge{font-size:11px;font-weight:700;color:#0891b2;background:#ecfeff;border-radius:999px;padding:4px 8px}.kb-head h3{margin:10px 0 4px;font-size:16px;color:#172033}.kb-head p{margin:0;font-size:12px;line-height:1.6;color:#64748b}.mini{height:318px;padding:14px;background:linear-gradient(145deg,#fbfdff,#f5fbfc)}.progress{display:flex;gap:5px;margin-bottom:13px}.progress i{display:block;height:5px;flex:1;border-radius:99px;background:#dbe7ec}.progress i.on{background:#11b8cf}.q{background:white;border:1px solid #e5edf2;border-radius:12px;padding:12px;margin-bottom:9px}.q strong{display:block;font-size:12px;color:#243247;margin-bottom:7px}.field{height:30px;border:1px solid #d9e3ea;border-radius:8px;background:#fbfdff;color:#94a3b8;font-size:10px;display:flex;align-items:center;padding:0 9px}.upload{height:82px;border:1px dashed #8ddce6;border-radius:11px;background:#f1fdff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#0891b2;font-size:11px}.chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px}.chip{font-size:9px;padding:5px 7px;border-radius:99px;background:#e9fbfd;color:#07839b}.chat{display:flex;gap:8px;margin-bottom:10px}.avatar{width:25px;height:25px;border-radius:8px;background:#d9f8fb;color:#0795aa;display:grid;place-items:center;font-size:11px}.bubble{flex:1;border-radius:4px 11px 11px 11px;background:white;border:1px solid #e4edf2;padding:9px;font-size:10px;line-height:1.5;color:#475569}.answer{margin-left:33px;border-radius:11px 4px 11px 11px;background:#0ea5b7;color:white;padding:9px;font-size:10px}.summary{border-radius:12px;background:white;border:1px solid #e4edf2;padding:11px}.summary-row{display:flex;justify-content:space-between;border-bottom:1px solid #eef3f6;padding:6px 0;font-size:10px;color:#64748b}.summary-row:last-child{border:0}.cta{height:32px;margin-top:10px;border-radius:9px;background:#0da4ba;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}.recommend{display:inline-flex;align-items:center;gap:5px;color:#0e7490;font-weight:700;font-size:12px;margin-left:8px}@media(max-width:900px){.kb-grid{grid-template-columns:1fr}.mini{height:auto;min-height:270px}}
+</style>
+
+<h2>企业知识库搭建，哪种过程更轻松？</h2>
+<p class="subtitle">三版都保留现有青蓝色视觉体系。请从“客户是否愿意完成”而不是“页面信息是否齐全”的角度选择。</p>
+
+<div class="kb-grid">
+  <div class="kb-card" data-choice="a-pure-form" onclick="toggleSelect(this)">
+    <div class="kb-head"><span class="kb-badge">A · 纯填表</span><h3>全部信息一次展开</h3><p>最快、最直接，适合熟悉企业资料的内部运营人员。</p></div>
+    <div class="mini">
+      <div class="q"><strong>企业基本信息</strong><div class="field">企业名称</div><div style="height:7px"></div><div class="field">行业与核心产品</div></div>
+      <div class="q"><strong>官方联系方式</strong><div class="field">联系人 + 手机 / 微信 / 邮箱</div></div>
+      <div class="upload">上传企业资料<br><small style="color:#94a3b8;margin-top:5px">支持拖拽，自动提取事实</small></div>
+      <div class="cta">生成企业知识库</div>
+    </div>
+  </div>
+
+  <div class="kb-card" data-choice="b-guided-form" onclick="toggleSelect(this)">
+    <div class="kb-head"><span class="kb-badge">B · 推荐</span><span class="recommend">低负担混合向导</span><h3>一次只完成一个小任务</h3><p>像 IP 打造一样有步骤感，但核心仍是结构化表单，资料可自动补全。</p></div>
+    <div class="mini">
+      <div class="progress"><i class="on"></i><i class="on"></i><i></i><i></i></div>
+      <div class="chips"><span class="chip">1 企业是谁</span><span class="chip">2 上传资料</span><span class="chip">3 联系方式</span><span class="chip">4 确认生成</span></div>
+      <div class="q"><strong>先告诉我们企业是谁</strong><div class="field">企业名称</div><div style="height:7px"></div><div class="field">核心产品或服务</div><p style="font-size:9px;color:#94a3b8;margin:7px 0 0">只需填写 2 项，行业可由资料自动识别</p></div>
+      <div class="summary"><div class="summary-row"><span>预计耗时</span><b>约 2 分钟</b></div><div class="summary-row"><span>资料自动提取</span><b style="color:#059669">已开启</b></div><div class="summary-row"><span>可稍后补充</span><b>是</b></div></div>
+      <div class="cta">继续：上传企业资料 →</div>
+    </div>
+  </div>
+
+  <div class="kb-card" data-choice="c-chat-wizard" onclick="toggleSelect(this)">
+    <div class="kb-head"><span class="kb-badge">C · 对话引导</span><h3>AI 像顾问一样逐题询问</h3><p>更有人情味，但问题轮次更长，回答也更难稳定结构化。</p></div>
+    <div class="mini">
+      <div class="chat"><div class="avatar">AI</div><div class="bubble">先简单介绍一下您的企业名称，以及主要服务哪类客户？</div></div>
+      <div class="answer">吉林省精诚法税企业管理有限公司，主要服务中小企业。</div>
+      <div class="chat" style="margin-top:12px"><div class="avatar">AI</div><div class="bubble">收到。您希望重点推广的核心产品或服务是什么？</div></div>
+      <div class="field" style="height:52px;margin-left:33px">在这里输入回答…</div>
+      <div class="cta" style="margin-left:33px">发送回答</div>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons" style="margin-top:18px">
+  <div class="pros"><h4>我的建议：B</h4><ul><li>客户感受是“被引导”，数据仍然结构化可靠</li><li>上传资料后自动补全，减少手工填写</li><li>可以保存进度、返回修改，不需要连续聊天</li></ul></div>
+  <div class="cons"><h4>不建议完全照搬聊天</h4><ul><li>企业名称、联系方式等事实字段不适合自由回答</li><li>对话轮次多，客户更容易中途退出</li><li>后续校验和纠错成本更高</li></ul></div>
+</div>

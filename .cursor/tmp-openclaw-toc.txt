@@ -1,0 +1,384 @@
+\n===== PAGE 1 =====\nOPENCLAW ORANGE PAPER · 橙⽪书
+OpenClaw
+橙 皮 书
+从 入门到 精 通 ， 涵 盖 架 构 原 理 、 部 署 方 案 、 渠 道接入 、 Skills 系
+统 、 模 型 配 置 、 安全与成本 的一 站式 参考 手 册 。
+OpenClaw Orange Paper — From Zero to Mastery
+信息来 源 ：OpenClaw 官 方文 档  ·  G itHub 仓 库  ·  社区 调 研
+文 档 版本 ：v1.0
+适 用版本 ：v2026.3.7
+发 布 时间 ：2026 年  3 月
+涵 盖 内 容 ：架 构 原 理  ·  部 署 指 南  ·  渠 道接入  ·  Skills 系 统  ·  模 型 配 置  ·  安全与成本  ·  生 态 全 景
+花 叔
+B站 ： AI 进化论 - 花 生 ·  YouTube ： AI 进化论 - 花 生 ·  公 众 号 ： 花 叔
+知 识 星 球 ： AI 编程 · 从 入门到 精 通
+本文 档 在  Claude Code 辅 助 下 整 理 编 写 ， 内 容 的 准确 性与时 效 性 仅 供参考 。
+如 有 勘 误 或建议 ， 欢 迎 关注公 众 号 「 花 叔 」 反 馈 交流 。
+后 续 更 新 请 查 看 ：飞 书 文 档 （ 持 续 更 新 ）\n\n===== PAGE 2 =====\n目 录
+Table of Contents
+Part 1: 认 识  OpenClaw  ·   M eet OpenClaw
+01 OpenClaw 是 什 么 What is OpenClaw
+02 发 展简 史 History
+03 创 始 人 故 事 The Creator
+04 为 什 么 这 么 火 Why So Popular
+Part 2: 技 术 架 构   ·   Architecture
+05 整 体 架 构 Architecture Overview
+06 记 忆 系 统 Memory System
+07 Agent 工作区 Agent Workspace
+08 Session 与用户 识 别 Sessions & Authentication
+09 设计 哲 学 Design Philosophy
+Part 3: 部 署 方 案   ·   Deploym ent
+10 部 署 方式 总 览 Deployment Overview
+11 本地安 装 Local Installation
+12 Docker 部 署 Docker Deployment
+13 国内 云 厂 商 一 键 部 署 Cloud Deployment in China
+14 首次 配 置 Initial Configuration
+Part 4: 渠 道接入   ·   Channel Integration
+15 渠 道 概 览 Channel Overview\n\n===== PAGE 3 =====\n16 国 际 平 台 接入 International Platforms
+17 国内平 台 接入 Chinese Platforms
+18 远 程 访 问 Remote Access
+Part 5: Skills 系 统   ·   Skills System
+19 Skills 工作 原 理 How Skills Work
+20 ClawHub 技能市 场 ClawHub Marketplace
+21 热门  Skills 推 荐 Top Skills
+22 自 建  Skill 指 南 Create Your Own Skill
+23 Skills 安全 Skill Security
+Part 6: 模 型 配 置   ·   M odel Configuration
+24 模 型 提 供 商总 览 Provider Overview
+25 国 际模 型 配 置 International Models
+26 国产 模 型 配 置 Chinese Models
+27 本地 模 型 与推 荐 方 案 Local Models & Recommendations
+Part 7: 安全与成本   ·   Security & Cost
+28 安全 模 型 Security Model
+29 已 知安全 事件 Security Incidents
+30 成本 控 制 Cost Control
+Part 8: 生 态 与社区   ·   Ecosystem  & Com m unity
+31 养 虾 文化 Lobster Culture
+32 平 替 产品 Alternatives\n\n===== PAGE 4 =====\n33 vs Claude Code Comparison with Claude Code
+34 国内生 态 China Ecosystem
+附 录   ·   Appendix
+A 常见 问题  FAQ Frequently Asked Questions
+B 命 令 速 查 表 Command Cheat Sheet
+C 资 源 链 接 Resources & Links\n\n===== PAGE 5 =====\n01 OpenClaw 是 什 么
+What is OpenClaw
+一 个开 源 、 自 托 管 的 AI Agent 系 统 ， 让 AI 从 「 聊 天工 具 」 变 成 「 能自主 执 行 任 务 的 数 字员 工 」 。
+如果你用过 ChatG PT ， 你会知道 它 本 质 上是 一 个问 答 系 统 ： 你问 ， 它答 。 OpenClaw 不 一 样 。 它 是 一 个 AI Agent
+平 台 ， 能 连 接 20+ 消 息 渠 道（ W hatsApp 、 Telegram 、 飞 书 、 钉钉 、 Discord 等） ， 主动 执 行 任 务 、 管 理你 的日
+程 、 处 理 邮件 、 操 作 浏 览器 、 调 用 各 种 工 具 。
+换 句 话说 ， ChatG PT 是 「 顾 问 」 ， OpenClaw 是 「 员 工 」 。
+与 ChatGPT 的 核 心区 别
+维 度 ChatGPT OpenClaw
+交 互模 式 你问 它答 自主 执 行 任 务
+运 行 环 境 网 页 /App 自 托 管 服务 器 ， 接入 20+ 消 息平 台
+可 扩 展 性 G PTs 商 店 ClawHub 技能市 场 （ 13,729 个 Skills ）
+数 据 控 制 数 据 在 OpenAI 完 全本地 ， 你 拥 有 所 有 数 据
+模 型选 择 仅 G PT 系 列 Claude / G PT / DeepSeek / G em ini / Ollam a 本地 模 型
+开 源 否 M IT License ， 完 全开 源\n\n===== PAGE 6 =====\n核 心数 据 快 照  截⾄  2026 年 3 ⽉ 8 ⽇
+指 标 数 据
+G itHub Stars 278,932 （全 球 软 件 项 目第 一， 已超 越 React ）
+Forks 53,232
+贡 献 者 1,075+
+ClawHub Skills 13,729
+内 置 Skills 55 个
+支持消 息 渠 道 20+ （ W hatsApp / Telegram  / Discord / Slack / 飞 书  / 钉钉 等）
+最 新 版本 v2026.3.7 （ 2026-03-08 发 布 ）
+一 句 话理 解 OpenClaw ：它 是 一 个开 源 的 「 个人 AI 操 作系 统 」 ， 你可以在自 己 的 服务 器 上 运 行 它 ， 通过 任何即 时
+通 讯 工 具 跟 它 交 互 ， 让 它 帮 你 处 理生活和工作 中的 各 种任 务 。 吉 祥 物是 一 只龙 虾 ，中 文社区 称 使 用 OpenClaw
+为 「 养 虾」 。
+02 发 展简 史
+History
+从 一 个人 的 周 末 项 目 ， 到不到 5 个 月 成为 GitHub 全 球 第 一。\n\n===== PAGE 7 =====\n时间 事件
+2025 年 11
+月
+ClawdBot 诞 生。 奥 地 利 开发者 Peter Steinberger 作为 周 末 项 目 发 布 。 名 字 致 敬 Anthropic 的 Claude
+（ Claw= 爪 子） ， 选 了 龙 虾 作为 吉 祥 物 。
+2026 年 1 月
+中 旬
+爆 发式 增 长。 72 小时内 获 得 6 万 Stars ， 某 天 单 日 增 长 9,000 Stars 。
+2026 年 1 月
+27 日
+Anthropic 商标 警 告。 因 名 称 与 Claude 过于相 似 ， 被 迫 改 名为 M oltbot （ M olt= 龙 虾 蜕 壳 ） 。
+2026 年 1 月
+30 日
+再 次 改 名 OpenClaw。 强调 开 源 属 性 ， 保 留龙 虾 主题 。
+2026 年 2 月
+初
+安全 危 机。 CVE-2026-25253 RCE 漏 洞 被 发现（ CVSS 8.8/10 ） ， 13.5 万 暴 露 实 例 中 5 万 + 可 被直 接 攻 击 。
+同 期 ClawHavoc 供 应 链 攻 击 爆 发 ， ClawHub 约 12% 的 Skills 被 确 认 为 恶 意 。
+2026 年 2 月
+初
+谷 歌 封 号 风 波。 谷 歌 大 规 模 封 禁 OpenClaw 用户 账 号 ， 引 发社区 震 动 。
+2026 年 2 月
+14 日
+创 始 人加入 OpenAI。 Peter Steinberger 宣 布 加入 OpenAI ， 项 目 移 交 开 源 基 金会 运 营 。 OpenAI 赞 助 但
+项 目保持 独 立 。
+2026 年 3 月
+3 日
+登 顶 GitHub。 v2026.3.2 发 布 ， Stars 超 过 250K ， 正式 超 越 React 成为 G itHub 全 球 第 一 软 件 项 目 。
+2026 年 3 月
+8 日
+v2026.3.7 发 布。 Stars 达 278,932 。 深 圳 龙 岗 AI 局 发 布 OpenClaw 支持 政 策 征 求 意 见 稿 。
+核 心 建议
+从创建 到 27.9 万 Stars ， OpenClaw 只 用了不到 4 个 月。 作为对 比 ， React 用了 超 过 10 年 才 达 到 23 万 Stars 。 这是
+开 源 历 史 上前所 未 有的 增 长 速 度 。
+03 创 始 人 故 事
+The Creator
+Peter Steinberger ： 从 周 末 项 目 到全 球 最 火 开 源 项 目 ， 再 到加入 OpenAI 。\n\n===== PAGE 8 =====\n从 一 个人到 一 个社区
+Peter Steinberger 是 一 位 奥 地 利 开发者 ， 在 iOS 和 m acOS 开发 圈 有 很 高 的 知名度 。 2025 年 11 月的一 个 周 末 ， 他
+写 了 一 个能 连 接 即 时通 讯 平 台 的 AI 助 手小工 具 ， 取 名 ClawdBot 。
+他 大 概 没 有 想 到 ， 这个 周 末 项 目 会在 两 个 月 后成为 G itHub 上 增 长最 快 的 开 源 项 目 。 到 2026 年 3 月， 他 个人在这
+个 项 目 上提 交 了 11,684 次 com m it ， 贡 献 者 超 过 1,075 人 。
+加入 OpenAI
+2026 年 2 月 14 日， Peter 宣 布 加入 OpenAI 。 Sam  Altm an 亲 自发推 欢 迎 ， 称 他 为 「 genius 」 。
+这个 决 定 引 发了社区 的 广 泛 讨 论 。 但 Peter 做 了 几 件事 来 消 除 担 忧 ：
+OpenClaw 转 为开 源 基 金会 运 营 ， 保持 项 目 独 立
+OpenAI 作为 赞 助商 之 一 （与 Vercel 、 Blacksm ith 、 Convex 并 列 ） ， 但 不 控 制 项 目 方 向
+OpenAI 承 诺 让 他 继 续 投 入 OpenClaw 的 开发
+Peter 的 原 话 ：「 I'm  a builder at heart... W hat I want is to change the world, not build a large com pany. 」
+（我 骨 子 里 是个 建 造 者 。 我 想 改变世界 ， 而 不是 建 一 家大公司 。 ）
+关于名 字 的 故 事
+ClawdBot 这个名 字 来自对 Anthropic Claude 的 致 敬 （ Claw= 爪 子） ， 所以 选 了 龙 虾 作为 吉 祥 物 。 Anthropic 的 商
+标 警 告 迫 使他 改 名为 M oltbot （ M olt= 龙 虾 蜕 壳 ） ， 三天后 又改 为 OpenClaw ， 强调 开 源 属 性 。 虽 然 经 历 了 两 次 改
+名 ， 龙 虾 的 形 象 始 终 保 留 ， 也 成了 整 个社区 的 文化 符 号 。
+04 为 什 么 这 么 火
+Why So Popular
+不到 5 个 月 从 0 到 27.9 万 Stars ， OpenClaw 的 爆 火 不 只 是技 术 层 面 的 事 。\n\n===== PAGE 9 =====\n增 长数 据
+时间 节 点 Stars 备注
+2025 年 11 月 0 项 目创建
+2026 年 1 月中 旬 60,000+ 72 小时 爆 发 增 长
+2026 年 2 月中 旬 145,000+ Peter 加入 OpenAI
+2026 年 3 月 1 日 241,000+ 逼 近 React
+2026 年 3 月 3 日 250,000+ 超 越 React ， G itHub 第 一
+2026 年 3 月 8 日 278,932 当前数 据
+某 天 单 日 增 长 9,000 Stars 。 这个数 字 意 味 着 平 均 每 10 秒 就 有一 个开发者 点 下 Star 。
+「 养 虾」 文化现 象
+因 为 吉 祥 物是 龙 虾 ，中 文社区 将运 行 OpenClaw 称 为 「 养 虾」 ， 用户自 称 「 养 虾 人 」 。 「 你 养 龙 虾 了 吗 ？ 」 成了 AI
+圈 的 问 候 语 。 这 种 有 趣 的 文化 标 签 降 低 了 传 播 门 槛 ， 让 一 个技 术 项 目 有 了社 交 货 币 的 属 性 。
+2026 年 3 月 6 日， 深 圳 腾 讯 云 总 部 近 千 人 排 队 体 验 OpenClaw 安 装 。 3 月 8 日， 深 圳 龙 岗 区 AI （机 器 人） 局 发 布 了
+OpenClaw 使 用 支持 措 施 的 征 求 意 见 稿 。一 个开 源 项 目 能 引 发地方 政 府 的 政 策 关注 ， 这在国内 并 不多 见 。
+M oltbook ： AI Agent 的 社 交 网 络
+OpenClaw 生 态 中 衍 生出了 一 个 叫 M oltbook 的 社 交 平 台 ， 专 供 AI Agent 使 用 。 截 至 2026 年 2 月 底 的 数 据 ：
+指 标 数 据
+注 册 AI Agent 32,912
+子社区 2,364
+帖 子 3,130
+评 论 22,046
+数 千 个 OpenClaw 实 例 在上面发 帖 、 评 论 、 讨 论 哲 学问题 。 这可能是 AI Agent 从 「 工 具 」 走向 「 社会化 存 在 」 的
+第 一 个大 规 模 实 验 场 。\n\n===== PAGE 10 =====\n热门 玩 法
+赚 钱 型
+在 Polym arket 上用 AI 进行 预测 市 场交 易 ， 已 有 OpenClaw 月 入数 万 美 元 的 案 例
+ClawW ork 项 目 ： 「 OpenClaw 作为你 的 AI Coworker ， 11 小时 赚 $15K 」
+生活 助 手 型
+接 管邮件 、日 历 、 消 息 管 理
+浏 览 网 页 、 填 表 、 数 据 抽 取
+文 件读 写 、 Shell 命 令 执 行
+社 交 养 成 型
+在 M oltbook 上 给 Agent 设 定名 字 和性 格 ， 观 察 其 「 社 交 行为 」
+Agent 之间 的 交 互形 成了 一 种 「 赛 博 养 成 」 文化
+企 业部 署 型
+国内用户大 量 接入 飞 书 、 钉钉 、 企 业微信 、 QQ
+已 有 专门 的 openclaw-china 插 件 套 件 ， 支持 三 步 Docker 部 署
+注意
+OpenClaw 的 火 爆 背 后 也 有 阴 影 ： ClawHub 13,729 个 Skills 中 超 过 50% 被 判 定为 垃圾 / 重复 / 低 质量 ， 396 个 被标
+记 为 恶 意 。一 觉 醒 来收到 $1,100 API 账 单 的 恐 怖 故 事 在社区 频 繁 出现 。 CVE-2026-25253 RCE 漏 洞 曾 让 13.5 万 个
+暴 露 实 例 面 临 风 险 。 「 养 虾」 虽 然 火 ， 但 安全和成本 控 制是你 必 须 认真 对 待 的 事 。\n\n===== PAGE 11 =====\n05 整 体 架 构
+Architecture Overview
+OpenClaw 采 用  Gateway-Node-Channel 三 层架 构 ， 以  W ebSocket 为通信 总 线 ， 将 控 制平面 、 设 备 执
+行与 消 息 渠 道 解 耦 。
+三 层架 构  Gateway · Node · Channel
+Channel
+20+ 消 息 渠 道 →
+G ateway
+中 央 控 制平面 →
+Node
+设 备 端 执 行
+层 级 职 责 关 键细 节
+Gateway 中 央 控 制平面 ， 维护  W ebSocket 服务 、 管
+理  Session 、 调 度  Agent
+默 认 绑 定  ws://127.0.0.1:18789， 每 台 主机 一 个实
+例
+Node 设 备 端 执 行 节 点， 负 责 本地 操 作 cam era （ 摄 像 头 ） 、 screen recording （录 屏 ） 、
+system .run （系 统 命 令）等
+Channel 消 息 渠 道接入 层 ， 连 接  20+ 即 时通 讯 平 台 W hatsApp 、 Telegram 、 Discord 、 Slack 、 飞 书 、 钉钉
+等
+Loopback-First 设计  Security by Default
+G ateway 默 认 只 绑 定  localhost（ 127.0.0.1 ） ， 所 有 流量 在本地回 环 。 这意 味 着 ：
+不开 放任何 外 网 端 口 ， 天 然 安全
+同 一 台 机 器 上 的  Node 直 接通过  W ebSocket 连 接  G ateway
+需 要 远 程 访 问时 ， 通过  Tailscale Serve/Funnel 暴 露 ， 不 直 接 暴 露 端 口
+核 心 建议
+每 台 主机 只 运 行 一 个  G ateway 实 例 。 这是 因 为  W hatsApp W eb 等 渠 道 需 要 独 占 会话 ， 多实 例 会 导 致 登录 冲
+突 。
+通信 流程
+一 条消 息 从 用户发出到  Agent 回 复 ， 完 整 路 径 如下 ：\n\n===== PAGE 16 =====\n核 心文 件 说明
+文 件 用 途 加 载 时机
+AGENTS.md Agent 的 身 份 定 义 、 行为 边 界 、 回 复风格 。 相当于  system  prom pt 的 文
+件 化版本
+每 次  Session 启 动
+时
+SOUL.md 不可 变 的 人 格 内 核 。 定 义  Agent 「 是 谁 」 ， 不 应被 后 续 对话 修改 每 次  Session 启 动
+时
+USER.md 关于用户 的 结 构 化信息 ： 称 呼 、 偏 好 、 关系 M ain session 启 动
+时
+MEMORY.md 长 期记 忆 ， Agent 在对话 中 主动 写 入 的 持 久 化 事 实和 决策 仅  m ain session
+HEARTBEAT.md 定 义 定时 任 务和主动行为（如 每 30 分 钟检 查 一 次 任 务 状 态 ） G ateway 启 动时
+memory/ Daily Logs 目 录 ， 按 日 期 自动 创建 ， append-only 读取 今 日 + 昨 日日 志
+skills/ 工作区 级 技能 ， 优先 级 最高（高于全 局 和内 置 技能） Session 启 动时 扫
+描
+sessions.json 会话 元 数 据存 储 ， 记 录 各  session 的 状 态 和 历 史 按 需 读取
+核 心 建议
+所 有 配 置 文 件都 是 纯  M arkdown 或  J SON 。 你可以 直 接用文本 编 辑 器修改 它 们 ， 不 需 要 任何 专用工 具 。 这是
+OpenClaw 哲 学 的 体现 ：一 切 皆 文本 。\n\n===== PAGE 21 =====\n代码规 模 与性能  Scale & Performance
+指 标 数 值
+代码规 模 约  43 万 行  TypeScript
+内 存 占 用 约  1G B （ 运 行时）
+启 动时间 3-5 秒
+扩 展 数 量 40+ 个 官 方 扩 展
+内 置 技能 55 个
+社区技能 13,729 个（ ClawHub 注 册 ）
+43 万 行 代码 、 1G B 内 存 ， 这 并 不 「 轻 量 」 。 但 对于 一 个  24/7 运 行 的 个人  AI 助 手来说 ， 在现 代 硬 件 上 完 全可接
+受 。 3-5 秒 的 启 动时间 保证 了  G ateway 重 启 或 更 新 后能 快 速 恢 复 服务 。
+10 部 署 方式 总 览
+Deployment Overview
+OpenClaw 支持从 本地到 云端 的 多 种 部 署 方式 。 选 择 哪 种取 决 于你 的 技 术水 平 、 预算 和 使 用 场 景 。\n\n===== PAGE 31 =====\n扣 子 编程 的 限 制 ：自定 义 程 度不如自 建 服务 器 ， 不能 完 全 控 制 底 层 环 境 ， 数 据存 储 在 第 三方平 台 。 如果你 需 要
+深 度定制 或 对数 据 安全 有 高要 求 ， 建议选 择 自 建 方 案 。
+海 外平 台  International Platforms
+Sealos
+K 8s 原 生 云 平 台 ， 支持  7 天 免费 试 用 。 通过  Devbox 云 开发 环 境 一 键 部 署 ， 按 用 量计费 。 适 合 有 容 器 化 需 求 的 开
+发者 ， 但需 要 一 定 的  K 8s 知 识 ， 且 没 有 专门 针 对  OpenClaw 的 预 置 模 板 。
+Zeabur
+模 板 部 署 ， 已被 部 署 超 过  29,000 次 。 最大 亮 点 是  AI Hub 内 置 多 模 型  failover 链 ： glm -4.7-flash →  grok-4-fast
+→  m inim ax-m 2.5 →  kim i-k2.5 →  qwen-3-235b →  gpt-5-m ini 。 主要面 向 海 外 / 台 湾 市 场 ， 必 须 使 用专用服务
+器 （ Dedicated Server ） 。
+Railway
+真 正 的一 键 部 署 ， 全 程 浏 览器 操 作 。 提 供  $5/ 月 免费 额 度 ， 轻 度 使 用可 零 成本 。 多 种 模 板 可 选 （ 标 准 / 快 速 启
+动 /All-in-One ） ， 部 署 成 功 率  96~100% 。 海 外平 台 ， 国内 访 问 需 要科学上 网。
+按 场 景 推 荐  Recommendations by Scenario
+场 景 首 选 备 选 理 由
+零 基 础 想 最 快 体 验 扣 子 编程 百 度 云 不 需 要服务 器 ， 2 步 部 署 ， 内 置 模 型
+个人长 期使 用 ， 预算 敏 感 火山引 擎 阿 里 云 19.8 元 / 月 （服务 器 + 模 型 ） ， 综 合最 划算
+飞 书 重 度用户 火山引 擎 扣 子 编程 同为 字节 系 ， 飞 书深 度 集 成
+企 微 /QQ 生 态 腾 讯 云 — 四 大  IM  原 生 支持 ， Coding Plan 7.9 元起
+企 业 级 部 署 ， 合 规 优先 华 为 云 阿 里 云 安全合 规 能力最 强
+开发者 / 海 外用户 Railway Zeabur 一 键 部 署 ， 免费 额 度 ， 开发者体 验 极 佳\n\n===== PAGE 41 =====\n17 国内平 台 接入
+Chinese Platforms
+国内  IM  生 态 的  OpenClaw 支持 正在 快 速 发 展 。 QQ 和 飞 书 已 有 官 方 级支持 ， 钉钉 和 企 业微信社区 插 件
+成 熟 ， 微信个人号 仍 是技 术 挑 战 。
+QQ 国内⾸选  · 扫码即⽤
+QQ 是国内用户接入  OpenClaw 最 简单 的 方式 。 腾 讯官 方开 放 了  QQ Bot 能力 给  OpenClaw ， 扫 码  1 分 钟 即 可 完
+成 绑 定 。 支持  M arkdown 、 图片 、 语音 、 文 件 等多 媒 体 消 息 ， 手机  QQ 和 桌 面  QQ 均 可 使 用 。
+1注 册  QQ Bot 开发者
+用手机  QQ 扫 码完 成开发者注 册 。 未 实名 认证 的 账 号 需 要 先 完 成实名 。 单 个 账 号最多 创建  5 个  Bot 。
+2 创建  QQ Bot
+在  QQ 开 放 平 台 一 键 创建  Bot ， 获 取  App ID 和  Token 。
+3 配 置  OpenClaw
+在  OpenClaw 运 行 环 境 中 完 成 配 置 绑 定 ， 即 可在  QQ 上与  bot 对话 。
+核 心 建议
+QQ Bot 适 合 两种场 景 ： 个人 助 手（ 私 聊 模 式）和  QQ 社 群 管 理（ 群 聊 自动回 复 、 批 量 处 理 、 定时通知） 。
+飞 书  国内企业⾸选  · OpenClaw 2026.2 起内置
+飞 书 自  OpenClaw 2026.2 起 获 得原 生内 置支持 。 使 用  W ebSocket 事件 订 阅 ， 支持 私 聊 、 群 聊 、 照 片 / 文 件 / 视
+频 等多 媒 体 消 息 。
+1 创建 飞 书 应 用
+在 飞 书 开 放 平 台 （open.feishu.cn） 创建 企 业自 建应 用 ， 获 取  App ID 和  App Secret 。
+2 运 行 向 导 配 置
+运 行  openclaw onboard， 选 择  Feishu channel ， 粘 贴  App ID 和  App Secret 。
+3 重 启  Gateway
+重 启  G ateway 后 即 可在 飞 书 中 与  bot 对话 。\n\n===== PAGE 51 =====\nobsidian notion apple-notes bear-notes trello things-mac apple-reminders
+开发工 具
+coding-agent github gh-issues tmux
+媒 体 处 理
+spotify-player songsee sonoscli video-frames openai-image-gen gifgrep camsnap
+AI 与 模 型
+gemini openai-whisper openai-whisper-api sherpa-onnx-tts model-usage
+搜索 与 浏 览
+xurl summarize blogwatcher gog（ G oogle 搜索 ）goplaces
+系 统 工 具
+1password healthcheck session-logs himalaya（ 邮件 CLI ）peekaboo oracle canvas
+智 能家 居
+openhue（ Philips Hue 灯 光 控 制）
+生 态 工 具
+clawhub（技能 商 店 客户 端 ）skill-creator（技能 创建 器 ）mcporter（ M CP 桥 接）
+实用 建议 ：不要 一 次性安 装 太 多 Skills 。 每 个 Skill 都 会 增 加 system  prom pt 的 长度 ， 占 用上下文 窗 口 。 建议从
+Top 10 中 选 择 你 真 正 需 要 的 3-5 个开 始 ， 用 熟 了 再 逐 步 扩 展 。\n\n===== PAGE 61 =====\n核 心 建议
+G em ini Flash 的 免费 额 度 非 常 适 合用作心 跳 （ Heartbeat ）和定时 任 务（ Cron ） 的 模 型 ， 这 些 场 景 不 需 要最 强
+能力 但需 要 持 续 运 行 ， 用 免费 模 型 可以 把 成本 降 到 零 。\n\n===== PAGE 71 =====\n{
+  models: {
+    mode: "merge",
+    providers: {
+      lmstudio: {
+        baseUrl: "http://127.0.0.1:1234/v1",
+        apiKey: "lm-studio",
+        api: "openai-responses",
+        models: [
+          { id: "model-name", contextWindow: 32768, maxTokens: 8192 }
+        ]
+      }
+    }
+  }
+}
+推 荐 本地 模 型
+模 型 参 数 量 推 荐场 景 最 低 内 存
+Qwen3.5-Coder:32B 32B 代码 生成 、 Agent 任 务 32G B RAM
+Devstral-24B 24B Agent/ 工 具 调 用 32G B RAM
+Qwen 2.5:32B 32B 通用 任 务 32G B RAM
+DeepSeek-R1:14B 14B 推理 任 务 16G B RAM
+Llam a 3.3 8B-70B 通用 任 务 16-64G B RAM
+硬 件 要 求 速 查 ：运 行 3-7B 参 数 模 型 最 低需 要 16G B RAM 。 运 行 32B 参 数 模 型 推 荐 32G B RAM 。 如果 有
+NVIDIA/Apple Silicon G PU 会 显 著 加 速 推理 。
+五 套 推 荐 方 案
+方 案 一： 极 致 省钱 （ 月 均 <$5 ）
+主力 ： DeepSeek-V3.2 （ $0.14/$0.28 ）
+备 选 ： Qwen 3.5 Plus （ $0.40/$1.20 ）
+心 跳 /Cron ： G LM -4.5-Flash （ 免费 ）
+推理 任 务 ： DeepSeek-R1 （ $0.55/$2.19 ）
+适 合 ： 个人开发者 、 学 习 探 索 。 风 险 ： DeepSeek 高 峰 期 延 迟 ， 需 Fallback 兜 底 。\n\n===== PAGE 81 =====\n方 案 推 荐 模 型 硬 件 要 求 适 合 场 景
+Ollam a Qwen3-Coder:32B / Devstral-24B 32G B RAM 代码任 务 、 Agent 工 具 调 用
+Ollam a （ 轻 量 ） Llam a 3.3 / DeepSeek-R1:14B 16G B RAM 简单 对话 、 心 跳 任 务
+LM  Studio M iniM ax M 2.5 / Devstral-24B 32G B RAM 需 要 G U I 管 理 的 用户
+# Ollama 安装和配置
+ollama pull qwen3-coder:32b
+# OpenClaw ⾃动发现本地模型，只需设置环境变量
+# OLLAMA_API_KEY 可以是任意值
+{
+  "env": { "OLLAMA_API_KEY": "ollama-local" }
+}
+注意
+使 用 Ollam a 时不要用  /v1 OpenAI 兼 容 U RL ， 会 导 致 工 具 调 用 异 常 。 让 OpenClaw 使 用 原 生 Ollam a API 即 可自
+动发现 模 型 。
+服务 器 成本
+相 比 API 费 用 ， 服务 器 成本 已 经不是主要开 销 ：
+方 案 月 费 说明
+阿 里 云 轻 量 服务 器 约 ¥6-9/ 月 新 用户 优 惠 ， 2vCPU +2G B 即 可 运 行
+腾 讯 云 Lighthouse 约 ¥8-12/ 月 类 似 方 案 ， 社区 支持 好
+Fly.io 免费起 步 有 免费 额 度 ， 适 合 轻 度 使 用
+本地电 脑 运 行 ¥0 利 用现 有 设 备 ， 但需 要 保持 开机\n\n===== PAGE 91 =====\nQ7 ： Anthropic 封杀 了 OAuth ， 我 该怎 么 用 Claude ？
+使 用 Anthropic API K ey （ 按 量 付 费 ） 。 在  Anthropic Console 创建 API K ey ， 然 后在 OpenClaw 中 配 置
+ANTHROPIC_API_KEY 环 境 变 量 。 不要 尝 试 通过 OAuth 连 接 Claude Pro/M ax 订 阅 账 户 ， 会 被 封 号 。
+Q8 ： OpenClaw 创 始 人加入 OpenAI 后 ， 项 目 还会 继 续 吗 ？
+会 。 Peter Steinberger 加入 OpenAI 后 ， OpenClaw 正在 转 为开 源 基 金会 运 营 。 OpenAI 已 承 诺 赞 助 项 目 但 不 干预
+开发方 向 。 截 至 2026 年 3 月， 项 目 仍 然保持 近 乎 每 日 更 新的 节 奏 ，有 1,075+ 贡 献 者 。 项 目 的 长 期 可 持 续 性是 有 保
+障 的。
+Q9 ： ClawHub 上 的 Skill 安全 吗 ？
+不能 盲 目 信 任 。 ClawHub 的 13,729 个 Skill 中， 经社区 审 计 约 20% 存 在问题（ 垃圾 / 重复 / 恶 意） 。 ClawHavoc 事件
+中， 超 800 个 恶 意 Skill 试 图 窃 取 用户 凭 证 。 建议 ： 只 安 装 starred 数 量 多 的 Skill 、 安 装 前 审 查源代码 、 使 用
+awesom e-openclaw-skills 精选 列 表（ 已 过 滤 问题 Skill ） 。
+Q10 ： 能接入微信 吗 ？
+可以 ， 但 不是 直 接接入个人微信 。 通过 openclaw-china 插 件 的 企 业微信（自 建应 用）方 案 可以间接接入个人微
+信 。 钉钉 和 QQ Bot 的 接入最 简单 。 飞 书 是国内最主 流 的 接入 渠 道之 一， OpenClaw 和 飞 书 官 方 都 提 供 了 丰 富 的
+集 成文 档 。
+Q11 ： OpenClaw 和 Claude Code 可以 一 起 用 吗 ？
+可以 ， 而 且 是推 荐 用法 。 社区开发了 openclaw-claude-code-skill ， 通过 M CP 协 议 桥 接 两 者 。 OpenClaw 负 责 消
+息平 台 接入和生活自动化 ， Claude Code 负 责 编程任 务 。 两 者 组 合是 2026 年最 完 整 的 AI 工作 流 。
+Q12 ： 本地 模 型 效 果 怎 么样？
+取 决 于 硬 件 和 模 型选 择 。 32G B RAM 可以 跑 Qwen3-Coder:32B 或 Devstral-24B ， 在 代码 生成和 简单 Agent 任 务上
+表现不 错 。 但 跟 云端 的 Claude Sonnet 或 G PT-5.4 比 仍 有 差 距 ， 尤 其是 复 杂 的 多 步 骤 推理 任 务 。 适 合 隐私 敏 感场
+景 和实 验 用 途 。\n\n===== PAGE 98 =====\nAI 编程 ： 从 入门到 精 通
+知 识 星 球  · 花 叔 的  AI 编程 社区
+星 主 ： AI 进化论 - 花 生
+自 然 语 言 是  AI 时 代 最好 的 编程 语 言 。
+AppStore 付 费  app 总 榜 第 一 「 小 猫 补 光 灯 」 作者
+《 一 本 书玩 转  DeepSeek 》 作者
+加入知 识 星 球  →
+B 站 ： AI 进化论 - 花 生 · YouTube ： AI 进化论 - 花 生 · 公 众 号 ： 花 叔
+Created by 花 叔  ·  v1.0 ·  2026 年 3 月
+后 续 更 新 请 查 看 ：飞 书 文 档 （ 持 续 更 新 ）

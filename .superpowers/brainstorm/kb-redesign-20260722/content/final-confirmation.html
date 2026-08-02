@@ -1,0 +1,31 @@
+<style>
+  .review-shell{margin-top:20px;border:1px solid #dce7ee;border-radius:20px;background:#f8fbfd;overflow:hidden;box-shadow:0 18px 48px rgba(15,23,42,.07)}.review-top{padding:20px 24px;background:white;border-bottom:1px solid #e6edf2;display:flex;justify-content:space-between;gap:16px}.review-top h3{margin:0;font-size:19px;color:#172238}.review-top p{margin:5px 0 0;font-size:12px;color:#718096}.stepmark{font-size:10px;font-weight:800;color:#0a91a6;background:#eafcfe;border-radius:99px;padding:7px 10px;align-self:flex-start}.review-body{display:grid;grid-template-columns:minmax(0,1fr) 285px;gap:18px;padding:20px}.facts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fact{border:1px solid #e0e8ee;background:white;border-radius:14px;padding:15px}.fact.wide{grid-column:1/-1}.fact-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px}.fact-head b{font-size:12px;color:#2e3b4e}.edit{font-size:10px;color:#0891b2}.row{display:grid;grid-template-columns:95px 1fr;gap:10px;padding:7px 0;border-bottom:1px solid #f0f3f6;font-size:11px}.row:last-child{border-bottom:0}.row span{color:#94a3b8}.row strong{color:#364459;font-weight:600}.source{display:inline-flex;align-items:center;gap:4px;background:#ecfdf5;color:#16815a;border-radius:99px;padding:3px 6px;font-size:8px;margin-left:6px}.docs{display:flex;gap:7px;flex-wrap:wrap}.doc{border:1px solid #dde7ed;background:#fbfdfe;border-radius:9px;padding:7px 9px;font-size:9px;color:#64748b}.side{display:flex;flex-direction:column;gap:11px}.ready{background:linear-gradient(145deg,#0ca8bb,#0d91aa);color:white;border-radius:16px;padding:18px}.ready h4{margin:0 0 5px;font-size:15px}.ready p{margin:0;font-size:10px;line-height:1.55;color:#d9f7fa}.meter{height:7px;background:rgba(255,255,255,.22);border-radius:99px;margin:14px 0 7px;overflow:hidden}.meter i{display:block;width:92%;height:100%;background:white;border-radius:99px}.metertext{display:flex;justify-content:space-between;font-size:9px;color:#e5fbfd}.policy{border:1px solid #dfe8ee;background:white;border-radius:14px;padding:14px}.policy h4{margin:0 0 10px;font-size:12px;color:#344256}.policy li{font-size:10px;color:#64748b;line-height:1.55;margin-bottom:7px}.policy li::marker{color:#13a9bc}.generate{border:0;background:#08a4b9;color:#fff;border-radius:11px;padding:12px;text-align:center;font-size:12px;font-weight:800;box-shadow:0 8px 20px rgba(8,164,185,.2)}.cloud{font-size:9px;color:#94a3b8;text-align:center}.optional{border:1px dashed #cfdce4;border-radius:12px;padding:11px;font-size:10px;color:#718096;background:#fbfdfe}.options{margin-top:18px}@media(max-width:850px){.review-body{grid-template-columns:1fr}.facts{grid-template-columns:1fr}.fact.wide{grid-column:auto}.review-top{padding:17px}.review-body{padding:14px}}
+</style>
+
+<h2>生成前确认页：看得懂，才能放心生成</h2>
+<p class="subtitle">这里不再展示复杂“健康度指标”，而是把系统将写入知识库的事实、来源和引用边界说清楚。</p>
+
+<div class="review-shell">
+  <div class="review-top"><div><h3>确认企业知识</h3><p>请快速浏览高亮信息；以后仍可回来补充或修改。</p></div><span class="stepmark">第 4 步 / 共 4 步</span></div>
+  <div class="review-body">
+    <section class="facts">
+      <div class="fact"><div class="fact-head"><b>企业主体</b><span class="edit">修改</span></div><div class="row"><span>企业名称</span><strong>吉林省精诚法税企业管理有限公司 <i class="source">资料提取</i></strong></div><div class="row"><span>所属行业</span><strong>企业财税与法律风险管理</strong></div></div>
+      <div class="fact"><div class="fact-head"><b>核心业务</b><span class="edit">修改</span></div><div class="row"><span>主要服务</span><strong>财税合规咨询、税务风险排查</strong></div><div class="row"><span>服务对象</span><strong>中小企业与成长型企业</strong></div></div>
+      <div class="fact"><div class="fact-head"><b>官方联系方式</b><span class="edit">修改</span></div><div class="row"><span>联系人</span><strong>张经理</strong></div><div class="row"><span>首选方式</span><strong>手机 · 138****5678</strong></div></div>
+      <div class="fact"><div class="fact-head"><b>知识引用边界</b><span class="edit">系统规则</span></div><div class="row"><span>普通科普文章</span><strong>不主动插入联系方式</strong></div><div class="row"><span>咨询 / 预约内容</span><strong>按需引用官方联系方式</strong></div></div>
+      <div class="fact wide"><div class="fact-head"><b>事实来源</b><span class="edit">3 份资料</span></div><div class="docs"><span class="doc">营业执照.pdf</span><span class="doc">公司介绍.docx</span><span class="doc">服务手册.pdf</span></div></div>
+    </section>
+    <aside class="side">
+      <div class="ready"><h4>已具备生成条件</h4><p>必要事实完整，联系方式已验证，资料来源可追溯。</p><div class="meter"><i></i></div><div class="metertext"><span>知识准备度</span><b>92%</b></div></div>
+      <div class="policy"><h4>生成后可以做什么</h4><ul><li>内容矩阵按需引用企业事实</li><li>文章创作仅在相关主题中引用</li><li>随时编辑知识库，不必重新填写全部信息</li></ul></div>
+      <div class="optional">缺少“品牌故事”等选填信息不会阻塞生成，可稍后完善。</div>
+      <div class="generate">生成企业知识库 Skill</div>
+      <div class="cloud">云端智能调度模型 · 失败自动切换备用渠道</div>
+    </aside>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-confirmation" onclick="toggleSelect(this)"><div class="letter">✓</div><div class="content"><h3>认可确认页设计</h3><p>继续确定保存、异常恢复与测试方案</p></div></div>
+  <div class="option" data-choice="revise-confirmation" onclick="toggleSelect(this)"><div class="letter">↺</div><div class="content"><h3>需要调整确认页</h3><p>告诉我哪些信息应该增加或减少</p></div></div>
+</div>

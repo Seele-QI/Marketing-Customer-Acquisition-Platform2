@@ -1,0 +1,114 @@
+<style>
+  .concepts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+  .concept{cursor:pointer;border:2px solid #dce5ef;border-radius:20px;overflow:hidden;background:#fff;transition:.2s}
+  .concept:hover{transform:translateY(-2px);box-shadow:0 16px 38px rgba(15,23,42,.12)}
+  .concept.selected{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.12)}
+  .screen{position:relative;min-height:510px;padding:12px;background:linear-gradient(145deg,#f3f7fc,#edf4ff);color:#172033;overflow:hidden}
+  .top{height:25px;border-radius:8px;background:#12233f;color:#fff;padding:6px 9px;font-size:8px;margin-bottom:10px}
+  .hero{border-radius:13px;padding:13px;background:linear-gradient(120deg,#173e79,#2468bf);color:#fff;margin-bottom:9px}
+  .eyebrow{font-size:7px;opacity:.72;letter-spacing:.08em}.hero h4{font-size:15px;margin:4px 0}.hero p{font-size:8px;opacity:.86;margin:0}
+  .hero-btn{display:inline-block;margin-top:8px;border-radius:7px;background:#fff;color:#1d4f91;padding:5px 8px;font-size:7px;font-weight:700}
+  .section-title{font-size:9px;font-weight:800;margin:9px 0 6px}
+  .directions{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.directions.five .direction:first-child{grid-column:span 2}
+  .direction{min-height:64px;border-radius:10px;background:#fff;border:1px solid #dde6f1;padding:8px;box-shadow:0 3px 9px rgba(30,64,175,.04)}
+  .direction strong{display:block;font-size:9px}.direction span{font-size:7px;color:#64748b;line-height:1.45}.direction i{display:inline-block;width:17px;height:17px;border-radius:6px;background:#e7efff;margin-bottom:5px}
+  .projects{display:grid;grid-template-columns:1fr 1fr;gap:6px}.project{border-radius:9px;background:#fff;border:1px solid #dde6f1;padding:8px;font-size:7px}.project strong{display:block;font-size:8px;margin-bottom:4px}
+  .progress{height:4px;background:#e8edf5;border-radius:8px;overflow:hidden;margin-top:6px}.progress b{display:block;width:42%;height:100%;background:#2f70c9}
+  .orb{position:absolute;right:15px;bottom:15px;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#2468bf,#16a3c7);color:#fff;font-size:16px;box-shadow:0 8px 20px rgba(21,89,160,.35);border:3px solid rgba(255,255,255,.9)}
+  .drawer{position:absolute;right:7px;top:38px;bottom:7px;width:44%;border-radius:13px;background:#fff;box-shadow:-12px 6px 30px rgba(15,23,42,.17);padding:10px;z-index:2}
+  .assistant-head{display:flex;gap:7px;align-items:center;border-bottom:1px solid #e7edf5;padding-bottom:8px}.avatar{width:25px;height:25px;border-radius:50%;background:linear-gradient(145deg,#1e5ca8,#24b0c4)}
+  .assistant-head strong{font-size:9px;display:block}.assistant-head span{font-size:7px;color:#64748b}
+  .memory{display:flex;gap:4px;margin:7px 0}.chip{font-size:6px;padding:3px 5px;border-radius:99px;background:#edf4ff;color:#2455a5}
+  .plan{border-radius:9px;background:#f5f8fc;padding:8px;font-size:7px}.plan strong{display:block;font-size:8px;margin-bottom:5px}.step{padding:5px 0;border-bottom:1px solid #e5ebf3}.step:last-child{border:0}.step.done{color:#059669}.step.active{color:#1d4ed8;font-weight:700}
+  .message{margin-top:7px;border-radius:9px;background:#edf5ff;padding:8px;font-size:7px;line-height:1.5}.assistant-action{margin-top:7px;border-radius:7px;background:#1f5da9;color:#fff;text-align:center;padding:6px;font-size:7px}
+  .chat-first{display:grid;grid-template-columns:1.15fr .85fr;gap:7px}.chat-panel{border-radius:13px;background:#fff;border:1px solid #dce6f2;padding:10px;min-height:344px}.bubble{max-width:90%;border-radius:9px;padding:8px;font-size:7px;line-height:1.5;margin-bottom:7px;background:#edf4ff}.bubble.user{margin-left:auto;background:#1f5da9;color:#fff}
+  .studio-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.studio{min-height:104px;border-radius:13px;padding:11px;color:#fff;background:linear-gradient(145deg,#1e4f8c,#3279cb)}.studio:nth-child(2){background:linear-gradient(145deg,#047e72,#21a88f)}.studio:nth-child(3){background:linear-gradient(145deg,#7a3dad,#a55ed0)}.studio:nth-child(4){background:linear-gradient(145deg,#b64d2c,#db784a)}.studio:nth-child(5){background:linear-gradient(145deg,#45546d,#708199)}
+  .studio strong{display:block;font-size:11px;margin-bottom:5px}.studio span{font-size:7px;opacity:.84}.studio button{display:block;margin-top:14px;border:0;border-radius:6px;padding:4px 7px;font-size:7px;background:rgba(255,255,255,.9);color:#172033}
+  .copy{padding:14px}.copy h3{font-size:16px;margin:0 0 6px}.copy p{font-size:12px;color:#64748b;line-height:1.55;margin:0}.badge{display:inline-block;margin-bottom:8px;border-radius:99px;background:#e4efff;color:#1d4ed8;padding:4px 8px;font-size:10px;font-weight:800}
+  @media(max-width:1050px){.concepts{grid-template-columns:1fr}}
+</style>
+
+<h2>重新定义工作台：首页负责进入业务，助理负责陪用户做完</h2>
+<p class="subtitle">请选择最接近你想要的整体产品形态。悬浮助理在任意页面都存在，打开后不因翻页关闭。</p>
+
+<div class="concepts">
+  <div class="concept" data-choice="a-dual-core" onclick="toggleSelect(this)">
+    <div class="screen">
+      <div class="top">招财猫 AI 中台　　工作台　　当前项目：餐饮获客增长计划</div>
+      <div class="hero">
+        <div class="eyebrow">你的业务总控台</div>
+        <h4>今天继续推进「30 天餐饮获客计划」</h4>
+        <p>已完成身份定位与内容矩阵，下一步建议制作首批 3 条视频。</p>
+        <span class="hero-btn">继续当前计划 →</span>
+      </div>
+      <div class="section-title">选择一个业务方向</div>
+      <div class="directions">
+        <div class="direction"><i></i><strong>视频创作</strong><span>从脚本、素材到成片</span></div>
+        <div class="direction"><i></i><strong>GEO 创作</strong><span>知识库、矩阵、文章优化</span></div>
+        <div class="direction"><i></i><strong>海报图创作</strong><span>营销海报与内容配图</span></div>
+        <div class="direction"><i></i><strong>抖音截流</strong><span>线索发现、触达与跟进</span></div>
+        <div class="direction"><i></i><strong>身份定位</strong><span>统一维护企业与账号定位</span></div>
+        <div class="direction"><i></i><strong>全部业务</strong><span>查看完整能力与历史项目</span></div>
+      </div>
+      <div class="section-title">最近项目</div>
+      <div class="projects"><div class="project"><strong>餐饮获客增长计划 · 42%</strong>正在制作首批短视频<div class="progress"><b></b></div></div><div class="project"><strong>品牌 GEO 基建 · 68%</strong>知识库已完成，待生成文章<div class="progress"><b style="width:68%"></b></div></div></div>
+      <div class="orb">AI</div>
+    </div>
+    <div class="copy"><span class="badge">推荐 · 双核心</span><h3>A. 业务入口 + 项目推进</h3><p>首页既能直接进入五个大业务，也能继续长期项目。悬浮助理承担跨页指导、记忆和执行，职责最清楚。</p></div>
+  </div>
+
+  <div class="concept" data-choice="b-assistant-first" onclick="toggleSelect(this)">
+    <div class="screen">
+      <div class="top">招财猫 AI 中台　　工作台</div>
+      <div class="chat-first">
+        <div class="chat-panel">
+          <div class="assistant-head"><div class="avatar"></div><div><strong>业务总助理</strong><span>已加载企业档案与当前项目</span></div></div>
+          <div class="memory"><span class="chip">餐饮行业</span><span class="chip">本地获客</span><span class="chip">稳重口吻</span></div>
+          <div class="bubble">上午好。你的 30 天获客计划完成了 42%。建议今天完成 3 条视频脚本并生成首条成片。</div>
+          <div class="bubble user">按这个计划继续</div>
+          <div class="plan"><strong>今天的执行步骤</strong><div class="step done">✓ 复用身份定位档案</div><div class="step active">2. 生成 3 条视频脚本</div><div class="step">3. 选择数字人形象</div><div class="step">4. 生成并审核成片</div></div>
+          <div class="assistant-action">开始第 2 步</div>
+        </div>
+        <div>
+          <div class="section-title" style="margin-top:0">快捷进入</div>
+          <div class="directions" style="grid-template-columns:1fr"><div class="direction"><strong>视频创作</strong><span>2 个项目</span></div><div class="direction"><strong>GEO 创作</strong><span>1 个项目</span></div><div class="direction"><strong>海报图创作</strong></div><div class="direction"><strong>抖音截流</strong></div><div class="direction"><strong>身份定位</strong></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="copy"><h3>B. 助理优先首页</h3><p>打开首页就直接与总助理对话，计划推进感最强；但五个大业务入口被弱化，新用户容易不知道产品有哪些能力。</p></div>
+  </div>
+
+  <div class="concept" data-choice="c-studio-launcher" onclick="toggleSelect(this)">
+    <div class="screen">
+      <div class="top">招财猫 AI 中台　　工作台</div>
+      <div class="hero" style="background:linear-gradient(120deg,#172033,#334765)">
+        <div class="eyebrow">选择你要完成的业务目标</div>
+        <h4>从一个专业工作室开始</h4>
+        <p>每个工作室都配备专属助理、业务流程、记忆和项目计划。</p>
+      </div>
+      <div class="studio-grid">
+        <div class="studio"><strong>视频创作工作室</strong><span>策划 · 脚本 · 素材 · 成片</span><button>进入工作室</button></div>
+        <div class="studio"><strong>GEO 增长工作室</strong><span>知识库 · 矩阵 · 文章 · 评分</span><button>进入工作室</button></div>
+        <div class="studio"><strong>海报图工作室</strong><span>策划 · 设计 · 修改 · 导出</span><button>进入工作室</button></div>
+        <div class="studio"><strong>抖音截流工作室</strong><span>线索 · 触达 · 跟进 · 复盘</span><button>进入工作室</button></div>
+        <div class="studio"><strong>身份定位工作室</strong><span>企业档案 · 账号定位 · 受众</span><button>进入工作室</button></div>
+      </div>
+      <div class="orb">AI</div>
+    </div>
+    <div class="copy"><h3>C. 五大业务工作室</h3><p>产品能力表达最强，首页像业务应用商店；但长期项目与当前进度存在感较弱，需要用户进入工作室后才能看到。</p></div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top:22px">
+  <div class="mockup-header">全局悬浮助理展开态（所有方案共用）</div>
+  <div class="mockup-body" style="position:relative;min-height:360px;background:#eef3f8;padding:18px">
+    <div style="max-width:58%;font-size:13px;color:#64748b">当前页面：数字人视频创作 / 脚本规划<br><br>用户可以继续操作原页面；右侧助理面板独立存在，切换页面后仍保持打开、对话和计划状态。</div>
+    <div class="drawer" style="width:36%;top:12px;bottom:12px;right:12px">
+      <div class="assistant-head"><div class="avatar"></div><div><strong>许卓 · 视频创作助理</strong><span>当前项目：餐饮获客增长计划</span></div></div>
+      <div class="memory"><span class="chip">共享定位档案</span><span class="chip">视频专业记忆</span><span class="chip">计划 42%</span></div>
+      <div class="plan"><strong>当前业务流程</strong><div class="step done">✓ 目标与受众</div><div class="step done">✓ 选题与脚本</div><div class="step active">3. 形象与素材准备</div><div class="step">4. 生成与质检</div><div class="step">5. 分发与复盘</div></div>
+      <div class="message">检测到你已经填写脚本，但还没有选择形象。需要我根据品牌定位推荐 3 个适合的形象方向吗？</div>
+      <div class="assistant-action">生成形象建议</div>
+    </div>
+  </div>
+</div>

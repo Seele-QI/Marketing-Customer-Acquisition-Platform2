@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>内容矩阵规划配置，三版 UI 预案</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f5f8fb;color:#172235;font-family:Inter,"Microsoft YaHei",system-ui,sans-serif}.page{max-width:1500px;margin:auto;padding:28px}.intro{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:22px}.intro h1{font-size:24px;margin:0 0 8px}.intro p{font-size:13px;color:#64748b;margin:0;line-height:1.7}.cloud-note{display:flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid #c8eaf0;background:#f0fbfc;border-radius:999px;color:#087f8c;font-size:11px;white-space:nowrap}.dot{width:7px;height:7px;border-radius:50%;background:#0aa9bb;box-shadow:0 0 0 4px rgba(10,169,187,.12)}.options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.option{background:#fbfdff;border:1px solid #dce5ed;border-radius:18px;overflow:hidden;box-shadow:0 12px 34px rgba(28,51,72,.06);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.option:hover{transform:translateY(-3px);box-shadow:0 18px 44px rgba(28,51,72,.1)}.option.selected{border-color:#0ba9bc;box-shadow:0 0 0 3px rgba(11,169,188,.14),0 18px 44px rgba(28,51,72,.1)}.choice{background:#fff;padding:16px 18px;border-bottom:1px solid #e7edf2;display:flex;justify-content:space-between;gap:12px}.choice h2{font-size:16px;margin:0 0 5px}.choice p{font-size:11px;line-height:1.55;color:#718096;margin:0}.badge{height:24px;padding:4px 9px;border-radius:999px;background:#e5f8fa;color:#078799;font-size:10px;font-weight:700;white-space:nowrap}.mock{min-height:492px;padding:14px;background:#f4f7fa}.window{background:#fff;border:1px solid #e2e8ef;border-radius:14px;padding:14px;min-height:462px}.title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.title{font-size:13px;font-weight:750}.managed{font-size:9px;color:#718096;display:flex;align-items:center;gap:4px}.managed i{width:5px;height:5px;background:#0aa9bb;border-radius:50%}.label{font-size:9px;color:#64748b;font-weight:650;margin-bottom:6px}.platforms{display:flex;flex-wrap:wrap;gap:5px}.chip{padding:5px 8px;border:1px solid #dce5ed;border-radius:999px;font-size:8px;color:#64748b;background:#fff}.chip.on{border-color:#42c5d3;background:#edfbfc;color:#087f8c;font-weight:700}.divider{height:1px;background:#edf1f5;margin:13px 0}.select-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.select{border:1px solid #dfe7ee;border-radius:10px;padding:9px;background:#fff}.select-top{display:flex;align-items:center;gap:6px;font-size:9px;font-weight:700}.ico{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:10px}.violet{background:#f1edff;color:#7157d9}.cyan{background:#e8fafd;color:#0696a8}.green{background:#ecfaf3;color:#15945b}.select p{font-size:8px;color:#8a98a8;margin:5px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{margin-top:10px;border-radius:10px;background:#f5f8fa;padding:9px 10px;display:flex;align-items:flex-start;gap:7px}.summary strong{display:block;font-size:9px;margin-bottom:3px}.summary span{font-size:8px;color:#718096;line-height:1.5}.cta{margin-top:12px;width:100%;border:0;border-radius:10px;padding:9px 12px;background:#079eb2;color:#fff;font-size:10px;font-weight:750}.meta{font-size:8px;color:#8a98a8;text-align:center;margin-top:6px}.steps{display:flex;gap:6px;margin-bottom:14px}.step{height:28px;flex:1;border-radius:8px;background:#f1f5f8;color:#8a98a8;font-size:8px;display:flex;align-items:center;justify-content:center;gap:5px}.step b{width:16px;height:16px;border-radius:50%;background:#fff;display:grid;place-items:center}.step.active{background:#eaf9fb;color:#087f8c;font-weight:700}.section{padding:11px 0;border-bottom:1px solid #edf1f5}.section:last-of-type{border-bottom:0}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.section-head strong{font-size:10px}.section-head span{font-size:8px;color:#0a92a3}.strategy-list{display:grid;gap:6px}.strategy{display:flex;align-items:center;justify-content:space-between;border:1px solid #dfe7ee;border-radius:9px;padding:8px}.strategy .left{display:flex;align-items:center;gap:7px}.strategy strong{font-size:9px;display:block}.strategy small{font-size:7px;color:#8a98a8}.check{width:14px;height:14px;border-radius:50%;border:1px solid #c9d4de;color:#fff;font-size:8px;display:grid;place-items:center}.strategy.on{border-color:#6dced8;background:#f5fcfd}.strategy.on .check{background:#0aa7b9;border-color:#0aa7b9}.bar{display:flex;align-items:center;gap:8px;border:1px solid #dce5ed;border-radius:11px;padding:9px;background:#fff}.bar-label{font-size:8px;color:#718096}.bar-value{font-size:9px;font-weight:700}.arrow{margin-left:auto;color:#8a98a8}.toolbar .platforms{margin-bottom:10px}.tool-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}.ready{margin-top:10px;background:#edfafa;border:1px solid #cbeef1;border-radius:10px;padding:9px;display:flex;justify-content:space-between;align-items:center}.ready strong{font-size:9px}.ready span{font-size:7px;color:#64808a}.compact-cta{border:0;background:#079eb2;color:#fff;border-radius:8px;padding:8px 10px;font-size:8px;font-weight:700}.notes{padding:15px 18px 17px;background:#fff;font-size:11px;line-height:1.65;color:#59697a}.notes strong{color:#172235}.trade{margin-top:7px;color:#8290a0}.recommend{color:#078799;font-weight:700}@media(max-width:1050px){.options{grid-template-columns:1fr}.mock{min-height:auto}.window{min-height:0}.page{padding:18px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="intro">
+      <div><h1>内容矩阵规划配置，三版 UI 预案</h1><p>三版均已移除用户模型选择，系统只使用云端下发模型并自动切换备用渠道。请从“第一次使用是否容易懂、配置是否轻松、生成前是否有把握”三个角度选择。</p></div>
+      <div class="cloud-note"><span class="dot"></span>模型由云端自动调度，用户无需配置</div>
+    </div>
+    <section class="options">
+      <article class="option" data-choice="a" onclick="toggleSelect(this)">
+        <div class="choice"><div><h2>A. 分层配置面板</h2><p>先选平台，再选内容策略，底部汇总后生成。</p></div><span class="badge">推荐</span></div>
+        <div class="mock"><div class="window">
+          <div class="title-row"><span class="title">规划配置</span><span class="managed"><i></i> 云端智能调度</span></div>
+          <div class="label">发布平台（多选）</div>
+          <div class="platforms"><span class="chip on">小红书</span><span class="chip on">抖音</span><span class="chip">微博</span><span class="chip">大众点评</span><span class="chip on">知乎</span><span class="chip">携程</span><span class="chip">网易</span><span class="chip">搜狐</span></div>
+          <div class="divider"></div>
+          <div class="label">内容策略（按需选择）</div>
+          <div class="select-grid">
+            <div class="select"><div class="select-top"><span class="ico violet">策</span><span>引用策略</span><span class="arrow">⌄</span></div><p>DeepSeek 引用权重</p></div>
+            <div class="select"><div class="select-top"><span class="ico cyan">爆</span><span>平台爆款</span><span class="arrow">⌄</span></div><p>已选择 2 项平台方法</p></div>
+            <div class="select" style="grid-column:1/-1"><div class="select-top"><span class="ico green">企</span><span>企业知识库</span><span class="arrow">⌄</span></div><p>吉林省精诚法税企业知识库</p></div>
+          </div>
+          <div class="summary"><span class="ico cyan">✓</span><div><strong>准备生成 3 个平台的两周内容矩阵</strong><span>引用策略、平台爆款与企业事实已就绪</span></div></div>
+          <button class="cta">生成两周矩阵</button><div class="meta">预计生成 42 条内容主题，可生成后逐条调整</div>
+        </div></div>
+        <div class="notes"><strong>用户体感：</strong>结构最清楚，选择和结果预期都在一个视线范围内。<div class="trade"><span class="recommend">推荐正式采用。</span> 改动适中，兼顾新手与熟练用户。</div></div>
+      </article>
+
+      <article class="option" data-choice="b" onclick="toggleSelect(this)">
+        <div class="choice"><div><h2>B. 三步引导式</h2><p>把复杂配置拆成连续三步，降低首次使用压力。</p></div></div>
+        <div class="mock"><div class="window">
+          <div class="title-row"><span class="title">创建两周内容矩阵</span><span class="managed"><i></i> 云端模型已就绪</span></div>
+          <div class="steps"><span class="step active"><b>1</b>选平台</span><span class="step active"><b>2</b>选策略</span><span class="step"><b>3</b>确认生成</span></div>
+          <div class="section"><div class="section-head"><strong>1. 要发布到哪些平台？</strong><span>已选 3 个</span></div><div class="platforms"><span class="chip on">小红书</span><span class="chip on">抖音</span><span class="chip">微博</span><span class="chip on">知乎</span><span class="chip">携程</span><span class="chip">网易</span></div></div>
+          <div class="section"><div class="section-head"><strong>2. 内容要参考哪些经验？</strong><span>可随时修改</span></div><div class="strategy-list">
+            <div class="strategy on"><div class="left"><span class="ico violet">策</span><div><strong>AI 引用策略</strong><small>提高内容被答案引擎引用的概率</small></div></div><span class="check">✓</span></div>
+            <div class="strategy on"><div class="left"><span class="ico cyan">爆</span><div><strong>平台爆款经验</strong><small>适配不同平台的表达习惯</small></div></div><span class="check">✓</span></div>
+            <div class="strategy on"><div class="left"><span class="ico green">企</span><div><strong>企业知识库</strong><small>确保品牌、产品和联系方式准确</small></div></div><span class="check">✓</span></div>
+          </div></div>
+          <button class="cta">下一步：确认生成内容</button><div class="meta">系统会自动选择当前最稳定的云端模型</div>
+        </div></div>
+        <div class="notes"><strong>用户体感：</strong>最适合第一次使用，所有术语都有用途解释。<div class="trade">代价是操作路径更长，熟练用户每次生成会多一次确认。</div></div>
+      </article>
+
+      <article class="option" data-choice="c" onclick="toggleSelect(this)">
+        <div class="choice"><div><h2>C. 极简工作台</h2><p>压缩为一条配置工具栏，把矩阵结果留在主视觉区。</p></div></div>
+        <div class="mock"><div class="window toolbar">
+          <div class="title-row"><span class="title">规划配置</span><span class="managed"><i></i> 云端调度</span></div>
+          <div class="label">发布平台</div><div class="platforms"><span class="chip on">小红书</span><span class="chip on">抖音</span><span class="chip">微博</span><span class="chip">大众点评</span><span class="chip on">知乎</span><span class="chip">携程</span></div>
+          <div class="divider"></div>
+          <div class="tool-row">
+            <div class="bar"><span class="ico violet">策</span><div><div class="bar-label">引用策略</div><div class="bar-value">默认推荐</div></div><span class="arrow">⌄</span></div>
+            <div class="bar"><span class="ico cyan">爆</span><div><div class="bar-label">平台爆款</div><div class="bar-value">已选 2 项</div></div><span class="arrow">⌄</span></div>
+          </div>
+          <div class="bar" style="margin-top:7px"><span class="ico green">企</span><div><div class="bar-label">企业知识库</div><div class="bar-value">精诚法税企业知识库</div></div><span class="arrow">⌄</span></div>
+          <div class="ready"><div><strong>配置完成</strong><br><span>小红书、抖音、知乎，共 42 条主题</span></div><button class="compact-cta">立即生成</button></div>
+          <div style="height:150px;margin-top:12px;border:1px dashed #dce5ed;border-radius:12px;display:grid;place-items:center;color:#94a3b8;font-size:9px">矩阵结果区域获得更多首屏空间</div>
+        </div></div>
+        <div class="notes"><strong>用户体感：</strong>最快、最省空间，生成后查看矩阵最顺手。<div class="trade">术语解释较少，对首次使用者的友好度低于 A、B。</div></div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

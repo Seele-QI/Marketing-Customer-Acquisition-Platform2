@@ -1,0 +1,6 @@
+2026/08/01-23:26:27.151 23ec Reusing MANIFEST F:\A-xiangmu\21-zhongtai\zhongtai-main\data\profiles\user_4\chrome_profile_douyin\Default\Local Storage\leveldb/MANIFEST-000001
+2026/08/01-23:26:27.158 23ec Recovering log #4
+2026/08/01-23:26:27.163 23ec Reusing old log F:\A-xiangmu\21-zhongtai\zhongtai-main\data\profiles\user_4\chrome_profile_douyin\Default\Local Storage\leveldb/000004.log 
+2026/08/01-23:26:36.448 4848 Level-0 table #8: started
+2026/08/01-23:26:36.460 4848 Level-0 table #8: 29127 bytes OK
+2026/08/01-23:26:36.465 4848 Delete type=0 #4
